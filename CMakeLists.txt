@@ -48,6 +48,13 @@ target_compile_definitions(orca-slice-engine PRIVATE
     -DTBB_USE_CAPTURED_EXCEPTION=0
 )
 
+# CGAL forces BOOST_ALL_DYN_LINK=1 via its INTERFACE_COMPILE_DEFINITIONS.
+# Our SDK uses static Boost libs; undefine it to prevent DYN_LINK/STATIC_LINK
+# conflicts with per-library STATIC_LINK macros from Boost cmake targets.
+if(MSVC)
+    target_compile_options(orca-slice-engine PRIVATE "/UBOOST_ALL_DYN_LINK")
+endif()
+
 # === Link libraries ===
 target_link_libraries(orca-slice-engine PRIVATE
     libslic3r::libslic3r
