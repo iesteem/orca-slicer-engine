@@ -46,9 +46,6 @@ target_include_directories(orca-slice-engine PRIVATE
 target_compile_definitions(orca-slice-engine PRIVATE
     -DUSE_TBB
     -DTBB_USE_CAPTURED_EXCEPTION=0
-    -DBOOST_ALL_NO_LIB
-    -DBOOST_FILESYSTEM_STATIC_LINK
-    -DBOOST_LOG_STATIC_LINK
 )
 
 # === Link libraries ===
