@@ -57,6 +57,13 @@ if(MSVC)
     target_compile_options(orca-slice-engine PRIVATE "/UBOOST_ALL_DYN_LINK")
 endif()
 
+# Linker search path for OCCT and other bundled libs
+if(MSVC)
+    target_link_options(orca-slice-engine PRIVATE
+        "/LIBPATH:${CMAKE_PREFIX_PATH}/lib"
+    )
+endif()
+
 # === Link libraries ===
 target_link_libraries(orca-slice-engine PRIVATE
     libslic3r::libslic3r
