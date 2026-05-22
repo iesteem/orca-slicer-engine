@@ -63,11 +63,23 @@ target_link_libraries(orca-slice-engine PRIVATE
     CGAL::CGAL
     Boost::filesystem
     Boost::log
+    Boost::nowide
     Nanosvg::nanosvg
     TBB::tbb
     TBB::tbbmalloc
     OpenSSL::SSL
     OpenSSL::Crypto
+    # OCCT — libslic3r uses OCCT for STEP import (linked as PRIVATE)
+    TKG2d TKG3d TKMath TKernel
+    TKGeomBase TKGeomAlgo
+    TKBRep TKTopAlgo TKPrim TKHLR TKShHealing
+    TKBO TKBool TKFeat TKFillet TKOffset
+    TKMesh TKXSBase TKXSDRAW
+    TKSTEP TKSTEPAttr TKSTEPBase TKSTEP209
+    TKIGES TKSTL
+    TKXml TKXmlL TKXmlXCAF
+    TKLCAF TKCAF TKBinL TKXCAF
+    TKCDF TKV3d TKService
 )
 
 # === Platform-specific ===
