@@ -18,7 +18,7 @@ find_package(libslic3r REQUIRED)
 find_package(CGAL REQUIRED)
 
 # Boost — engine uses BOOST_LOG_TRIVIAL, filesystem
-find_package(Boost REQUIRED COMPONENTS filesystem log)
+find_package(Boost REQUIRED COMPONENTS filesystem log log_setup)
 
 # nanosvg — single-header SVG parser for thumbnails
 find_package(Nanosvg REQUIRED)
@@ -70,6 +70,7 @@ target_link_libraries(orca-slice-engine PRIVATE
     CGAL::CGAL
     Boost::filesystem
     Boost::log
+    Boost::log_setup
     Boost::nowide
     Nanosvg::nanosvg
     TBB::tbb
