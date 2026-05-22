@@ -80,13 +80,14 @@ target_link_libraries(orca-slice-engine PRIVATE
     TKG2d TKG3d TKMath TKernel
     TKGeomBase TKGeomAlgo
     TKBRep TKTopAlgo TKPrim TKHLR TKShHealing
-    TKBO TKBool TKFeat TKFillet TKOffset
-    TKMesh TKXSBase TKXSDRAW
+    TKBO TKBool
+    TKMesh TKXSBase
     TKSTEP TKSTEPAttr TKSTEPBase TKSTEP209
     TKIGES TKSTL
     TKXml TKXmlL TKXmlXCAF
-    TKLCAF TKCAF TKBinL TKXCAF
+    TKLCAF TKCAF TKBinL TKXCAF TKBin TKBinXCAF TKVCAF
     TKCDF TKV3d TKService
+    TKRWMesh TKVRML TKXDEIGES TKXDESTEP
 )
 
 # === Platform-specific ===
