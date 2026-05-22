@@ -46,6 +46,7 @@ target_include_directories(orca-slice-engine PRIVATE
 target_compile_definitions(orca-slice-engine PRIVATE
     -DUSE_TBB
     -DTBB_USE_CAPTURED_EXCEPTION=0
+    -D_USE_MATH_DEFINES
 )
 
 # CGAL forces BOOST_ALL_DYN_LINK=1 via its INTERFACE_COMPILE_DEFINITIONS.
