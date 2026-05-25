@@ -106,6 +106,15 @@ SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx);
 /** Get the libslic3r version string (e.g. "01.10.01.50"). */
 SLIC3R_API const char* slic3r_version(void);
 
+/* ---- Cancellation ---- */
+
+/** Request cancellation of the current slicing operation.
+ *  Safe to call from any thread. Non-blocking. */
+SLIC3R_API void slic3r_cancel(slic3r_ctx_t* ctx);
+
+/** Check if cancellation has been requested (non-zero = yes). */
+SLIC3R_API int slic3r_is_cancelled(slic3r_ctx_t* ctx);
+
 #ifdef __cplusplus
 }
 #endif
