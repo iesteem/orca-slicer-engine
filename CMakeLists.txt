@@ -15,9 +15,10 @@ find_library(SLIC3R_LIBRARY slic3r
 message(STATUS "Found slic3r: ${SLIC3R_LIBRARY}")
 
 find_path(SLIC3R_INCLUDE_DIR slic3r_c_api.h
-    HINTS "${CMAKE_PREFIX_PATH}/include/libslic3r"
+    HINTS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+          "${CMAKE_PREFIX_PATH}/include/libslic3r"
           "${CMAKE_PREFIX_PATH}/include"
-          "${CMAKE_PREFIX_PATH}/../src/libslic3r"
+          "${CMAKE_PREFIX_PATH}/../../../src/libslic3r"
     REQUIRED
 )
 message(STATUS "Found slic3r_c_api.h: ${SLIC3R_INCLUDE_DIR}")
