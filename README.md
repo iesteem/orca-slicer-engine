@@ -1,67 +1,67 @@
 # orca-slice-engine
 
-Standalone cloud slicing engine — headless CLI slicer extracted from OrcaSlicer.
+Pure C consumer of `slic3r.dll` — no C++ dependencies, no libslic3r headers.
 
-## Prerequisites
-
-- CMake >= 3.13
-- Visual Studio 2022 (MSVC 17.x)
-- OrcaSlicer source repo (for SDK generation)
-
-## One-Click Build
-
-From the OrcaSlicer repo root:
-
-```cmd
-scripts\build_sdk_and_engine.bat          # Release (default)
-scripts\build_sdk_and_engine.bat Debug    # Debug
+**Architecture:**
+```
+orca-slice-engine (14 KB, C)
+  │  #include "slic3r_c_api.h"    ← only header
+  │  slic3r_create() / slic3r_slice() / slic3r_destroy()
+  ▼
+slic3r.dll (23 MB, self-contained)
+  ├── SliceEngine full pipeline
+  ├── libslic3r + CGAL + OCCT + Boost + OpenCV
+  └── 7 pure C exports, zero C++ type leakage
 ```
 
-This script handles the full pipeline:
-1. Configure OrcaSlicer (headless)
-2. Build `libslic3r` + `libslic3r_cgal`
-3. Install SDK + bundle all transitive dependencies (Boost, CGAL, OpenCV, OCCT, etc.)
-4. Configure and build `orca-slice-engine`
+## Build
 
-Output:
-- SDK → `OrcaSlicer/build/sdk/`
-- Engine → `orca-slice-engine/build/Release/orca-slice-engine.exe`
-
-## Manual Build
-
-### 1. Generate libslic3r SDK (in OrcaSlicer repo)
+Requires `slic3r.dll` and `slic3r.lib` from OrcaSlicer.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSLIC3R_GUI=OFF
-cmake --build build --target libslic3r libslic3r_cgal --config Release
-cmake --install build --prefix ./build/sdk --config Release
-
-# Then run the bundling steps from scripts/build_sdk_and_engine.bat
+cmake -S . -B build \
+    -DCMAKE_PREFIX_PATH="<path/to/slic3r/dll/dir>" \
+    -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
 
-### 2. Build engine
+Output: `build/Release/orca-slice-engine.exe` (~14 KB).
 
-```bash
-cd orca-slice-engine
-mkdir build && cd build
-cmake .. -DCMAKE_PREFIX_PATH="../../OrcaSlicer/build/sdk" -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
+One-click from OrcaSlicer root:
+```cmd
+scripts\build_sdk_and_engine.bat
 ```
 
-### 3. Run
+## Run
 
-The engine requires OCCT DLLs (and GMP/MPFR) at runtime.
-These are bundled in `OrcaSlicer/build/sdk/lib/`.
+Requires `slic3r.dll` and its dependencies (OCCT, GMP/MPFR DLLs) on PATH.
+These are bundled in the OrcaSlicer SDK directory.
 
 ```cmd
-set PATH=%PATH%;C:\path\to\OrcaSlicer\build\sdk\lib
-orca-slice-engine.exe model.3mf -p 0 -r resources/
+set PATH=%PATH%;<orca_root>\deps\build\OrcaSlicer_dep\usr\local\bin\occt
+set PATH=%PATH%;<orca_root>\deps\build\OrcaSlicer_dep\usr\local\bin
+set PATH=%PATH%;<orca_root>\build\src\libslic3r\Release
+set ORCA_RESOURCES=<orca_root>\resources
+
+orca-slice-engine.exe model.3mf -p 0
 ```
 
-## Relationship with OrcaSlicer
+## Dependencies
 
-This repo consumes libslic3r as a precompiled SDK via `find_package(libslic3r)`.
-When libslic3r changes in the main OrcaSlicer repo, regenerate the SDK and rebuild.
+- `slic3r.dll` (and its import library `slic3r.lib`)
+- MSVC runtime (`VCRUNTIME140.dll`)
+- That's it. No libslic3r. No CGAL. No OCCT. No Boost.
 
-**ABI requirement:** The SDK must be built with the same compiler version and
-runtime library configuration as this repo.
+## C API
+
+| Function | Purpose |
+|----------|---------|
+| `slic3r_create(resources_dir)` | Init presets, return opaque handle |
+| `slic3r_slice(ctx, 3mf, output, params, stats)` | Full slice pipeline |
+| `slic3r_destroy(ctx)` | Cleanup |
+| `slic3r_get_error(ctx)` | Last error string |
+| `slic3r_version()` | Version string |
+| `slic3r_cancel(ctx)` | Async cancellation |
+| `slic3r_is_cancelled(ctx)` | Check cancellation flag |
+
+See `src/slic3r_c_api.h` for full documentation.
