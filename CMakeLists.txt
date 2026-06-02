@@ -463,6 +463,11 @@ if(UNIX AND NOT APPLE)
     add_executable(orca-slice-engine src/main.c)
     target_include_directories(orca-slice-engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(orca-slice-engine PRIVATE slic3r)
+    # Embed RPATH so the binary finds libslic3r.so in ../lib relative to itself
+    set_target_properties(orca-slice-engine PROPERTIES
+        BUILD_RPATH "$ORIGIN/../lib"
+        INSTALL_RPATH "$ORIGIN/../lib"
+    )
 
     message(STATUS "orca-slice-engine consumer target enabled")
 endif()

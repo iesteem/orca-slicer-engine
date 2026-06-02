@@ -27,8 +27,7 @@
 
 #include "Types.hpp"
 #include "SliceEngine.hpp"
-
-using json = nlohmann::json;
+#include "JsonReport.hpp"
 
 // ====================================================================
 // Internal context
@@ -53,7 +52,7 @@ static void set_error(slic3r_ctx_t* ctx, const std::string& msg) {
 }
 
 // Parse CLI params JSON into EngineConfig
-static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& log_file_out) {
+static bool parse_params(const char* json_str, EngineConfig& cfg) {
     if (!json_str || !json_str[0]) return true; // empty = defaults
 
     try {
@@ -68,87 +67,11 @@ static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& l
             cfg.format = (fmt == "gcode") ? OutputFormat::GCODE : OutputFormat::GCODE_3MF;
         }
         if (j.contains("cancel_file"))    cfg.cancel_file    = j["cancel_file"].get<std::string>();
-        if (j.contains("log_file")) {
-            log_file_out = j["log_file"].get<std::string>();
-        }
         return true;
     } catch (const std::exception& e) {
         fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
         return false;
     }
-}
-
-// Serialize SliceOutputStats to JSON
-static std::string stats_to_json(const SliceOutputStats& s) {
-    json j;
-    j["success"] = s.success;
-
-    if (!s.error_message.empty())
-        j["error_message"] = s.error_message;
-
-    j["plates"] = json::array();
-    for (const auto& p : s.plates) {
-        json pj;
-        pj["index"]        = p.plate_id;
-        pj["success"]      = p.success;
-        pj["gcode_file"]   = p.gcode_file;
-        pj["time"] = {
-            {"total",   p.total_time},
-            {"prepare", p.prepare_time},
-            {"print",   p.print_time}
-        };
-        pj["filament"] = {
-            {"total_m",      p.total_filament_m},
-            {"total_g",      p.total_filament_g},
-            {"model_m",      p.model_filament_m},
-            {"model_g",      p.model_filament_g},
-            {"total_cost",   p.total_cost}
-        };
-        pj["support_used"]       = p.support_used;
-        pj["toolpath_outside"]   = p.toolpath_outside;
-        pj["plate_count"]        = p.plate_count;
-        pj["model_thumbnail"]    = p.model_thumbnail;
-
-        // Issues per plate
-        pj["issues"] = json::array();
-        for (const auto& iss : p.issues) {
-            pj["issues"].push_back({
-                {"level",       iss.level},
-                {"plate_id",    iss.plate_id},
-                {"object_name", iss.object_name},
-                {"z_height",    iss.z_height},
-                {"code",        iss.code},
-                {"message",     iss.message},
-                {"suggestion",  iss.suggestion}
-            });
-        }
-
-        // Filament details
-        pj["filament_details"] = json::array();
-        for (const auto& fd : p.filament_details) {
-            pj["filament_details"].push_back({
-                {"id",    fd.filament_id},
-                {"type",  fd.type},
-                {"color", fd.color},
-                {"used_g", fd.used_g},
-                {"used_m", fd.used_m}
-            });
-        }
-
-        j["plates"].push_back(pj);
-    }
-
-    // Global issues
-    j["global_issues"] = json::array();
-    for (const auto& iss : s.issues) {
-        j["global_issues"].push_back({
-            {"level", iss.level}, {"plate_id", iss.plate_id},
-            {"object_name", iss.object_name}, {"code", iss.code},
-            {"message", iss.message}, {"suggestion", iss.suggestion}
-        });
-    }
-
-    return j.dump();
 }
 
 // ====================================================================
@@ -173,6 +96,30 @@ SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx) {
     delete ctx;
 }
 
+SLIC3R_API void slic3r_enable_file_log(const char* path) {
+    if (!path || !path[0]) return;
+
+    namespace expr = boost::log::expressions;
+    boost::log::add_common_attributes();
+
+    // Ensure all severity levels are captured
+    boost::log::core::get()->set_filter(boost::log::trivial::severity >= boost::log::trivial::trace);
+
+    std::string lpath = path;
+    boost::filesystem::path log_parent = boost::filesystem::path(lpath).parent_path();
+    if (!log_parent.empty() && !boost::filesystem::exists(log_parent))
+        boost::filesystem::create_directories(log_parent);
+    boost::log::add_file_log(
+        boost::log::keywords::file_name = lpath,
+        boost::log::keywords::auto_flush = true,
+        boost::log::keywords::format = (
+            expr::stream
+                << "[" << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S")
+                << "] [" << boost::log::trivial::severity << "] " << expr::smessage
+        )
+    );
+}
+
 SLIC3R_API int slic3r_slice(
     slic3r_ctx_t* ctx,
     const char*   input_3mf,
@@ -194,41 +141,17 @@ SLIC3R_API int slic3r_slice(
         EngineConfig cfg;
         cfg.input_file = input_3mf;
         cfg.output_base = output_base;
-        cfg.cancel_file = "";  // could be passed via params_json
-        std::string log_file_path;  // captured from params_json below
 
         // Auto-generate temp directory (same as original main.cpp)
         auto unique_dir = boost::filesystem::temp_directory_path()
             / boost::filesystem::unique_path("orca_slice_%%%%-%%%%-%%%%-%%%%");
         boost::filesystem::create_directories(unique_dir);
         cfg.temp_dir = unique_dir.string();
+        Slic3r::set_temporary_dir(cfg.temp_dir);
 
-        if (!parse_params(params_json, cfg, log_file_path)) {
+        if (!parse_params(params_json, cfg)) {
             set_error(ctx, "Failed to parse params JSON");
             return SLIC3R_ERR_ARGS;
-        }
-
-        // Setup Boost file logging if --log was specified
-        if (!log_file_path.empty()) {
-            namespace expr = boost::log::expressions;
-            boost::log::add_common_attributes();
-            std::string lpath = log_file_path;
-            if (lpath == "auto") {
-                boost::filesystem::path out(output_base);
-                lpath = (out.parent_path() / out.stem()).string() + ".log";
-            }
-            boost::filesystem::path log_parent = boost::filesystem::path(lpath).parent_path();
-            if (!log_parent.empty() && !boost::filesystem::exists(log_parent))
-                boost::filesystem::create_directories(log_parent);
-            boost::log::add_file_log(
-                boost::log::keywords::file_name = lpath,
-                boost::log::keywords::auto_flush = true,
-                boost::log::keywords::format = (
-                    expr::stream
-                        << "[" << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S")
-                        << "] [" << boost::log::trivial::severity << "] " << expr::smessage
-                )
-            );
         }
 
         // Run the full pipeline
@@ -238,9 +161,19 @@ SLIC3R_API int slic3r_slice(
         SliceEngine engine(cfg, temp_files);
         bool ran = engine.run();
 
-        // Serialize stats
+        // Output statistics using the same formatter as standalone mode
         const auto& stats = engine.stats();
-        std::string json_str = stats_to_json(stats);
+        std::string json_path = std::string(output_base) + ".json";
+        std::string output_path = engine.output_path();
+        output_slice_statistics(stats, json_path, output_path);
+
+        // Build compact JSON for stats_out buffer
+        std::ifstream ifs(json_path);
+        std::string json_str;
+        if (ifs.is_open()) {
+            json_str.assign((std::istreambuf_iterator<char>(ifs)),
+                             std::istreambuf_iterator<char>());
+        }
 
         if (stats_out && stats_size > 0) {
             size_t n = (json_str.size() < stats_size - 1)

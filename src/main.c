@@ -158,6 +158,17 @@ int main(int argc, char* argv[]) {
         printf("  Format:    %s\n", format);
     }
 
+    /* Enable file logging before slicer init (captures all Boost messages) */
+    if (log_enabled) {
+        char log_path[1024];
+        if (log_file) {
+            snprintf(log_path, sizeof(log_path), "%s", log_file);
+        } else {
+            snprintf(log_path, sizeof(log_path), "%s.log", output);
+        }
+        slic3r_enable_file_log(log_path);
+    }
+
     /* Create slicer context */
     slic3r_ctx_t* ctx = slic3r_create(resources);
     if (!ctx) {
@@ -171,14 +182,6 @@ int main(int argc, char* argv[]) {
     if (cancel_file) {
         snprintf(cancel_str, sizeof(cancel_str), ",\"cancel_file\":\"%s\"", cancel_file);
     }
-    char log_str[128] = "";
-    if (log_enabled) {
-        if (log_file) {
-            snprintf(log_str, sizeof(log_str), ",\"log_file\":\"%s\"", log_file);
-        } else {
-            snprintf(log_str, sizeof(log_str), ",\"log_file\":\"auto\"");
-        }
-    }
     snprintf(params, sizeof(params),
         "{"
         "\"plate_id\":%d,"
@@ -188,13 +191,11 @@ int main(int argc, char* argv[]) {
         "\"substitute_printer\":%s,"
         "\"substitute_filaments\":%s"
         "%s"
-        "%s"
         "}",
         plate_id, format, timeout_sec, max_size_mb,
         substitute_printer   ? "true" : "false",
         substitute_filaments ? "true" : "false",
-        cancel_str,
-        log_str);
+        cancel_str);
 
     /* Slice */
     char stats[32768];
@@ -207,24 +208,7 @@ int main(int argc, char* argv[]) {
         return rc;
     }
 
-    /* Write JSON statistics file (always) */
-    if (stats[0]) {
-        char json_path[1024];
-        snprintf(json_path, sizeof(json_path), "%s.json", output);
-        FILE* f = fopen(json_path, "w");
-        if (f) {
-            fputs(stats, f);
-            fclose(f);
-            if (verbose) printf("Stats written: %s\n", json_path);
-        } else {
-            fprintf(stderr, "Warning: Failed to write stats to %s\n", json_path);
-        }
-    }
-
-    if (verbose && stats[0]) {
-        printf("Stats: %s\n", stats);
-    }
-
+    printf("[info] Exiting with code %d\n", rc);
     slic3r_destroy(ctx);
-    return 0;
+    return rc;
 }

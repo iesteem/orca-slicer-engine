@@ -49,6 +49,10 @@ SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir);
 /** Destroy a slicer context and free all resources. */
 SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx);
 
+/** Enable Boost file logging. Call BEFORE slic3r_create() to capture all messages.
+ *  @param path  Log file path, or NULL/"auto" to auto-derive from output_base. */
+SLIC3R_API void slic3r_enable_file_log(const char* path);
+
 /* ---- Core operation ---- */
 
 /**
