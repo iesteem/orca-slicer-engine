@@ -1,13 +1,14 @@
 /**
- * orca-slice-engine — pure C consumer of slic3r.dll
+ * orca-slice-engine — pure C consumer of libslic3r.so
  *
  * This file contains NO C++ and NO libslic3r types.
- * All slicing logic lives inside slic3r.dll, accessed via slic3r_c_api.h.
+ * All slicing logic lives inside libslic3r.so, accessed via slic3r_c_api.h.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "slic3r_c_api.h"
 
@@ -16,11 +17,14 @@ static void print_usage(const char* prog) {
     printf("Usage: %s <input.3mf> [options]\n\n", prog);
     printf("Options:\n");
     printf("  -o, --output <path>   Output path (without extension, default: derived from input)\n");
-    printf("  -p, --plate <id>      Plate ID (0=all plates, default: 0)\n");
+    printf("  -p, --plate <id>      Plate ID (1-based, or 'all'/0 for all plates)\n");
     printf("  -f, --format <fmt>    Output format: gcode | gcode.3mf (default: gcode.3mf)\n");
     printf("  -r, --resources <dir> Resources directory containing printer profiles\n");
-    printf("                         If not set, auto-detected from binary location\n");
-    printf("                         (../resources/, then ./resources/, then $ORCA_RESOURCES)\n");
+    printf("                         If not set, auto-detected:\n");
+    printf("                         ../resources/ -> ./resources/ -> $ORCA_RESOURCES\n");
+    printf("  -j, --json            Write JSON statistics to <output>.json (default: always on)\n");
+    printf("  --log                 Write log to <output>.log\n");
+    printf("  --log-file <path>     Write log to custom path\n");
     printf("  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit)\n");
     printf("  --max-size <mb>       Max input file size in MB (default: 200, 0 = no limit)\n");
     printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
@@ -44,6 +48,9 @@ int main(int argc, char* argv[]) {
     const char* cancel_file = NULL;
     int         substitute_printer   = 1;  /* default: enforce */
     int         substitute_filaments = 1;  /* default: enforce */
+    int         json_enabled = 0;          /* write JSON stats file */
+    int         log_enabled  = 0;          /* enable file logging */
+    const char* log_file     = NULL;       /* custom log file path */
 
     /* Parse CLI arguments */
     for (int i = 1; i < argc; i++) {
@@ -52,10 +59,24 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
             verbose = 1;
+        } else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json")) {
+            json_enabled = 1;
+        } else if (!strcmp(argv[i], "--log")) {
+            log_enabled = 1;
+        } else if (!strcmp(argv[i], "--log-file") && i + 1 < argc) {
+            log_enabled = 1;
+            log_file = argv[++i];
         } else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output")) {
             if (++i < argc) output = argv[i];
         } else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate")) {
-            if (++i < argc) plate_id = atoi(argv[i]);
+            if (++i < argc) {
+                if (!strcmp(argv[i], "all") || !strcmp(argv[i], "0")) {
+                    plate_id = 0;
+                } else {
+                    plate_id = atoi(argv[i]);
+                    if (plate_id < 1) plate_id = 0;
+                }
+            }
         } else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format")) {
             if (++i < argc) format = argv[i];
         } else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--resources")) {
@@ -89,6 +110,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    /* Validate input file exists */
+    {
+        struct stat st;
+        if (stat(input_3mf, &st) != 0) {
+            fprintf(stderr, "Error: Input file not found: %s\n", input_3mf);
+            return 2;
+        }
+    }
+
     /* Default output path from input filename */
     char output_default[1024];
     if (!output) {
@@ -101,16 +131,32 @@ int main(int argc, char* argv[]) {
         output = output_default;
     }
 
-    /* Default resources from environment */
+    /* Auto-detect resources directory */
     if (!resources) {
-        resources = getenv("ORCA_RESOURCES");
-        if (!resources) {
-            fprintf(stderr, "Error: --resources required (or set ORCA_RESOURCES)\n");
-            return 1;
+        /* Try ../resources/ (packaging layout: bin/orca-slice-engine -> ../resources/) */
+        struct stat st;
+        if (stat("../resources/profiles", &st) == 0) {
+            resources = "../resources";
+        } else if (stat("./resources/profiles", &st) == 0) {
+            resources = "./resources";
+        } else {
+            resources = getenv("ORCA_RESOURCES");
+            if (!resources) {
+                fprintf(stderr, "Error: --resources required, or set ORCA_RESOURCES, "
+                       "or ensure ../resources/ or ./resources/ exists.\n");
+                return 1;
+            }
         }
     }
 
-    if (verbose) printf("orca-slice-engine v%s\n", slic3r_version());
+    if (verbose) {
+        printf("orca-slice-engine v%s\n", slic3r_version());
+        printf("  Input:     %s\n", input_3mf);
+        printf("  Output:    %s\n", output);
+        printf("  Resources: %s\n", resources);
+        printf("  Plate:     %s\n", plate_id == 0 ? "all" : "specified");
+        printf("  Format:    %s\n", format);
+    }
 
     /* Create slicer context */
     slic3r_ctx_t* ctx = slic3r_create(resources);
@@ -125,6 +171,14 @@ int main(int argc, char* argv[]) {
     if (cancel_file) {
         snprintf(cancel_str, sizeof(cancel_str), ",\"cancel_file\":\"%s\"", cancel_file);
     }
+    char log_str[128] = "";
+    if (log_enabled) {
+        if (log_file) {
+            snprintf(log_str, sizeof(log_str), ",\"log_file\":\"%s\"", log_file);
+        } else {
+            snprintf(log_str, sizeof(log_str), ",\"log_file\":\"auto\"");
+        }
+    }
     snprintf(params, sizeof(params),
         "{"
         "\"plate_id\":%d,"
@@ -134,11 +188,13 @@ int main(int argc, char* argv[]) {
         "\"substitute_printer\":%s,"
         "\"substitute_filaments\":%s"
         "%s"
+        "%s"
         "}",
         plate_id, format, timeout_sec, max_size_mb,
         substitute_printer   ? "true" : "false",
         substitute_filaments ? "true" : "false",
-        cancel_str);
+        cancel_str,
+        log_str);
 
     /* Slice */
     char stats[32768];
@@ -149,6 +205,20 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Slice failed (code %d): %s\n", rc, slic3r_get_error(ctx));
         slic3r_destroy(ctx);
         return rc;
+    }
+
+    /* Write JSON statistics file (always) */
+    if (stats[0]) {
+        char json_path[1024];
+        snprintf(json_path, sizeof(json_path), "%s.json", output);
+        FILE* f = fopen(json_path, "w");
+        if (f) {
+            fputs(stats, f);
+            fclose(f);
+            if (verbose) printf("Stats written: %s\n", json_path);
+        } else {
+            fprintf(stderr, "Warning: Failed to write stats to %s\n", json_path);
+        }
     }
 
     if (verbose && stats[0]) {

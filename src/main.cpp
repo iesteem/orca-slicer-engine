@@ -92,10 +92,6 @@ CliArgs parse_args(int argc, char* argv[]) {
                 }
             }
         }
-        else if ((arg == "-d" || arg == "--data-dir") && i + 1 < argc) {
-            BOOST_LOG_TRIVIAL(warning) << "--data-dir is deprecated and ignored; presets are always loaded from <resources>/profiles";
-            ++i; // consume the value
-        }
         else if ((arg == "-t" || arg == "--timeout") && i + 1 < argc) {
             try {
                 args.engine_cfg.timeout_seconds = std::stoi(argv[++i]);
@@ -238,7 +234,7 @@ int main(int argc, char* argv[]) {
     if (verbose)
         boost::log::core::get()->set_filter(boost::log::trivial::severity >= boost::log::trivial::trace);
 
-    BOOST_LOG_TRIVIAL(info) << "OrcaSlicer Cloud Engine v" << SLIC3R_VERSION;
+    BOOST_LOG_TRIVIAL(info) << "OrcaSlicer Cloud Engine v" << CLOUD_SLICER_ENGINE_VERSION;
     BOOST_LOG_TRIVIAL(info) << "Input file: " << cfg.input_file;
     BOOST_LOG_TRIVIAL(info) << "Plate: " << (cfg.single_plate ? std::to_string(cfg.plate_id) : "all");
     BOOST_LOG_TRIVIAL(info) << "Format: " << (cfg.format == OutputFormat::GCODE_3MF ? "gcode.3mf" : "gcode");

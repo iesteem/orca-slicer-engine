@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+# orca-slice-engine consumer 模式打包脚本
+# 用法: ./package_consumer.sh
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+BUILD_DIR="${PROJECT_DIR}/build-consumer"
+ORCASLICER_DIR="/home/joyx/Desktop/code/OrcaSlicer"
+PKG_DIR="${PROJECT_DIR}/package"
+
+echo "=== Packaging orca-slice-engine (consumer mode) ==="
+
+# 清理旧包
+rm -rf "${PKG_DIR}"
+mkdir -p "${PKG_DIR}"/{bin,lib,resources/{profiles,printers,info}}
+
+# 1. 拷贝二进制
+echo "[1/4] Copying binary..."
+cp -f "${BUILD_DIR}/orca-slice-engine" "${PKG_DIR}/bin/"
+echo "  bin/orca-slice-engine"
+
+# 2. 拷贝共享库
+echo "[2/4] Copying shared library..."
+cp -f "${BUILD_DIR}/libslic3r.so.1.0.0" "${PKG_DIR}/lib/"
+ln -sf libslic3r.so.1.0.0 "${PKG_DIR}/lib/libslic3r.so.1"
+ln -sf libslic3r.so.1      "${PKG_DIR}/lib/libslic3r.so"
+echo "  lib/libslic3r.so.1.0.0"
+
+# 3. 拷贝资源（仅引擎必需的 vendor）
+echo "[3/4] Copying resources (Snapmaker + OrcaFilamentLibrary)..."
+for vendor in Snapmaker OrcaFilamentLibrary; do
+    cp "${ORCASLICER_DIR}/resources/profiles/${vendor}.json" "${PKG_DIR}/resources/profiles/"
+    cp -r "${ORCASLICER_DIR}/resources/profiles/${vendor}" "${PKG_DIR}/resources/profiles/"
+    echo "  profiles/${vendor}"
+done
+cp "${ORCASLICER_DIR}/resources/profiles/hotend.stl" "${PKG_DIR}/resources/profiles/"
+echo "  profiles/hotend.stl"
+
+cp -r "${ORCASLICER_DIR}/resources/printers/"* "${PKG_DIR}/resources/printers/"
+echo "  printers/"
+
+cp -r "${ORCASLICER_DIR}/resources/info/"* "${PKG_DIR}/resources/info/"
+echo "  info/"
+
+# 4. 生成运行脚本
+echo "[4/4] Generating run script..."
+cat > "${PKG_DIR}/run.sh" << 'RUNEOF'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="${SCRIPT_DIR}/lib:${LD_LIBRARY_PATH}"
+exec "${SCRIPT_DIR}/bin/orca-slice-engine" \
+    -r "${SCRIPT_DIR}/resources" \
+    "$@"
+RUNEOF
+chmod +x "${PKG_DIR}/run.sh"
+echo "  run.sh"
+
+# 统计
+EXE_SIZE=$(du -h "${PKG_DIR}/bin/orca-slice-engine" | cut -f1)
+SO_SIZE=$(du -h "${PKG_DIR}/lib/libslic3r.so.1.0.0" | cut -f1)
+TOTAL_SIZE=$(du -sh "${PKG_DIR}" | cut -f1)
+
+echo ""
+echo "====================================================="
+echo "  PACKAGE SUCCESS"
+echo "  ${PKG_DIR}"
+echo "    bin/orca-slice-engine  ${EXE_SIZE}"
+echo "    lib/libslic3r.so       ${SO_SIZE}"
+echo "    total                  ${TOTAL_SIZE}"
+echo ""
+echo "  Usage: ${PKG_DIR}/run.sh <input.3mf>"
+echo "====================================================="

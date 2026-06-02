@@ -19,6 +19,11 @@
 #include "libslic3r/Utils.hpp"
 #include "nlohmann/json.hpp"
 #include <boost/filesystem.hpp>
+#include <boost/log/utility/setup/file.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/expressions.hpp>
+#include <boost/log/support/date_time.hpp>
 
 #include "Types.hpp"
 #include "SliceEngine.hpp"
@@ -48,7 +53,7 @@ static void set_error(slic3r_ctx_t* ctx, const std::string& msg) {
 }
 
 // Parse CLI params JSON into EngineConfig
-static bool parse_params(const char* json_str, EngineConfig& cfg) {
+static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& log_file_out) {
     if (!json_str || !json_str[0]) return true; // empty = defaults
 
     try {
@@ -63,6 +68,9 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
             cfg.format = (fmt == "gcode") ? OutputFormat::GCODE : OutputFormat::GCODE_3MF;
         }
         if (j.contains("cancel_file"))    cfg.cancel_file    = j["cancel_file"].get<std::string>();
+        if (j.contains("log_file")) {
+            log_file_out = j["log_file"].get<std::string>();
+        }
         return true;
     } catch (const std::exception& e) {
         fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
@@ -187,6 +195,7 @@ SLIC3R_API int slic3r_slice(
         cfg.input_file = input_3mf;
         cfg.output_base = output_base;
         cfg.cancel_file = "";  // could be passed via params_json
+        std::string log_file_path;  // captured from params_json below
 
         // Auto-generate temp directory (same as original main.cpp)
         auto unique_dir = boost::filesystem::temp_directory_path()
@@ -194,9 +203,32 @@ SLIC3R_API int slic3r_slice(
         boost::filesystem::create_directories(unique_dir);
         cfg.temp_dir = unique_dir.string();
 
-        if (!parse_params(params_json, cfg)) {
+        if (!parse_params(params_json, cfg, log_file_path)) {
             set_error(ctx, "Failed to parse params JSON");
             return SLIC3R_ERR_ARGS;
+        }
+
+        // Setup Boost file logging if --log was specified
+        if (!log_file_path.empty()) {
+            namespace expr = boost::log::expressions;
+            boost::log::add_common_attributes();
+            std::string lpath = log_file_path;
+            if (lpath == "auto") {
+                boost::filesystem::path out(output_base);
+                lpath = (out.parent_path() / out.stem()).string() + ".log";
+            }
+            boost::filesystem::path log_parent = boost::filesystem::path(lpath).parent_path();
+            if (!log_parent.empty() && !boost::filesystem::exists(log_parent))
+                boost::filesystem::create_directories(log_parent);
+            boost::log::add_file_log(
+                boost::log::keywords::file_name = lpath,
+                boost::log::keywords::auto_flush = true,
+                boost::log::keywords::format = (
+                    expr::stream
+                        << "[" << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S")
+                        << "] [" << boost::log::trivial::severity << "] " << expr::smessage
+                )
+            );
         }
 
         // Run the full pipeline
@@ -238,7 +270,7 @@ SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx) {
 }
 
 SLIC3R_API const char* slic3r_version(void) {
-    return SLIC3R_VERSION;
+    return CLOUD_SLICER_ENGINE_VERSION;
 }
 
 SLIC3R_API void slic3r_cancel(slic3r_ctx_t* ctx) {
