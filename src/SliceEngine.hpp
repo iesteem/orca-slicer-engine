@@ -8,13 +8,18 @@
 #include "libslic3r/Config.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Model.hpp"
-#include "libslic3r/Preset.hpp"
-#include "libslic3r/PresetBundle.hpp"
-#include "libslic3r/Print.hpp"
-#include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Semver.hpp"
 
 #include "Types.hpp"
+
+// Forward declarations for types used by pointer/reference only
+namespace Slic3r {
+    class Print;
+    class Preset;
+    class PresetBundle;
+    struct PlateData;
+}
+using PlateDataPtrs = std::vector<Slic3r::PlateData*>;
 
 struct EngineConfig {
     std::string input_file;
@@ -23,13 +28,11 @@ struct EngineConfig {
     OutputFormat format = OutputFormat::GCODE_3MF;
     bool single_plate = false;
     std::string temp_dir;          // temp directory for intermediate gcode files
-    std::string data_dir;          // --data-dir, custom system presets path (empty = auto)
     int timeout_seconds = 0;       // 0 = no timeout; cloud service sets based on file size
     int max_size_mb = 200;         // 0 = no limit; max input file size in megabytes
     std::string cancel_file;       // watchdog file path for external cancellation
-    bool enforce_official_presets = true;  // P0-2: replace user config with official presets
-    bool substitute_filaments = true;     // whether to check & substitute filament with official parent
-    bool clear_custom_gcode = true;       // whether to strip custom G-code blocks for cloud safety
+    bool substitute_printer  = true;   // whether to substitute printer preset with official parent
+    bool substitute_filaments = true;  // whether to substitute filament presets with official parent
 };
 
 // Intermediate result for a single plate during the pipeline
@@ -45,9 +48,30 @@ struct PlateSliceResult {
     std::vector<Issue> issues;                   // collected issues for this plate
 };
 
+// ============================================================================
+// SliceEngine — headless cloud slicing pipeline
+// ============================================================================
+//
+// Pipeline stages:
+//   Stage 1 — load_3mf() → validate_config() → validate_presets() → validate_input()
+//   Stage 2 — per-plate: filter_instances() → build_volume_check() → apply_model()
+//             →  validation() → slicing() → export_gcode() → postprocessing()
+//   Stage 3 — package_output() → build_statistics()
+//
+// Config flow (four layers, applied in order):
+//   1. FullPrintConfig::defaults() — system defaults
+//   2. System printer preset  — Snapmaker U1, from m_preset_bundle
+//   3. System filament preset — per-extruder, from m_preset_bundle
+//   4. m_config              — 3MF project config (highest priority)
+//   Merged in build_full_print_config(), then engine overrides + per-plate
+//   applied in apply_model() before passing to Print::apply().
+//
+// Key design decisions:
+//
 class SliceEngine {
 public:
     SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files);
+    ~SliceEngine();
 
     // Run the full pipeline. Returns true if at least one plate produced output.
     bool run();
@@ -71,11 +95,16 @@ private:
     void validate_config();
     void load_system_presets();
     void validate_presets();
-    void apply_official_presets();
-    bool validate_filament_official();
+    bool validate_printer_official(bool enforce = true);
+    Slic3r::DynamicPrintConfig build_full_print_config();
+    bool validate_filament_official(bool enforce = true);
+    bool has_inline_filament_config(int ext_idx);
+    void apply_printer_preset_config();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
                                     const Slic3r::Preset& official_parent,
                                     const std::string& original_name);
+    void substitute_printer_params(const std::string& original_name,
+                                    const std::string& parent_name);
     bool validate_printer_model();
     bool validate_input();
     void process_plate(int plate_id);
@@ -93,6 +122,8 @@ private:
     void run_postprocessing(int plate_id, PlateSliceResult& result);
 
     // --- State ---
+    void report_error(int plate_id, int exit_code, const std::string& code,
+                      const std::string& message, bool set_main_message = false);
     EngineConfig m_cfg;
     std::string m_output_path;
     SliceOutputStats m_stats;
@@ -109,7 +140,7 @@ private:
     Slic3r::DynamicPrintConfig m_config;
     Slic3r::ConfigSubstitutionContext m_config_substitutions{
         Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
-    Slic3r::PlateDataPtrs m_plate_data;
+    PlateDataPtrs m_plate_data;
     std::vector<Slic3r::Preset*> m_project_presets;
     bool m_is_bbl_3mf = false;
     Slic3r::Semver m_file_version;
@@ -117,4 +148,7 @@ private:
     // Preset validation (requires system profiles at resources_dir/profiles/)
     std::unique_ptr<Slic3r::PresetBundle> m_preset_bundle;
     bool m_presets_available = false;
+
+    static constexpr double DEFAULT_PLATE_WIDTH = 200.0;
+    static constexpr double DEFAULT_PLATE_DEPTH = 200.0;
 };

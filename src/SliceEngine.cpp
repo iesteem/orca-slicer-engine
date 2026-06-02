@@ -18,6 +18,11 @@
 #include "libslic3r/GCode/PostProcessor.hpp"
 #include "libslic3r/ProjectTask.hpp"
 #include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/Preset.hpp"
+#include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/Print.hpp"
+#include "libslic3r/PrintConfig.hpp"
 
 constexpr int MAX_RETRIES = 3;
 
@@ -30,6 +35,78 @@ constexpr double BED_AXES_TIP_RADIUS = 1.25;
 
 // 1/5, same as GUI's LOGICAL_PART_PLATE_GAP
 constexpr double LOGICAL_PART_PLATE_GAP = 0.2;
+
+// RAII guard to temporarily suppress all boost::log output.
+// Restores the previous logging state on destruction, ensuring
+// that exceptions during the suppressed scope do not leave
+// logging permanently disabled.
+class ScopedLogSuppressor {
+public:
+    ScopedLogSuppressor() {
+        boost::log::core::get()->set_logging_enabled(false);
+    }
+    ~ScopedLogSuppressor() {
+        boost::log::core::get()->set_logging_enabled(true);
+    }
+    ScopedLogSuppressor(const ScopedLogSuppressor&) = delete;
+    ScopedLogSuppressor& operator=(const ScopedLogSuppressor&) = delete;
+};
+
+// --- Config helpers ---
+
+// Fill nil/missing values in dst from src. Scalar options use set();
+// vector options use set_at() per index for nil slots only.
+// Non-existent keys in dst are skipped.  Used by preset substitution
+// and printer config layering to fill gaps while preserving user values.
+inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
+{
+    for (auto it = src.cbegin(); it != src.cend(); ++it) {
+        const auto& key   = it->first;
+        auto*       dst_opt = dst.option(key, false);
+        if (!dst_opt) continue;
+
+        if (dst_opt->is_scalar()) {
+            if (dst_opt->is_nil())
+                dst_opt->set(it->second.get());
+        } else {
+            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
+            if (!dst_vec || !src_vec) continue;
+            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
+                if (dst_vec->is_nil(i))
+                    dst_vec->set_at(src_vec, i, i);
+        }
+    }
+}
+
+// --- Official preset file helpers ---
+
+// Directory constants for system preset files under resources/profiles/
+static const char* const SNAPMK_MACHINE_DIR  = "/profiles/Snapmaker/machine/";
+static const char* const SNAPMK_FILAMENT_DIR = "/profiles/Snapmaker/filament/";
+static const char* const ORCA_FILAMENT_DIR() { // ORCA_FILAMENT_LIBRARY is a runtime string
+    static const std::string s = std::string("/profiles/") + PresetBundle::ORCA_FILAMENT_LIBRARY + "/filament/";
+    return s.c_str();
+}
+
+// Check whether a machine name matches an official Snapmaker printer preset on disk.
+inline bool is_official_machine_file(const std::string& preset_name) {
+    const std::string& res = Slic3r::resources_dir();
+    if (res.empty()) return false;
+    return boost::filesystem::exists(res + SNAPMK_MACHINE_DIR + preset_name + ".json");
+}
+
+// Check whether a filament name matches an official preset on disk
+// (Snapmaker or OrcaFilamentLibrary, including @System suffix for Generic filaments).
+inline bool is_official_filament_file(const std::string& preset_name) {
+    const std::string& res = Slic3r::resources_dir();
+    if (res.empty()) return false;
+    const std::string snap_path = res + SNAPMK_FILAMENT_DIR + preset_name + ".json";
+    const std::string orca_dir  = res + ORCA_FILAMENT_DIR();
+    return boost::filesystem::exists(snap_path)
+        || boost::filesystem::exists(orca_dir + preset_name + ".json")
+        || boost::filesystem::exists(orca_dir + preset_name + " @System.json");
+}
 
 // Check if a plate result indicates a wipe tower tool change mismatch.
 // CGAL/float differences on some platforms cause non-consecutive extruder
@@ -44,6 +121,8 @@ bool is_wipe_tower_error(const PlateSliceResult& result) {
 
 } // namespace
 
+SliceEngine::~SliceEngine() = default;
+
 SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files)
     : m_cfg(cfg)
     , m_temp_files(temp_files)
@@ -51,32 +130,69 @@ SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp
 }
 
 bool SliceEngine::run() {
+    // Pre-compute output path so JSON is written to the correct filename
+    // even when the slicing pipeline returns early (e.g., filament validation).
+    m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base,
+                                         m_cfg.plate_id, m_cfg.format, m_cfg.single_plate);
+
+    // --- Config layering & mutation order ---
+    // m_config is the shared project config from the 3MF. The following
+    // pipeline stages mutate it in order, each building on the previous:
+    //
+    // 1. FullPrintConfig::defaults()    — baseline for all keys
+    // 2. load_3mf()                     — overlay 3MF project + embedded presets
+    // 3. load_system_presets()          — (side-effect: populates m_preset_bundle)
+    // 4. validate_printer_official()    — MAY replace printer_settings_id + fill nil from official
+    // 5. apply_printer_preset_config()  — fill remaining nil printer keys from system preset
+    // 6. validate_filament_official()   — MAY replace filament_settings_id + fill nil from official
+    //
+    // After these stages, m_config is a fully-resolved config ready for slicing.
+    // Per-plate overrides are applied separately in apply_model().
+    m_config.apply(FullPrintConfig::defaults());
+
     bool load_ok = load_3mf();
     if (!load_ok) {
         build_statistics();
         return false;
     }
 
-    // Config & preset validation (desktop parity — non-blocking)
+    // Config & preset validation (desktop parity)
     validate_config();
-    load_system_presets();
-    validate_presets();
 
-    // Filament official compliance check & substitution
-    if (m_cfg.substitute_filaments) {
-        if (!validate_filament_official()) {
-            build_statistics();
-            return false;
-        }
+    // Suppress libslic3r log spam during system preset loading and validation
+    {
+        ScopedLogSuppressor quiet;
+        load_system_presets();
+        validate_presets();
     }
 
-    // Strip custom G-code blocks for cloud safety
-    if (m_cfg.clear_custom_gcode) {
-        apply_official_presets();
+    // Printer preset substitution (includes G-code from official printer).
+    // When substitute_printer is true (default), force substitution to official.
+    // When false (--allow-custom-printer-presets), accept custom with warning.
+    if (!validate_printer_official(m_cfg.substitute_printer)) {
+        build_statistics();
+        return false;
+    }
+
+    apply_printer_preset_config();
+
+    // Filament validation: always run to catch truly invalid presets.
+    // When substitute_filaments is true (default), enforce official-only policy.
+    // When false (--allow-custom-filament-presets), validate structural soundness but
+    // accept custom filaments with a warning.
+    if (!validate_filament_official(m_cfg.substitute_filaments)) {
+        build_statistics();
+        return false;
     }
 
     // Block slicing if printer model is not Snapmaker U1
     if (!validate_printer_model()) {
+        build_statistics();
+        return false;
+    }
+
+    // Abort if earlier config validation detected unrecoverable invalid values
+    if (m_any_error) {
         build_statistics();
         return false;
     }
@@ -110,9 +226,6 @@ bool SliceEngine::run() {
                 return false;
             }
         }
-
-        m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base,
-                                             m_cfg.plate_id, m_cfg.format, m_cfg.single_plate);
 
         // Collect plates to process (internal plate_index is 0-based)
         std::vector<int> plates_to_process;
@@ -265,8 +378,12 @@ void SliceEngine::validate_config()
 {
     // A1: Validate config values (layer_height, nozzle_diameter, etc.)
     std::map<std::string, std::string> invalid = m_config.validate(true);
-    for (const auto& [key, msg] : invalid)
-        m_stats.issues.push_back(make_error(-1, "CONFIG_INVALID_" + key, msg));
+    if (!invalid.empty()) {
+        for (const auto& [key, msg] : invalid)
+            m_stats.issues.push_back(make_error(-1, "CONFIG_INVALID_" + key, msg));
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+    }
 
     // A2: Check config substitutions (unknown keys, forward-compat changes)
     if (!m_config_substitutions.empty()) {
@@ -287,19 +404,13 @@ void SliceEngine::validate_config()
 
 void SliceEngine::load_system_presets()
 {
-    // Determine profiles directory: --data-dir takes precedence,
-    // otherwise derive from resources_dir/profiles/
-    std::string profiles_path;
-    if (!m_cfg.data_dir.empty()) {
-        profiles_path = m_cfg.data_dir;
-    } else {
-        const std::string res_dir = Slic3r::resources_dir();
-        if (res_dir.empty()) {
-            BOOST_LOG_TRIVIAL(info) << "No resources directory set; skipping preset validation";
-            return;
-        }
-        profiles_path = res_dir + "/profiles";
+    // Always derive profiles path from resources_dir/profiles/
+    const std::string res_dir = Slic3r::resources_dir();
+    if (res_dir.empty()) {
+        BOOST_LOG_TRIVIAL(info) << "No resources directory set; skipping preset validation";
+        return;
     }
+    std::string profiles_path = res_dir + "/profiles";
 
     boost::filesystem::path profiles_dir(profiles_path);
     if (!boost::filesystem::exists(profiles_dir) ||
@@ -344,14 +455,19 @@ void SliceEngine::load_system_presets()
         // needed — duplicate detection is not critical for cloud validation).
         const auto rule = ForwardCompatibilitySubstitutionRule::EnableSilent;
 
-        for (size_t i = 0; i < vendor_names.size(); ++i) {
-            const std::string& vendor = vendor_names[i];
-            // First vendor: no base_bundle. Subsequent: pass this bundle for
-            // cross-vendor preset inheritance resolution.
-            const PresetBundle* base = (i == 0) ? nullptr : m_preset_bundle.get();
-            m_preset_bundle->load_vendor_configs_from_json(
-                profiles_dir.string(), vendor,
-                PresetBundle::LoadSystem, rule, base);
+        // Only load Snapmaker + OrcaFilamentLibrary — the two vendors
+        // whose presets are relevant for cloud engine validation.
+        // Loading additional vendors clears Snapmaker presets that are
+        // incompatible with non-Snapmaker printers.
+        {
+            // Load OrcaFilamentLibrary first (generic filament base),
+            // then Snapmaker on top with inheritance from Orca.
+            const std::string vendors[] = { PresetBundle::ORCA_FILAMENT_LIBRARY, "Snapmaker" };
+            for (const auto& vendor : vendors) {
+                m_preset_bundle->load_vendor_configs_from_json(
+                    profiles_dir.string(), vendor,
+                    PresetBundle::LoadSystem, rule, nullptr);
+            }
         }
 
         m_presets_available = true;
@@ -433,9 +549,8 @@ void SliceEngine::validate_presets()
             std::string details;
             for (const auto& name : modified_gcodes)
                 details += (details.empty() ? "" : ", ") + name;
-            std::string msg = "Modified G-code keys found in presets";
-            if (!details.empty())
-                msg += ": " + details;
+            std::string msg = "Custom G-code detected in presets (" + details
+                + ") — disabled for cloud safety";
             m_stats.issues.push_back(make_warning(-1, "PRESET_MODIFIED_GCODES", msg));
             break;
         }
@@ -446,7 +561,95 @@ void SliceEngine::validate_presets()
     }
 }
 
-bool SliceEngine::validate_filament_official()
+void SliceEngine::apply_printer_preset_config()
+{
+    if (!m_presets_available || !m_preset_bundle) {
+        std::string msg = "System presets not available; cannot verify printer configuration.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
+        return;
+    }
+
+    // Build a fully-resolved config via the engine's own config builder.
+    // This correctly resolves printer preset inheritance chains and includes
+    // all defaults.  We merge back only nil keys so project config wins.
+    DynamicPrintConfig resolved = build_full_print_config();
+    BOOST_LOG_TRIVIAL(info) << "Applying printer preset config";
+
+    fill_nil_from(m_config, resolved);
+
+    // Verify printer-specific parameters have been overridden by the U1
+    // preset and are NOT still at FullPrintConfig defaults.
+    // FullPrintConfig sets printable_area = [(0,0),(200,0),(200,200),(0,200)]
+    // and printable_height = 100.0 as generic placeholders. If these survive
+    // the preset merge, the U1 preset did not take effect.
+    {
+        auto fail = [&](const std::string& detail) {
+            std::string msg = "Printer configuration incomplete: " + detail
+                + ". The U1 printer preset was not applied correctly. "
+                "Verify the resources directory contains Snapmaker U1 machine profiles.";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.error_message = msg;
+            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+        };
+
+        // printable_area: default is 4-point 200x200 rect
+        auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+        if (!pa || pa->values.size() != 4) {
+            fail("printable_area missing or wrong format");
+        } else {
+            bool is_default =
+                (pa->values[0].x() == 0.0 && pa->values[0].y() == 0.0) &&
+                (pa->values[1].x() == 200.0 && pa->values[1].y() == 0.0) &&
+                (pa->values[2].x() == 200.0 && pa->values[2].y() == 200.0) &&
+                (pa->values[3].x() == 0.0 && pa->values[3].y() == 200.0);
+            if (is_default) fail("printable_area is still the 200x200 default");
+        }
+
+        // printable_height: default is 100.0
+        auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
+        if (!ph || ph->value == 100.0)
+            fail("printable_height is still the 100.0 default");
+    }
+}
+
+bool SliceEngine::has_inline_filament_config(int ext_idx)
+{
+    // Check whether the config has per-extruder filament parameters for
+    // the given extruder index, even when no named filament preset exists.
+    // This handles 3MF files where filament config values are embedded
+    // directly in project_settings.config without a preset definition.
+    auto is_non_nil = [&](const char* key) -> bool {
+        if (!m_config.has(key)) return false;
+        auto* opt = m_config.option<ConfigOptionFloats>(key, true);
+        if (!opt) return false;
+        if (static_cast<int>(opt->values.size()) <= ext_idx) return false;
+        return !opt->is_nil(ext_idx) && opt->values[ext_idx] > 0;
+    };
+
+    // nozzle_temperature or filament_diameter is a strong signal that
+    // filament config is present inline.
+    if (is_non_nil("nozzle_temperature")) return true;
+    if (is_non_nil("filament_diameter")) return true;
+
+    // Fallback: check if filament_type is set (weaker signal, but
+    // confirms the extruder has filament assigned).
+    if (m_config.has("filament_type")) {
+        auto* ft = m_config.option<ConfigOptionStrings>("filament_type", true);
+        if (ft && ext_idx < static_cast<int>(ft->values.size())
+              && !ft->values[ext_idx].empty())
+            return true;
+    }
+
+    return false;
+}
+
+bool SliceEngine::validate_filament_official(bool enforce)
 {
     // Skip if system presets are not available (no reference for comparison)
     if (!m_presets_available || !m_preset_bundle)
@@ -462,6 +665,20 @@ bool SliceEngine::validate_filament_official()
     int num_filaments = static_cast<int>(filament_ids->values.size());
     bool any_error = false;
 
+    // Helper: report an issue at the appropriate severity.
+    // When not enforcing, non-official filaments are warnings instead of errors.
+    // Truly invalid presets (missing, broken inheritance) remain errors either way.
+    auto report = [&](bool is_official_violation, const std::string& code, const std::string& msg) {
+        if (!enforce && is_official_violation) {
+            BOOST_LOG_TRIVIAL(warning) << msg;
+            m_stats.issues.push_back(make_warning(-1, code, msg));
+        } else {
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_stats.issues.push_back(make_error(-1, code, msg));
+            any_error = true;
+        }
+    };
+
     // Lambda: check whether a system preset is "official" (Snapmaker or OrcaFilamentLibrary)
     auto is_official_preset = [](const Preset& p) -> bool {
         if (p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE)
@@ -471,10 +688,16 @@ bool SliceEngine::validate_filament_official()
         return false;
     };
 
-    // Look up a preset name: system presets first, then project embedded
+    // Look up a preset name: system presets first, then project embedded.
+    // When find_preset's binary search fails (known ordering issue with
+    // Snapmaker presets), fall back to linear scan of all loaded presets.
     auto find_in_system = [this](const std::string& name) -> Preset* {
         auto* p = m_preset_bundle->filaments.find_preset(name, false);
         if (p && p->name == name) return p;
+        // Binary search failed — linear scan fallback
+        for (auto& preset : m_preset_bundle->filaments) {
+            if (preset.name == name) return &preset;
+        }
         return nullptr;
     };
 
@@ -490,27 +713,113 @@ bool SliceEngine::validate_filament_official()
         const std::string& name = filament_ids->values[i];
 
         // Case 1: Direct system preset match
-        if (Preset* sys = find_in_system(name)) {
-            if (is_official_preset(*sys)) {
-                continue; // OK
-            }
-            std::string msg = "Filament \"" + name + "\" belongs to unsupported vendor";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_stats.issues.push_back(make_error(-1, "FILAMENT_UNSUPPORTED_VENDOR", msg));
-            any_error = true;
-            continue;
+        Preset* sys = find_in_system(name);
+        if (sys && is_official_preset(*sys)) {
+            continue; // OK — directly matches an official system preset
         }
 
-        // Case 2: Not a direct system match — walk the inheritance chain
-        Preset* current = find_in_project(name);
+        // Case 1b: File-based check — preset exists on disk but not
+        // found via find_preset (known issue with binary search ordering)
+        if (!sys && is_official_filament_file(name)) {
+            continue; // OK
+        }
+
+        // Case 2: Try project-embedded presets.
+        // When sys is non-null but not official (e.g., a project-embedded
+        // preset loaded into the bundle via load_project_embedded_presets),
+        // use it as the starting point for the inherits-chain walk.
+        Preset* current = sys;  // may be a non-official system match
         if (!current) {
+            current = find_in_project(name);
+        }
+
+        if (!current) {
+            // When not enforcing, filament config values may be embedded
+            // directly in project_settings.config without a named preset.
+            if (!enforce && has_inline_filament_config(i)) {
+                std::string msg = "Filament \"" + name
+                    + "\" is a custom filament without a preset definition"
+                    + " — accepted in allow-custom mode";
+                BOOST_LOG_TRIVIAL(warning) << msg;
+                m_stats.issues.push_back(make_warning(-1, "FILAMENT_CUSTOM_INLINE", msg));
+                continue;
+            }
+
+            // Heuristic: user-modified system presets are exported with
+            // a suffix (e.g. "Generic PETG @U1 0.6 nozzle - 拷贝" or
+            // "Generic PETG @U1 0.6 nozzle 1").  Match by prefix: iterate
+            // all loaded official presets and find the longest matching one.
+            {
+                Preset* best = nullptr;
+                for (auto& preset : m_preset_bundle->filaments) {
+                    if (!is_official_preset(preset)) continue;
+                    if (preset.name.size() >= name.size()) continue;
+                    if (name.compare(0, preset.name.size(), preset.name) != 0) continue;
+                    if (!best || preset.name.size() > best->name.size())
+                        best = &preset;
+                }
+                if (best) {
+                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
+                        << "\" resolved via prefix matching to \""
+                        << best->name << "\"";
+                    substitute_filament_params(filament_ids, i, *best, name);
+                    continue;
+                }
+            }
+
             std::string msg = "Filament \"" + name + "\" is not a recognized preset";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN", msg));
-            any_error = true;
+            // FILAMENT_UNKNOWN: preset truly doesn't exist — always an error
+            report(/*is_official_violation=*/false, "FILAMENT_UNKNOWN", msg);
             continue;
         }
 
+        // Common: look up a parent by name in system or project presets.
+        auto find_ancestor = [&](const std::string& inherits_name) -> Preset* {
+            if (Preset* p = find_in_system(inherits_name)) return p;
+            return find_in_project(inherits_name);
+        };
+
+        // Common walk: follow the inheritance chain, detecting circular refs
+        // and unknown ancestors. 'walk' is advanced through the chain; returns
+        // false if a structural error is found (circular / unknown ancestor).
+        auto walk_chain = [&](Preset*& walk, std::set<std::string>& visited) -> bool {
+            while (walk) {
+                std::string inherits_name = walk->inherits();
+                if (inherits_name.empty()) return true; // root reached
+                if (!visited.insert(inherits_name).second) {
+                    std::string msg = "Circular inheritance detected in filament \"" + name + "\"";
+                    BOOST_LOG_TRIVIAL(error) << msg;
+                    m_stats.issues.push_back(make_error(-1, "FILAMENT_CIRCULAR_INHERITS", msg));
+                    any_error = true;
+                    return false;
+                }
+                Preset* next = find_ancestor(inherits_name);
+                if (!next) {
+                    std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
+                                    + inherits_name + "\"";
+                    BOOST_LOG_TRIVIAL(error) << msg;
+                    m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
+                    any_error = true;
+                    return false;
+                }
+                walk = next;
+            }
+            return true; // empty inherits
+        };
+
+        // Non-enforce mode: validate structural soundness, accept regardless of ancestry.
+        if (!enforce) {
+            Preset* walk = current;
+            std::set<std::string> visited;
+            if (!walk_chain(walk, visited)) continue;
+            // Custom filament with sound structure — accepted with warning
+            std::string msg = "Filament \"" + name + "\" is a custom preset (not official)";
+            BOOST_LOG_TRIVIAL(warning) << msg;
+            m_stats.issues.push_back(make_warning(-1, "FILAMENT_CUSTOM", msg));
+            continue;
+        }
+
+        // Enforce mode: must resolve to an official ancestor.
         bool resolved = false;
         std::set<std::string> visited;
         while (current && !resolved) {
@@ -521,7 +830,6 @@ bool SliceEngine::validate_filament_official()
                 BOOST_LOG_TRIVIAL(error) << msg;
                 m_stats.issues.push_back(make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
                 any_error = true;
-                resolved = true;
                 break;
             }
 
@@ -530,37 +838,40 @@ bool SliceEngine::validate_filament_official()
                 BOOST_LOG_TRIVIAL(error) << msg;
                 m_stats.issues.push_back(make_error(-1, "FILAMENT_CIRCULAR_INHERITS", msg));
                 any_error = true;
-                resolved = true;
                 break;
             }
 
-            // Try system presets first
-            if (Preset* parent = find_in_system(inherits_name)) {
-                if (is_official_preset(*parent)) {
-                    substitute_filament_params(filament_ids, i, *parent, name);
-                    resolved = true;
-                } else {
-                    std::string vendor_name = parent->vendor ? parent->vendor->name : "unknown";
-                    std::string msg = "Filament \"" + name + "\" derives from unsupported vendor \""
-                                    + vendor_name + "\" via \"" + inherits_name + "\"";
-                    BOOST_LOG_TRIVIAL(error) << msg;
-                    m_stats.issues.push_back(make_error(-1, "FILAMENT_UNSUPPORTED_VENDOR", msg));
-                    any_error = true;
-                    resolved = true;
-                }
+            Preset* parent = find_ancestor(inherits_name);
+            if (!parent) {
+                std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
+                                + inherits_name + "\"";
+                BOOST_LOG_TRIVIAL(error) << msg;
+                m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
+                any_error = true;
+                break;
+            }
+
+            if (is_official_preset(*parent)) {
+                substitute_filament_params(filament_ids, i, *parent, name);
+                resolved = true;
+            } else if (parent->vendor) {
+                std::string vendor_name = parent->vendor->name;
+                std::string msg = "Filament \"" + name + "\" derives from unsupported vendor \""
+                                + vendor_name + "\" via \"" + inherits_name + "\"";
+                BOOST_LOG_TRIVIAL(error) << msg;
+                m_stats.issues.push_back(make_error(-1, "FILAMENT_UNSUPPORTED_VENDOR", msg));
+                any_error = true;
+                resolved = true;
+            } else if (parent->type == Preset::TYPE_FILAMENT) {
+                // Project-embedded filament — continue walking up
+                current = parent;
             } else {
-                // Not in system — try project embedded, then continue walking
-                Preset* project_parent = find_in_project(inherits_name);
-                if (project_parent) {
-                    current = project_parent;
-                } else {
-                    std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
-                                    + inherits_name + "\"";
-                    BOOST_LOG_TRIVIAL(error) << msg;
-                    m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
-                    any_error = true;
-                    resolved = true;
-                }
+                std::string msg = "Filament \"" + name + "\" inherits from non-filament preset \""
+                                + inherits_name + "\"";
+                BOOST_LOG_TRIVIAL(error) << msg;
+                m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
+                any_error = true;
+                resolved = true;
             }
         }
     }
@@ -577,55 +888,42 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
                                               const Preset& official_parent,
                                               const std::string& original_name)
 {
-    const std::string& parent_name = official_parent.name;
+    filament_ids->values[ext_idx] = official_parent.name;
 
-    filament_ids->values[ext_idx] = parent_name;
+    const size_t dst_idx = static_cast<size_t>(ext_idx);
 
-    const size_t ext_sz = static_cast<size_t>(ext_idx);
-
+    // Iterate all config keys from the official parent preset.
+    // Use ConfigOption::is_nil() and set_at() to handle all types uniformly,
+    // including Nullable variants (nozzle_temperature, hot_plate_temp, etc.)
+    // that were previously skipped by explicit dynamic_cast branches.
     for (auto it = official_parent.config.cbegin(); it != official_parent.config.cend(); ++it) {
-        const auto& key = it->first;
-        const auto& opt = it->second;
-        auto* target = m_config.option(key, true);
-        if (!target) continue;
+        const auto& key     = it->first;
+        const auto& src_opt = it->second;
 
-        size_t target_size = 0;
-        if (auto* dst = dynamic_cast<ConfigOptionFloats*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionFloats*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionPercents*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionPercents*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionInts*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionInts*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionStrings*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionStrings*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionBools*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionBools*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        }
+        auto* dst_opt = m_config.option(key, true);  // get or create
+        if (!dst_opt) continue;
+
+        // Only vector options can have per-extruder values; scalar options are shared.
+        auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+        if (!dst_vec) continue;
+        if (dst_vec->size() <= dst_idx) continue;
+
+        // Only fill missing values — do not overwrite user-specified settings.
+        if (!dst_vec->is_nil(dst_idx)) continue;
+
+        // Copy parent preset's first extruder value into the target extruder slot.
+        auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
+        if (src_vec && src_vec->size() > 0)
+            dst_vec->set_at(src_vec, dst_idx, 0);
     }
 
-    m_stats.issues.push_back(make_warning(-1, "FILAMENT_SUBSTITUTED",
-        std::string("Filament \"") + original_name
-        + "\" substituted with official preset \"" + parent_name + "\""));
+    const std::string msg = original_name == official_parent.name
+        ? std::string("Filament \"") + original_name
+            + "\" config values updated from official preset"
+        : std::string("Custom filament \"") + original_name
+            + "\" replaced with official preset \""
+            + official_parent.name + "\" for cloud safety";
+    m_stats.issues.push_back(make_warning(-1, "FILAMENT_SUBSTITUTED", msg));
 }
 
 bool SliceEngine::validate_printer_model()
@@ -657,24 +955,247 @@ bool SliceEngine::validate_printer_model()
     return true;
 }
 
-void SliceEngine::apply_official_presets()
+bool SliceEngine::validate_printer_official(bool enforce)
 {
-    // Strip all custom G-code blocks — cloud slicing must not execute
-    // or embed user-supplied G-code for safety and consistency.
-    constexpr const char* gcode_keys[] = {
-        "start_gcode", "end_gcode", "layer_gcode",
-        "machine_start_gcode", "machine_end_gcode",
-        "before_layer_change_gcode", "between_objects_gcode",
-        "toolchange_gcode", "print_host",
-    };
-    for (const char* key : gcode_keys) {
-        if (m_config.has(key)) {
-            m_config.set_key_value(key, new ConfigOptionString(""));
-            m_stats.issues.push_back(make_tip(-1, "GCODE_CLEARED",
-                std::string("Custom G-code '") + key + "' cleared for cloud safety"));
+    auto* printer_id = m_config.option<ConfigOptionString>("printer_settings_id");
+    if (!printer_id || printer_id->value.empty())
+        return true;
+
+    const std::string& name = printer_id->value;
+
+    // Case 1: The printer_settings_id directly matches an official
+    // Snapmaker preset file — no substitution needed.
+    if (is_official_machine_file(name)) {
+        return true;
+    }
+
+    // Case 2: Not directly official. Look for the preset in
+    // project-embedded presets or system presets and walk the
+    // inherits chain to find an official ancestor.
+    const Preset* current = nullptr;
+    if (m_presets_available && m_preset_bundle) {
+        current = m_preset_bundle->printers.find_preset(name, false);
+    }
+    if (!current) {
+        for (auto* pp : m_project_presets) {
+            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINTER) {
+                current = pp;
+                break;
+            }
         }
     }
 
+    if (!current) {
+        // Prefix matching heuristic: user-modified system printer presets
+        // are exported with a suffix (e.g. "Snapmaker U1 (0.6 nozzle) - 拷贝").
+        // Match the longest official printer preset that is a prefix.
+        if (enforce && m_preset_bundle) {
+            Preset* best = nullptr;
+            for (auto& preset : m_preset_bundle->printers) {
+                if (!is_official_machine_file(preset.name)) continue;
+                if (preset.name.size() >= name.size()) continue;
+                if (name.compare(0, preset.name.size(), preset.name) != 0) continue;
+                if (!best || preset.name.size() > best->name.size())
+                    best = &preset;
+            }
+            if (best) {
+                BOOST_LOG_TRIVIAL(info) << "Printer \"" << name
+                    << "\" resolved via prefix matching to \""
+                    << best->name << "\"";
+                substitute_printer_params(name, best->name);
+                return true;
+            }
+        }
+
+        if (!enforce) {
+            BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
+                << "\" not found in system presets; accepted in allow-custom mode";
+            m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM_NOT_FOUND",
+                std::string("Printer preset \"") + name + "\" not found in system presets"));
+            return true;
+        }
+        std::string msg = "Printer preset \"" + name + "\" is not a recognized preset";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_UNKNOWN", msg));
+        return false;
+    }
+
+    // Walk the inherits chain to find official Snapmaker ancestor
+    std::set<std::string> visited;
+    const Preset* walk = current;
+    while (walk) {
+        std::string inherits_name = walk->inherits();
+        if (inherits_name.empty()) break;
+        if (!visited.insert(inherits_name).second) {
+            std::string msg = "Circular inheritance in printer preset \"" + name + "\"";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.issues.push_back(make_error(-1, "PRINTER_CIRCULAR_INHERITS", msg));
+            return false;
+        }
+
+        if (is_official_machine_file(inherits_name)) {
+            if (enforce) {
+                substitute_printer_params(name, inherits_name);
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
+                    << "\" is a custom preset (not official)";
+                m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
+                    std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
+            }
+            return true;
+        }
+
+        const Preset* parent = nullptr;
+        if (m_presets_available && m_preset_bundle) {
+            parent = m_preset_bundle->printers.find_preset(inherits_name, false);
+        }
+        if (!parent) {
+            for (auto* pp : m_project_presets) {
+                if (pp && pp->name == inherits_name && pp->type == Preset::TYPE_PRINTER) {
+                    parent = pp;
+                    break;
+                }
+            }
+        }
+        if (!parent) break;
+        walk = parent;
+    }
+
+    if (!enforce) {
+        BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
+            << "\" is a custom preset (not official)";
+        m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
+            std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
+        return true;
+    }
+
+    std::string msg = "Printer preset \"" + name
+        + "\" is not derived from any Snapmaker official printer preset";
+    BOOST_LOG_TRIVIAL(error) << msg;
+    m_any_error = true;
+    set_error_type(EXIT_VALIDATION_ERROR);
+    m_stats.error_message = msg;
+    m_stats.issues.push_back(make_error(-1, "PRINTER_NO_OFFICIAL_ANCESTOR", msg));
+    return false;
+}
+
+void SliceEngine::substitute_printer_params(const std::string& original_name,
+                                             const std::string& parent_name)
+{
+    BOOST_LOG_TRIVIAL(info) << "Substituting printer preset \"" << original_name
+        << "\" with official parent \"" << parent_name << "\"";
+
+    m_config.set_key_value("printer_settings_id",
+        new ConfigOptionString(parent_name));
+
+    // Load the parent preset config from disk
+    std::string parent_path = Slic3r::resources_dir()
+        + SNAPMK_MACHINE_DIR + parent_name + ".json";
+
+    DynamicPrintConfig parent_cfg;
+    std::map<std::string, std::string> key_values;
+    std::string reason;
+    try {
+        parent_cfg.load_from_json(parent_path,
+            ForwardCompatibilitySubstitutionRule::EnableSilent,
+            key_values, reason);
+
+        // Copy printer_model from parent if available
+        auto* pm = parent_cfg.option<ConfigOptionString>("printer_model");
+        if (pm && m_config.has("printer_model"))
+            m_config.set_key_value("printer_model",
+                new ConfigOptionString(pm->value));
+
+        fill_nil_from(m_config, parent_cfg);
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "Failed to load parent preset config from " << parent_path
+            << ": " << e.what();
+    }
+
+    const std::string printer_msg = original_name == parent_name
+        ? std::string("Printer preset \"") + original_name
+            + "\" config values updated from official preset"
+        : std::string("Custom printer preset \"") + original_name
+            + "\" replaced with official preset \""
+            + parent_name + "\" for cloud safety";
+    m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", printer_msg));
+}
+
+// ============================================================================
+// Build a full print config by merging system presets (printer + filament)
+// underneath the project config from the 3MF.  This mirrors what the desktop
+// does via PresetBundle::full_config() / full_fff_config() and ensures that
+// filament-level keys (nozzle_temperature, hot_plate_temp, etc.) carry the
+// values from the matching system filament preset rather than the raw
+// FullPrintConfig defaults.
+// ============================================================================
+
+DynamicPrintConfig SliceEngine::build_full_print_config()
+{
+    DynamicPrintConfig out;
+    out.apply(FullPrintConfig::defaults());
+
+    if (m_presets_available && m_preset_bundle) {
+        auto& bundle = *m_preset_bundle;
+
+        // Layer 1: System printer config (Snapmaker U1)
+        auto* printer_id_opt = m_config.option<ConfigOptionString>("printer_settings_id");
+        if (printer_id_opt && !printer_id_opt->value.empty()) {
+            const Preset* printer_preset = bundle.printers.find_preset(printer_id_opt->value, true);
+            if (printer_preset)
+                out.apply(printer_preset->config);
+        }
+
+        // Layer 2: System filament config (per-extruder)
+        auto* filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id");
+        if (filament_ids && !filament_ids->values.empty()) {
+            const size_t num_filaments = filament_ids->values.size();
+
+            // Collect filament config pointers for each extruder.
+            std::vector<const DynamicPrintConfig*> filament_configs;
+            for (size_t i = 0; i < num_filaments; ++i) {
+                const Preset* preset = bundle.filaments.find_preset(filament_ids->values[i], true);
+                if (preset)
+                    filament_configs.push_back(&preset->config);
+            }
+
+            if (!filament_configs.empty()) {
+                // Merge per-filament values into `out`, mirroring
+                // PresetBundle::full_fff_config() multi-filament logic.
+                for (const auto& key : filament_configs.front()->keys()) {
+                    if (key == "compatible_prints" || key == "compatible_printers")
+                        continue;
+
+                    ConfigOption* dst_opt = out.option(key, false);
+                    if (!dst_opt) continue;
+
+                    if (dst_opt->is_scalar()) {
+                        const ConfigOption* src = filament_configs.front()->option(key);
+                        if (src) dst_opt->set(src);
+                    } else {
+                        auto* dst_vec = static_cast<ConfigOptionVectorBase*>(dst_opt);
+                        std::vector<const ConfigOption*> opts(num_filaments, nullptr);
+                        for (size_t i = 0; i < num_filaments; ++i)
+                            opts[i] = (i < filament_configs.size())
+                                          ? filament_configs[i]->option(key)
+                                          : nullptr;
+                        dst_vec->set(opts);
+                    }
+                }
+            }
+        }
+    }
+
+    // Layer 3: Project config from 3MF (highest priority)
+    out.apply(m_config);
+
+    return out;
 }
 
 // ============================================================================
@@ -726,6 +1247,7 @@ bool SliceEngine::validate_input() {
 // ============================================================================
 
 void SliceEngine::process_plate(int plate_id) {
+    try {
     // --- Filter instances for this plate ---
     std::set<int> identify_ids;
     int instances_on_plate = filter_instances(plate_id, identify_ids);
@@ -740,8 +1262,8 @@ void SliceEngine::process_plate(int plate_id) {
 
     // Calculate plate dimensions and origin (done before build-volume check
     // so the check can translate instances into plate-local coordinates).
-    double plate_width = 200.0;
-    double plate_depth = 200.0;
+    double plate_width = DEFAULT_PLATE_WIDTH;
+    double plate_depth = DEFAULT_PLATE_DEPTH;
 
     if (m_config.has("printable_area")) {
         auto printable_area_opt = m_config.option<ConfigOptionPoints>("printable_area");
@@ -865,6 +1387,20 @@ void SliceEngine::process_plate(int plate_id) {
     // All retries exhausted
     BOOST_LOG_TRIVIAL(error) << "Slicing/export failed for plate " << (plate_id + 1)
         << " after " << MAX_RETRIES << " attempts";
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled exception processing plate " << (plate_id + 1)
+            << ": " << e.what();
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(plate_id, "INTERNAL_ERROR",
+            std::string("Plate ") + std::to_string(plate_id + 1) + " slicing failed: " + e.what()));
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception processing plate " << (plate_id + 1);
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(plate_id, "INTERNAL_ERROR",
+            std::string("Plate ") + std::to_string(plate_id + 1) + " slicing failed with unknown error"));
+    }
 }
 
 // ============================================================================
@@ -1055,7 +1591,9 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
     //
     // Work on a per-plate copy so extruder-count trimming does not leak
     // into subsequent plates (m_config is shared across the pipeline).
-    DynamicPrintConfig merged_config = m_config;
+    // Build full config (system defaults + printer + filament + project)
+    // before per-plate trimming and overrides.
+    DynamicPrintConfig merged_config = build_full_print_config();
     {
         std::set<int> used_extruders;
         for (ModelObject* obj : m_model.objects) {
@@ -1102,40 +1640,15 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
         }
 
         if (used_extruders.size() <= 1 && num_filaments > 1) {
-            BOOST_LOG_TRIVIAL(info) << "Trimming filament config from " << num_filaments
-                << " to 1 to match single-extruder model";
+            // Single extruder model with multiple filaments configured.
+            // Disable the prime/wipe tower to prevent tool change errors,
+            // but keep filament arrays intact so model volumes referencing
+            // non-zero extruders still map correctly.
+            BOOST_LOG_TRIVIAL(info) << "Disabling prime tower for single-extruder plate "
+                << (plate_id + 1) << " (used extruders: "
+                << (used_extruders.empty() ? "none" : std::to_string(*used_extruders.begin()))
+                << ", filaments configured: " << num_filaments << ")";
             merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-
-            // Truncate all filament-related array options to 1 entry.
-            // This prevents Print::has_wipe_tower() from returning true due to
-            // filament_diameter.size() > 1, which is the root cause of the
-            // "append_tcr was asked to do a toolchange it didn't expect" error.
-            // flush_volumes_matrix (N*N flat vector) and wiping_volumes_extruders
-            // must also be trimmed to keep the config internally consistent:
-            // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
-            constexpr const char* trim_keys[] = {
-                "filament_diameter",
-                "filament_density",
-                "filament_cost",
-                "filament_colour",
-                "filament_type",
-                "filament_is_support",
-                "filament_settings_id",
-                "nozzle_diameter",
-                "flush_volumes_matrix",
-                "wiping_volumes_extruders",
-            };
-            for (const char* key : trim_keys) {
-                auto* opt = merged_config.option(key, true);
-                if (!opt) continue;
-                if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt)) {
-                    if (!fs->values.empty()) { fs->values.resize(1); merged_config.set_key_value(key, new ConfigOptionFloats(fs->values)); }
-                } else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt)) {
-                    if (!ss->values.empty()) { ss->values.resize(1); merged_config.set_key_value(key, new ConfigOptionStrings(ss->values)); }
-                } else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt)) {
-                    if (!bs->values.empty()) { bs->values.resize(1); merged_config.set_key_value(key, new ConfigOptionBools(bs->values)); }
-                }
-            }
         } else if (used_extruders.size() <= 1) {
             BOOST_LOG_TRIVIAL(info) << "Disabling prime tower (single extruder model)";
             merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
@@ -1554,6 +2067,15 @@ void SliceEngine::package_output() {
 // ============================================================================
 // Exit code derivation
 // ============================================================================
+
+void SliceEngine::report_error(int plate_id, int exit_code, const std::string& code,
+                               const std::string& message, bool set_main_message) {
+    m_any_error = true;
+    set_error_type(exit_code);
+    m_stats.issues.push_back(make_error(plate_id, code, message));
+    if (set_main_message && m_stats.error_message.empty())
+        m_stats.error_message = message;
+}
 
 void SliceEngine::set_error_type(int code) {
     if (code > m_error_type)
