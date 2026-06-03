@@ -101,11 +101,15 @@ def _parse_model_names(zf: zipfile.ZipFile) -> dict:
 def _parse_mesh_objects(file_obj) -> dict:
     """
     解析单个 .model 文件的 <resources> 段。
-    返回: {object_id: {"type": "mesh"|"container", "triangles": N, "components": [...]}}
+    返回: {object_id: {"type": "mesh"|"container", "triangles": N, "vertices": N,
+                      "bbox": {min_x, max_x, ...}, "components": [...]}}
     """
     objects = {}
     current_obj = None
     in_triangles = False
+    in_vertices = False
+    v_count = 0
+    vx = vy = vz = None
 
     for event, elem in iterparse(file_obj, events=("start", "end")):
         t = _tag_local(elem) if event == "start" else None
@@ -115,11 +119,48 @@ def _parse_mesh_objects(file_obj) -> dict:
             objects[current_obj] = {
                 "type": "unknown",
                 "triangles": 0,
+                "vertices": 0,
+                "bbox": None,
                 "components": [],
             }
+            v_count = 0
+            vx = vy = vz = None
 
         if event == "start" and t == "mesh" and current_obj:
             objects[current_obj]["type"] = "mesh"
+
+        if event == "start" and t == "vertices":
+            in_vertices = True
+
+        if event == "start" and t == "vertex" and in_vertices and current_obj:
+            v_count += 1
+            try:
+                x = float(elem.get("x", "0"))
+                y = float(elem.get("y", "0"))
+                z = float(elem.get("z", "0"))
+                if vx is None:
+                    vx = [x, x]
+                    vy = [y, y]
+                    vz = [z, z]
+                else:
+                    if x < vx[0]: vx[0] = x
+                    if x > vx[1]: vx[1] = x
+                    if y < vy[0]: vy[0] = y
+                    if y > vy[1]: vy[1] = y
+                    if z < vz[0]: vz[0] = z
+                    if z > vz[1]: vz[1] = z
+            except (ValueError, TypeError):
+                pass
+
+        if event == "end" and _tag_local(elem) == "vertices":
+            in_vertices = False
+            if current_obj and v_count > 0:
+                objects[current_obj]["vertices"] = v_count
+                objects[current_obj]["bbox"] = {
+                    "min_x": vx[0], "max_x": vx[1],
+                    "min_y": vy[0], "max_y": vy[1],
+                    "min_z": vz[0], "max_z": vz[1],
+                }
 
         if event == "start" and t == "triangles":
             in_triangles = True
@@ -248,31 +289,114 @@ def _count_leaf_triangles(root_oid, all_objects, sub_path=None) -> int:
         return obj["triangles"]
 
 
+def _collect_leaf_bbox(oid, all_objects, sub_path=None):
+    """Recursively collect merged bounding box across all leaf meshes."""
+    obj = _find_object(oid, all_objects, sub_path)
+    if obj is None:
+        return None
+
+    if obj["type"] == "container":
+        merged = None
+        for comp in obj.get("components", []):
+            child_bb = _collect_leaf_bbox(comp["objectid"], all_objects, comp.get("sub_path"))
+            if child_bb is not None:
+                if merged is None:
+                    merged = dict(child_bb)
+                else:
+                    for k in ("min_x", "min_y", "min_z"):
+                        merged[k] = min(merged[k], child_bb[k])
+                    for k in ("max_x", "max_y", "max_z"):
+                        merged[k] = max(merged[k], child_bb[k])
+        return merged
+    else:
+        return obj.get("bbox")
+
+
+def _collect_leaf_vertices(oid, all_objects, sub_path=None):
+    """Recursively sum vertex count across all leaf meshes."""
+    obj = _find_object(oid, all_objects, sub_path)
+    if obj is None:
+        return 0
+    if obj["type"] == "container":
+        total = 0
+        for comp in obj.get("components", []):
+            total += _collect_leaf_vertices(comp["objectid"], all_objects, comp.get("sub_path"))
+        return total
+    else:
+        return obj.get("vertices", 0)
+
+
 def _collect_mesh_info(zf: zipfile.ZipFile) -> dict:
-    """从 3MF 中收集所有可打印 mesh 的三角面片统计。"""
+    """从 3MF 中收集所有可打印 mesh 的几何特征。"""
     all_objects = _parse_all_objects(zf)
     build_items = _parse_build_items(zf)
     model_names = _parse_model_names(zf)
 
-    # 同时计算按对象的明细
     objects = []
     total_triangles = 0
+    total_vertices = 0
+    merged_bbox = None
+    mesh_count = 0
 
     for oid, printable in build_items:
         if not printable:
             continue
 
-        # 先检查这个对象本身（及子对象）是否有 mesh
         tri_count = _count_leaf_triangles(oid, all_objects)
+        vert_count = _collect_leaf_vertices(oid, all_objects)
+        obj_bbox = _collect_leaf_bbox(oid, all_objects)
+
+        # Count this as a mesh shell
+        obj = _find_object(oid, all_objects)
+        if obj and obj["type"] == "mesh":
+            mesh_count += 1
+        elif obj and obj["type"] == "container":
+            # Count leaf mesh sub-objects as shells
+            for comp in obj.get("components", []):
+                child = _find_object(comp["objectid"], all_objects, comp.get("sub_path"))
+                if child and child["type"] == "mesh":
+                    mesh_count += 1
+
+        # Merge bounding box
+        if obj_bbox is not None:
+            if merged_bbox is None:
+                merged_bbox = dict(obj_bbox)
+            else:
+                for k in ("min_x", "min_y", "min_z"):
+                    merged_bbox[k] = min(merged_bbox[k], obj_bbox[k])
+                for k in ("max_x", "max_y", "max_z"):
+                    merged_bbox[k] = max(merged_bbox[k], obj_bbox[k])
 
         obj_name = model_names.get(oid, f"object_{oid}")
         objects.append({
             "name": obj_name,
             "triangles": tri_count,
+            "vertices": vert_count,
+            "bbox": obj_bbox,
         })
         total_triangles += tri_count
+        total_vertices += vert_count
 
-    return {"objects": objects, "total_triangles": total_triangles}
+    # Compute derived features
+    bbox_dims = None
+    estimated_layers = 0
+    if merged_bbox is not None:
+        w = merged_bbox["max_x"] - merged_bbox["min_x"]
+        d = merged_bbox["max_y"] - merged_bbox["min_y"]
+        h = merged_bbox["max_z"] - merged_bbox["min_z"]
+        bbox_dims = {"w": round(w, 1), "d": round(d, 1), "h": round(h, 1)}
+        # Estimate layer count using 0.2mm default layer height
+        estimated_layers = max(1, round(h / 0.2))
+
+    return {
+        "objects": objects,
+        "total_triangles": total_triangles,
+        "total_vertices": total_vertices,
+        "object_count": len(objects),
+        "shell_count": mesh_count,
+        "bounding_box_mm": bbox_dims,
+        "estimated_layers": estimated_layers,
+    }
 
 
 # ── 输出格式化 ──────────────────────────────────────────────────
@@ -321,32 +445,40 @@ def _format_text_report(path: str, result: dict, mesh_info: dict) -> str:
     lines.append("─" * 54)
     time_map = {
         "trivial": "<5 秒",
-        "normal": "5-30 秒",
-        "moderate": "30秒-2分钟",
-        "long": "2-8 分钟",
-        "extreme": "8-30+ 分钟",
+        "normal": "10秒内",
+        "moderate": "10–30秒",
+        "long": "30–60秒",
+        "extreme": "60秒+",
     }
     lines.append(f"预估耗时: {time_map.get(level, '未知')}")
     return "\n".join(lines)
 
 
 def _format_json_report(path: str, result: dict, mesh_info: dict) -> str:
+    geom = result["breakdown"]["geometry"]
+    # Include new feature fields in the geometry breakdown
+    geom["total_vertices"] = mesh_info.get("total_vertices", 0)
+    geom["object_count"] = mesh_info.get("object_count", 0)
+    geom["shell_count"] = mesh_info.get("shell_count", 0)
+    geom["bounding_box_mm"] = mesh_info.get("bounding_box_mm")
+    geom["estimated_layers"] = mesh_info.get("estimated_layers", 0)
+
     report = {
         "file": os.path.basename(path),
         "score": result["score"],
         "level": result["level"],
         "level_desc": result["level_desc"],
         "breakdown": {
-            "geometry": result["breakdown"]["geometry"],
+            "geometry": geom,
             "config": result["breakdown"]["config"],
             "objects": mesh_info.get("objects", []),
         },
         "time_estimate": {
             "trivial": "<5s",
-            "normal": "5-30s",
-            "moderate": "30s-2min",
-            "long": "2-8min",
-            "extreme": "8-30min+",
+            "normal": "<10s",
+            "moderate": "10-30s",
+            "long": "30-60s",
+            "extreme": "60s+",
         }.get(result["level"], "unknown"),
     }
     return json.dumps(report, ensure_ascii=False, indent=2)

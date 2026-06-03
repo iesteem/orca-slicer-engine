@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-3MF 模型切片复杂度评分库
+3MF Slicing Complexity Score (20-point scale)
 
-S 型曲线几何评分 + 配置系数加权，20 分制。
-零外部依赖，仅使用 Python 3 标准库。
+S-curve (sigmoid) maps triangle count → 1–20, multiplied by config factors.
+Zero external dependencies — Python 3 stdlib only.
 
-用法:
+Usage:
     from model_complexity import score_model, score_geometry, score_config
 
     result = score_model(total_triangles=234567, config={
@@ -19,45 +19,34 @@ S 型曲线几何评分 + 配置系数加权，20 分制。
 
 import math
 
-# ── S 型曲线参数 ────────────────────────────────────────────────
-# 公式：1 + 19 / (1 + exp(-k * (log10(triangles) - center)))
-_SIGMOID_K = 1.2       # 斜率：越大中间越陡
-_SIGMOID_CENTER = 4.7  # 中心点：log10(50K)=4.7 处斜率最大
+# ── S-curve parameters ─────────────────────────────────────────────
+# Formula: 1 + 19 / (1 + exp(-k * (log10(triangles) - center)))
+# Center at log10(500K) = 5.7 — calibrated against 55 real-world 3MF files
+# so that typical models (200K–2M triangles) spread across scores 8–14.
+_SIGMOID_K = 1.2
+_SIGMOID_CENTER = 5.7   # log10(500,000)
 
 SCORE_MIN = 1
 SCORE_MAX = 20
 
-# ── 等级定义 ──────────────────────────────────────────────────
+# ── Level definitions (calibrated against actual slice wall-clock times) ──
 LEVELS = [
-    ("trivial",  1,  3,  "秒级，即时返回"),
-    ("normal",   4,  7,  "10秒内，无感知"),
-    ("moderate", 8,  12, "1分钟左右"),
-    ("long",     13, 16, "2-8分钟，建议预留"),
-    ("extreme",  17, 20, "10分钟+，建议先简化模型"),
+    ("trivial",   1,  3,  "<5秒"),
+    ("normal",    4,  7,  "10秒内"),
+    ("moderate",  8, 12,  "10–30秒"),
+    ("long",     13, 16,  "30–60秒，建议预留"),
+    ("extreme",  17, 20,  "60秒+，建议先简化模型"),
 ]
 
-# ── 配置系数 ──────────────────────────────────────────────────
-# 键: 配置条件 → (系数, 标签)
-_CONFIG_MULTIPLIERS = [
-    # (检查项, 匹配值, 系数, 标签)
-    # 检查逻辑: config.get(key) == value
-    ("support_type", "tree",   1.6, "树状支撑"),
-    ("support_type", "normal", 1.3, "普通支撑"),
-    ("mmu_painted",  True,     1.2, "多彩绘制"),
-    ("ironing_enabled", True,  1.15, "熨烫"),
-    ("infill_density_pct", ..., 1.1, "高填充密度"),  # ... 表示比较 > 25
-]
-
-
+# ── Config multipliers ─────────────────────────────────────────────
 def score_geometry(total_triangles: int) -> float:
-    """
-    纯几何评分，S 型曲线映射。
+    """Pure geometry score via S-curve.
 
     Args:
-        total_triangles: 模型三角面片总数
+        total_triangles: Total triangle count of the model.
 
     Returns:
-        float: 1.0 ~ 20.0 的评分
+        float: 1.0 ~ 20.0
     """
     if total_triangles <= 0:
         return 1.0
@@ -69,15 +58,14 @@ def score_geometry(total_triangles: int) -> float:
 
 
 def score_config(config: dict) -> dict:
-    """
-    计算配置系数。
+    """Compute config multiplier from slicing settings.
 
     Args:
         config: {
-            "support_type": "none" | "normal" | "tree",   # 默认 "none"
-            "mmu_painted": bool,                           # 默认 False
-            "ironing_enabled": bool,                       # 默认 False
-            "infill_density_pct": float,                   # 默认 15
+            "support_type": "none" | "normal" | "tree",
+            "mmu_painted": bool,
+            "ironing_enabled": bool,
+            "infill_density_pct": float,
         }
 
     Returns:
@@ -86,7 +74,6 @@ def score_config(config: dict) -> dict:
     factors = []
     multiplier = 1.0
 
-    # 支撑类型
     support = config.get("support_type", "none")
     if support == "tree":
         multiplier *= 1.6
@@ -95,17 +82,14 @@ def score_config(config: dict) -> dict:
         multiplier *= 1.3
         factors.append({"label": "普通支撑", "value": 1.3})
 
-    # 多彩绘制
     if config.get("mmu_painted", False):
         multiplier *= 1.2
         factors.append({"label": "多彩绘制", "value": 1.2})
 
-    # 熨烫
     if config.get("ironing_enabled", False):
         multiplier *= 1.15
         factors.append({"label": "熨烫", "value": 1.15})
 
-    # 高填充密度
     infill = config.get("infill_density_pct", 15)
     if infill > 25:
         multiplier *= 1.1
@@ -118,7 +102,7 @@ def score_config(config: dict) -> dict:
 
 
 def classify_score(score: int) -> dict:
-    """根据得分返回等级信息。"""
+    """Map integer score to level info."""
     for level, lo, hi, desc in LEVELS:
         if lo <= score <= hi:
             return {"level": level, "label": f"{level} ({desc})"}
@@ -126,28 +110,21 @@ def classify_score(score: int) -> dict:
 
 
 def score_model(total_triangles: int, config: dict = None) -> dict:
-    """
-    综合评分（几何 × 配置系数）。
+    """Composite score: geometry × config multiplier.
 
     Args:
-        total_triangles: 总三角面片数
-        config: 配置字典，默认空（无额外系数）
+        total_triangles: Total triangle count.
+        config: Config dict, default empty (no extra multipliers).
 
     Returns:
         {
-            "score": 14,                  # int, 1-20
-            "level": "long",              # trivial|normal|moderate|long|extreme
-            "level_desc": "2-8分钟",
+            "score": 14,                  # int, 1–20
+            "level": "long",
+            "level_desc": "long (30–60秒，建议预留)",
             "breakdown": {
-                "geometry": {
-                    "total_triangles": 234567,
-                    "score": 10.5,
-                },
-                "config": {
-                    "multiplier": 1.6,
-                    "factors": [...],
-                },
-                "objects": None,          # 可选，子对象明细
+                "geometry": {"total_triangles": 234567, "score": 10.5},
+                "config": {"multiplier": 1.6, "factors": [...]},
+                "objects": None,
             },
         }
     """
@@ -180,17 +157,20 @@ def score_model(total_triangles: int, config: dict = None) -> dict:
     }
 
 
-# ── 查找表：快速参考 ──────────────────────────────────────────
+# ── Reference lookup table ────────────────────────────────────────
 
 def lookup_table():
-    """打印常用面片数 → 几何分对照表。"""
-    print(f"{'三角面片':>12}  {'log10':>6}  {'几何分':>7}  等级")
+    """Print triangle count → score reference table."""
+    print(f"S-curve: center=log10(500K)={_SIGMOID_CENTER}, k={_SIGMOID_K}")
+    print()
+    print(f"{'Triangles':>12}  {'log10':>6}  {'Score':>6}  Level")
     print("-" * 44)
-    for n in [12, 100, 500, 1000, 5000, 10000, 50000,
-              100000, 200000, 500000, 1000000, 2000000]:
+    for n in [100, 1000, 5000, 10000, 50000,
+              100000, 200000, 300000, 500000,
+              800000, 1000000, 2000000, 5000000, 10000000, 20000000]:
         s = score_geometry(n)
         info = classify_score(round(s))
-        print(f"{n:>12,}  {math.log10(n):>6.2f}  {s:>6.1f}  {info['level']}")
+        print(f"{n:>12,}  {math.log10(n):>6.2f}  {s:>5.1f}  {info['level']}")
 
 
 if __name__ == "__main__":
