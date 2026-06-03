@@ -197,6 +197,7 @@ if(WIN32)
     if(NOT LIBSLIC3R_DIR)
         message(FATAL_ERROR "LIBSLIC3R_DIR required. Pass -DLIBSLIC3R_DIR=<path>")
     endif()
+    set(ORCASLICER_BUILD_DIR "${LIBSLIC3R_DIR}/build" CACHE PATH "OrcaSlicer CMake build directory (e.g. build or build_engine)")
 
     set(LIBSLIC3R_INCLUDE_DIRS
         ${LIBSLIC3R_DIR}/src
@@ -208,9 +209,9 @@ if(WIN32)
     set(OCCT_LIB_DIR ${LIBSLIC3R_DIR}/deps/build/OrcaSlicer_dep/usr/local/lib/occt)
 
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(LIBSLIC3R_LIBRARY ${LIBSLIC3R_DIR}/build/src/libslic3r/Debug/libslic3r.lib)
+        set(LIBSLIC3R_LIBRARY ${ORCASLICER_BUILD_DIR}/src/libslic3r/Debug/libslic3r.lib)
     else()
-        set(LIBSLIC3R_LIBRARY ${LIBSLIC3R_DIR}/build/src/libslic3r/Release/libslic3r.lib)
+        set(LIBSLIC3R_LIBRARY ${ORCASLICER_BUILD_DIR}/src/libslic3r/Release/libslic3r.lib)
     endif()
     if(NOT EXISTS "${LIBSLIC3R_LIBRARY}")
         message(FATAL_ERROR "libslic3r.lib not found at ${LIBSLIC3R_LIBRARY}. Build OrcaSlicer first.")
@@ -246,12 +247,12 @@ if(WIN32)
 
     target_link_libraries(slic3r PRIVATE
         ${LIBSLIC3R_LIBRARY}
-        ${LIBSLIC3R_DIR}/build/src/libslic3r/Release/libslic3r_cgal.lib
+        ${ORCASLICER_BUILD_DIR}/src/libslic3r/Release/libslic3r_cgal.lib
     )
 
     # deps_src static libs (transitive deps of libslic3r)
-    set(DSB ${LIBSLIC3R_DIR}/build/deps_src)
-    set(DLB ${LIBSLIC3R_DIR}/build/lib/Release)
+    set(DSB ${ORCASLICER_BUILD_DIR}/deps_src)
+    set(DLB ${ORCASLICER_BUILD_DIR}/lib/Release)
     target_link_libraries(slic3r PRIVATE
         ${DLB}/semver.lib
         ${DSB}/clipper/Release/clipper.lib
@@ -261,35 +262,58 @@ if(WIN32)
         ${DSB}/mcut/Release/mcut.lib
         ${DSB}/glu-libtess/Release/glu-libtess.lib
         ${DSB}/qoi/Release/qoi.lib
-        ${DSB}/expat/Release/expat.lib
         ${DSB}/libnest2d/Release/libnest2d.lib
-        ${DSB}/minilzo/Release/minilzo_static.lib
     )
 
     set(DEP_LIB ${LIBSLIC3R_DIR}/deps/build/OrcaSlicer_dep/usr/local/lib)
     target_link_libraries(slic3r PRIVATE
         ${DEP_LIB}/libnoise_static.lib ${DEP_LIB}/jpeg-static.lib
         ${DEP_LIB}/libpng16_static.lib ${DEP_LIB}/zlib.lib ${DEP_LIB}/freetype.lib
+        ${DEP_LIB}/expat.lib
     )
 
-    set(Boost_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
-    find_package(CGAL REQUIRED)
-    target_link_libraries(slic3r PRIVATE CGAL::CGAL)
-    find_package(Boost REQUIRED COMPONENTS filesystem log log_setup nowide locale)
-    target_link_libraries(slic3r PRIVATE Boost::filesystem Boost::log Boost::log_setup Boost::nowide Boost::locale)
-    find_package(TBB REQUIRED)
-    target_link_libraries(slic3r PRIVATE TBB::tbb TBB::tbbmalloc)
-    find_package(OpenSSL REQUIRED)
-    target_link_libraries(slic3r PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    # CGAL (header-only — add include dirs directly to avoid find_package pulling vc143 Boost)
+    target_include_directories(slic3r SYSTEM PRIVATE
+        ${LIBSLIC3R_DIR}/deps/build/OrcaSlicer_dep/usr/local/include
+    )
+    target_compile_definitions(slic3r PRIVATE BOOST_ALL_NO_LIB)
+
+    # Boost (explicit paths — avoid auto-link vc143/vc144 mismatch)
+    target_link_libraries(slic3r PRIVATE
+        ${DEP_LIB}/libboost_filesystem-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_log-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_log_setup-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_nowide-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_locale-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_thread-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_chrono-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_atomic-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_container-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_context-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_coroutine-vc144-mt-x64-1_84.lib
+        ${DEP_LIB}/libboost_date_time-vc144-mt-x64-1_84.lib
+    )
+
+    # TBB (explicit paths)
+    target_link_libraries(slic3r PRIVATE
+        ${DEP_LIB}/tbb12.lib
+        ${DEP_LIB}/tbbmalloc.lib
+    )
+
+    # OpenSSL (explicit paths)
+    target_link_libraries(slic3r PRIVATE
+        ${DEP_LIB}/libssl.lib
+        ${DEP_LIB}/libcrypto.lib
+    )
+
+    # System libs
+    target_link_libraries(slic3r PRIVATE Psapi.lib bcrypt.lib)
 
     set(OCCT_LIBS TKG2d TKG3d TKMath TKernel TKGeomBase TKGeomAlgo TKBRep TKTopAlgo TKPrim TKHLR TKShHealing TKBO TKBool TKMesh TKXSBase TKSTEP TKSTEPAttr TKSTEPBase TKSTEP209 TKIGES TKSTL TKXml TKXmlL TKXmlXCAF TKLCAF TKCAF TKBinL TKXCAF TKBin TKBinXCAF TKVCAF TKCDF TKV3d TKService TKRWMesh TKVRML TKXDEIGES TKXDESTEP)
     foreach(lib ${OCCT_LIBS})
         target_link_libraries(slic3r PRIVATE ${OCCT_LIB_DIR}/${lib}.lib)
     endforeach()
     target_link_libraries(slic3r PRIVATE ${CMAKE_PREFIX_PATH}/lib/libgmp-10.lib ${CMAKE_PREFIX_PATH}/lib/libmpfr-4.lib)
-    if(WIN32)
-        target_link_libraries(slic3r PRIVATE Psapi.lib bcrypt.lib)
-    endif()
 
     message(STATUS "slic3r.dll target enabled")
 endif()
