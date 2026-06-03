@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include <boost/log/trivial.hpp>
+#include <boost/log/expressions.hpp>
 
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/CustomGCode.hpp"
@@ -36,21 +37,36 @@ constexpr double BED_AXES_TIP_RADIUS = 1.25;
 // 1/5, same as GUI's LOGICAL_PART_PLATE_GAP
 constexpr double LOGICAL_PART_PLATE_GAP = 0.2;
 
-// RAII guard to temporarily suppress all boost::log output.
-// Restores the previous logging state on destruction, ensuring
-// that exceptions during the suppressed scope do not leave
-// logging permanently disabled.
-class ScopedLogSuppressor {
+// RAII guard to temporarily adjust boost::log severity threshold.
+// Uses a static depth counter so nested guards don't fight over the
+// filter.  On outermost exit the filter is restored to >= info so
+// engine progress markers remain visible while library trace/debug
+// stay suppressed.
+class ScopedLogLevel {
+    static int s_depth;
 public:
-    ScopedLogSuppressor() {
-        boost::log::core::get()->set_logging_enabled(false);
+    explicit ScopedLogLevel(boost::log::trivial::severity_level lv) {
+        if (s_depth++ == 0) {
+            namespace expr = boost::log::expressions;
+            boost::log::core::get()->set_filter(
+                expr::attr<boost::log::trivial::severity_level>("Severity") >= lv
+            );
+        }
     }
-    ~ScopedLogSuppressor() {
-        boost::log::core::get()->set_logging_enabled(true);
+    ~ScopedLogLevel() {
+        if (--s_depth == 0) {
+            namespace expr = boost::log::expressions;
+            boost::log::core::get()->set_filter(
+                expr::attr<boost::log::trivial::severity_level>("Severity")
+                >= boost::log::trivial::info
+            );
+        }
     }
-    ScopedLogSuppressor(const ScopedLogSuppressor&) = delete;
-    ScopedLogSuppressor& operator=(const ScopedLogSuppressor&) = delete;
+    ScopedLogLevel(const ScopedLogLevel&) = delete;
+    ScopedLogLevel& operator=(const ScopedLogLevel&) = delete;
 };
+
+int ScopedLogLevel::s_depth = 0;
 
 // --- Config helpers ---
 
@@ -161,7 +177,7 @@ bool SliceEngine::run() {
 
     // Suppress libslic3r log spam during system preset loading and validation
     {
-        ScopedLogSuppressor quiet;
+        ScopedLogLevel quiet(boost::log::trivial::warning);
         load_system_presets();
         validate_presets();
     }
@@ -322,6 +338,7 @@ bool SliceEngine::load_3mf() {
                            LoadStrategy::AddDefaultInstances | LoadStrategy::LoadAuxiliary;
 
     try {
+        ScopedLogLevel quiet_load(boost::log::trivial::warning);
         m_model = Model::read_from_file(
             m_cfg.input_file,
             &m_config,
@@ -1718,6 +1735,7 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
     BOOST_LOG_TRIVIAL(info) << "Starting slicing process for plate " << plate_id << "...";
 
     try {
+        ScopedLogLevel quiet_slice(boost::log::trivial::warning);
         print.process();
     }
     catch (const SlicingErrors& exs) {
@@ -1774,7 +1792,11 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
 
     try {
         GCodeProcessor::s_IsBBLPrinter = print.is_BBL_printer();
-        std::string exported = print.export_gcode(gcode_output, &result.gcode_result, nullptr);
+        std::string exported;
+        {
+            ScopedLogLevel quiet_export(boost::log::trivial::warning);
+            exported = print.export_gcode(gcode_output, &result.gcode_result, nullptr);
+        }
         result.gcode_path = exported;
 
         // Post-processing scripts are disabled in cloud mode to prevent
@@ -2040,6 +2062,7 @@ void SliceEngine::package_output() {
     params.profile = nullptr;
 
     try {
+        ScopedLogLevel quiet_pkg(boost::log::trivial::warning);
         bool success = store_bbs_3mf(params);
         if (!success) {
             BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package";
