@@ -78,15 +78,15 @@ inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src
 {
     for (auto it = src.cbegin(); it != src.cend(); ++it) {
         const auto& key   = it->first;
-        auto*       dst_opt = dst.option(key, false);
+        auto       dst_opt = dst.option(key, false);
         if (!dst_opt) continue;
 
         if (dst_opt->is_scalar()) {
             if (dst_opt->is_nil())
                 dst_opt->set(it->second.get());
         } else {
-            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
-            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
+            auto dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+            auto src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
             if (!dst_vec || !src_vec) continue;
             for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
                 if (dst_vec->is_nil(i))
@@ -376,7 +376,7 @@ bool SliceEngine::load_3mf() {
 
     // Detect and reject post-processing scripts in cloud mode (RCE prevention)
     if (m_config.has("post_process")) {
-        auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
+        auto pp = m_config.option<ConfigOptionStrings>("post_process", true);
         if (pp && !pp->values.empty()) {
             m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
                 "自定义后处理脚本在云切片中不被支持"));
@@ -616,7 +616,7 @@ void SliceEngine::apply_printer_preset_config()
         };
 
         // printable_area: default is 4-point 200x200 rect
-        auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+        auto pa = m_config.option<ConfigOptionPoints>("printable_area");
         if (!pa || pa->values.size() != 4) {
             fail("printable_area missing or wrong format");
         } else {
@@ -629,7 +629,7 @@ void SliceEngine::apply_printer_preset_config()
         }
 
         // printable_height: default is 100.0
-        auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
+        auto ph = m_config.option<ConfigOptionFloat>("printable_height");
         if (!ph || ph->value == 100.0)
             fail("printable_height is still the 100.0 default");
     }
@@ -643,7 +643,7 @@ bool SliceEngine::has_inline_filament_config(int ext_idx)
     // directly in project_settings.config without a preset definition.
     auto is_non_nil = [&](const char* key) -> bool {
         if (!m_config.has(key)) return false;
-        auto* opt = m_config.option<ConfigOptionFloats>(key, true);
+        auto opt = m_config.option<ConfigOptionFloats>(key, true);
         if (!opt) return false;
         if (static_cast<int>(opt->values.size()) <= ext_idx) return false;
         return !opt->is_nil(ext_idx) && opt->values[ext_idx] > 0;
@@ -657,7 +657,7 @@ bool SliceEngine::has_inline_filament_config(int ext_idx)
     // Fallback: check if filament_type is set (weaker signal, but
     // confirms the extruder has filament assigned).
     if (m_config.has("filament_type")) {
-        auto* ft = m_config.option<ConfigOptionStrings>("filament_type", true);
+        auto ft = m_config.option<ConfigOptionStrings>("filament_type", true);
         if (ft && ext_idx < static_cast<int>(ft->values.size())
               && !ft->values[ext_idx].empty())
             return true;
@@ -675,7 +675,7 @@ bool SliceEngine::validate_filament_official(bool enforce)
     if (!m_config.has("filament_settings_id"))
         return true;
 
-    auto* filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id", true);
+    auto filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id", true);
     if (!filament_ids || filament_ids->values.empty())
         return true;
 
@@ -709,7 +709,7 @@ bool SliceEngine::validate_filament_official(bool enforce)
     // When find_preset's binary search fails (known ordering issue with
     // Snapmaker presets), fall back to linear scan of all loaded presets.
     auto find_in_system = [this](const std::string& name) -> Preset* {
-        auto* p = m_preset_bundle->filaments.find_preset(name, false);
+        auto p = m_preset_bundle->filaments.find_preset(name, false);
         if (p && p->name == name) return p;
         // Binary search failed — linear scan fallback
         for (auto& preset : m_preset_bundle->filaments) {
@@ -719,7 +719,7 @@ bool SliceEngine::validate_filament_official(bool enforce)
     };
 
     auto find_in_project = [this](const std::string& name) -> Preset* {
-        for (auto* pp : m_project_presets) {
+        for (auto pp : m_project_presets) {
             if (pp && pp->name == name && pp->type == Preset::TYPE_FILAMENT)
                 return pp;
         }
@@ -917,11 +917,11 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
         const auto& key     = it->first;
         const auto& src_opt = it->second;
 
-        auto* dst_opt = m_config.option(key, true);  // get or create
+        auto dst_opt = m_config.option(key, true);  // get or create
         if (!dst_opt) continue;
 
         // Only vector options can have per-extruder values; scalar options are shared.
-        auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+        auto dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
         if (!dst_vec) continue;
         if (dst_vec->size() <= dst_idx) continue;
 
@@ -929,7 +929,7 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
         if (!dst_vec->is_nil(dst_idx)) continue;
 
         // Copy parent preset's first extruder value into the target extruder slot.
-        auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
+        auto src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
         if (src_vec && src_vec->size() > 0)
             dst_vec->set_at(src_vec, dst_idx, 0);
     }
@@ -974,7 +974,7 @@ bool SliceEngine::validate_printer_model()
 
 bool SliceEngine::validate_printer_official(bool enforce)
 {
-    auto* printer_id = m_config.option<ConfigOptionString>("printer_settings_id");
+    auto printer_id = m_config.option<ConfigOptionString>("printer_settings_id");
     if (!printer_id || printer_id->value.empty())
         return true;
 
@@ -994,7 +994,7 @@ bool SliceEngine::validate_printer_official(bool enforce)
         current = m_preset_bundle->printers.find_preset(name, false);
     }
     if (!current) {
-        for (auto* pp : m_project_presets) {
+        for (auto pp : m_project_presets) {
             if (pp && pp->name == name && pp->type == Preset::TYPE_PRINTER) {
                 current = pp;
                 break;
@@ -1072,7 +1072,7 @@ bool SliceEngine::validate_printer_official(bool enforce)
             parent = m_preset_bundle->printers.find_preset(inherits_name, false);
         }
         if (!parent) {
-            for (auto* pp : m_project_presets) {
+            for (auto pp : m_project_presets) {
                 if (pp && pp->name == inherits_name && pp->type == Preset::TYPE_PRINTER) {
                     parent = pp;
                     break;
@@ -1123,7 +1123,7 @@ void SliceEngine::substitute_printer_params(const std::string& original_name,
             key_values, reason);
 
         // Copy printer_model from parent if available
-        auto* pm = parent_cfg.option<ConfigOptionString>("printer_model");
+        auto pm = parent_cfg.option<ConfigOptionString>("printer_model");
         if (pm && m_config.has("printer_model"))
             m_config.set_key_value("printer_model",
                 new ConfigOptionString(pm->value));
@@ -1162,7 +1162,7 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
         auto& bundle = *m_preset_bundle;
 
         // Layer 1: System printer config (Snapmaker U1)
-        auto* printer_id_opt = m_config.option<ConfigOptionString>("printer_settings_id");
+        auto printer_id_opt = m_config.option<ConfigOptionString>("printer_settings_id");
         if (printer_id_opt && !printer_id_opt->value.empty()) {
             const Preset* printer_preset = bundle.printers.find_preset(printer_id_opt->value, true);
             if (printer_preset)
@@ -1170,7 +1170,7 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
         }
 
         // Layer 2: System filament config (per-extruder)
-        auto* filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id");
+        auto filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id");
         if (filament_ids && !filament_ids->values.empty()) {
             const size_t num_filaments = filament_ids->values.size();
 
@@ -1196,7 +1196,7 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
                         const ConfigOption* src = filament_configs.front()->option(key);
                         if (src) dst_opt->set(src);
                     } else {
-                        auto* dst_vec = static_cast<ConfigOptionVectorBase*>(dst_opt);
+                        auto dst_vec = static_cast<ConfigOptionVectorBase*>(dst_opt);
                         std::vector<const ConfigOption*> opts(num_filaments, nullptr);
                         for (size_t i = 0; i < num_filaments; ++i)
                             opts[i] = (i < filament_configs.size())
@@ -1504,7 +1504,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     {
         bool spiral_lift_active = false;
         if (m_config.has("z_hop_types")) {
-            auto* zht_opt = m_config.option<ConfigOptionEnumsGeneric>("z_hop_types");
+            auto zht_opt = m_config.option<ConfigOptionEnumsGeneric>("z_hop_types");
             if (zht_opt) {
                 for (int v : zht_opt->values) {
                     if (v == static_cast<int>(ZHopType::zhtSpiral) ||
@@ -1647,7 +1647,7 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
         // If still single, also check the single_extruder_multi_material config flag
         // (used by non-Bambu printers for single-nozzle multi-filament).
         if (used_extruders.size() <= 1 && num_filaments > 1) {
-            auto* semm = m_config.option<ConfigOptionBool>("single_extruder_multi_material");
+            auto semm = m_config.option<ConfigOptionBool>("single_extruder_multi_material");
             if (semm && semm->value) {
                 // Model genuinely uses multiple filaments through one extruder.
                 // Insert sentinel values to prevent trimming.
@@ -2249,7 +2249,7 @@ void SliceEngine::build_statistics() {
             }
 
             // Look up the thumbnail path from plate data
-            for (const auto* pd : m_plate_data) {
+            for (const auto pd : m_plate_data) {
                 if (pd->plate_index == plate_id && !pd->thumbnail_file.empty()) {
                     plate_stats.model_thumbnail = "Metadata/plate_" + std::to_string(plate_id + 1) + ".png";
                     break;

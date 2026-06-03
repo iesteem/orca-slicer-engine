@@ -79,7 +79,7 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
 // ====================================================================
 
 SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir) {
-    auto* ctx = new (std::nothrow) slic3r_ctx_t();
+    auto ctx = new (std::nothrow) slic3r_ctx_t();
     if (!ctx) return nullptr;
 
     ctx->resources_dir = resources_dir ? resources_dir : "";
