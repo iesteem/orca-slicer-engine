@@ -34,6 +34,17 @@ static void print_usage(const char* prog) {
     printf("                                  (default: all presets substituted to official)\n");
     printf("  -v, --verbose         Verbose output\n");
     printf("  -h, --help            Show this help\n");
+    printf("\n");
+    printf("Exit codes:\n");
+    printf("  0   Success\n");
+    printf("  1   Invalid arguments / missing input / resources not found\n");
+    printf("  2   Input file not found\n");
+    printf("  3   Failed to load / parse input file\n");
+    printf("  4   Slicing failed\n");
+    printf("  5   Export failed (gcode / 3mf write error)\n");
+    printf("  6   Validation failed (model errors, config mismatch)\n");
+    printf("  7   Post-processing failed\n");
+    printf("  99  Internal error (initialization / library load failure)\n");
 }
 
 int main(int argc, char* argv[]) {
