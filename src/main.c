@@ -197,13 +197,14 @@ int main(int argc, char* argv[]) {
         "{"
         "\"plate_id\":%d,"
         "\"format\":\"%s\","
+        "\"single_plate\":%s,"
         "\"timeout_seconds\":%d,"
         "\"max_size_mb\":%d,"
         "\"substitute_printer\":%s,"
         "\"substitute_filaments\":%s"
         "%s"
         "}",
-        plate_id, format, timeout_sec, max_size_mb,
+        plate_id, format, plate_id > 0 ? "true" : "false", timeout_sec, max_size_mb,
         substitute_printer   ? "true" : "false",
         substitute_filaments ? "true" : "false",
         cancel_str);

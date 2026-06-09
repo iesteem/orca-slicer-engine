@@ -58,6 +58,7 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
     try {
         json j = json::parse(json_str);
         if (j.contains("plate_id"))       cfg.plate_id       = j["plate_id"].get<int>();
+        if (j.contains("single_plate"))   cfg.single_plate   = j["single_plate"].get<bool>();
         if (j.contains("timeout_seconds")) cfg.timeout_seconds = j["timeout_seconds"].get<int>();
         if (j.contains("max_size_mb"))     cfg.max_size_mb   = j["max_size_mb"].get<int>();
         if (j.contains("substitute_filaments"))    cfg.substitute_filaments    = j["substitute_filaments"].get<bool>();

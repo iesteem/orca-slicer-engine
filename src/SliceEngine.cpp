@@ -1679,7 +1679,68 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
             break;
         }
     }
+    struct BakedInstanceZ
+    {
+        BakedInstanceZ() : inst(nullptr) {}
+
+        ModelInstance* inst;
+        Vec3d          inst_offset;
+        std::vector<std::pair<ModelVolume*, Vec3d>> volume_offsets;
+    };
+
+    std::vector<BakedInstanceZ> baked_instance_z;
+    for (ModelObject* obj : m_model.objects)
+    {
+        if (obj == nullptr)
+            continue;
+
+        std::vector<ModelInstance*> printable_instances;
+        for (ModelInstance* inst : obj->instances)
+        {
+            if (inst == nullptr)
+                continue;
+            if (inst->is_printable())
+                printable_instances.push_back(inst);
+        }
+
+        if (printable_instances.size() != 1)
+            continue;
+
+        ModelInstance* inst = printable_instances.front();
+        const Vec3d inst_offset = inst->get_offset();
+        if (std::abs(inst_offset.z()) < 1e-9)
+            continue;
+
+        BakedInstanceZ baked;
+        baked.inst = inst;
+        baked.inst_offset = inst_offset;
+        for (ModelVolume* vol : obj->volumes)
+        {
+            if (vol == nullptr)
+                continue;
+            baked.volume_offsets.emplace_back(vol, vol->get_offset());
+            vol->set_offset(vol->get_offset() + inst_offset.z() * Vec3d::UnitZ());
+        }
+        inst->set_offset(Vec3d(inst_offset.x(), inst_offset.y(), 0.0));
+        baked_instance_z.push_back(std::move(baked));
+    }
+
     print.apply(m_model, merged_config);
+
+    for (std::vector<BakedInstanceZ>::reverse_iterator it = baked_instance_z.rbegin();
+         it != baked_instance_z.rend(); ++it)
+    {
+        if (it->inst == nullptr)
+            continue;
+        it->inst->set_offset(it->inst_offset);
+        for (std::vector<std::pair<ModelVolume*, Vec3d>>::const_iterator vol_it =
+                 it->volume_offsets.begin();
+             vol_it != it->volume_offsets.end(); ++vol_it)
+        {
+            if (vol_it->first != nullptr)
+                vol_it->first->set_offset(vol_it->second);
+        }
+    }
 
     if (print.num_object_instances() == 0) {
         m_stats.issues.push_back(make_warning(plate_id, "NO_PRINTABLE_OBJECTS",
