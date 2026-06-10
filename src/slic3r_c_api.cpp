@@ -1,4 +1,4 @@
-/**
+﻿/**
  * slic3r_c_api.cpp — Production C API boundary for libslic3r shared library.
  *
  * Internally uses the full SliceEngine pipeline. Externally exposes only C.
@@ -7,9 +7,9 @@
 
 #include "slic3r_c_api.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -130,7 +130,7 @@ SLIC3R_API int slic3r_slice(
     size_t        stats_size)
 {
     if (!ctx || !input_3mf || !output_base) {
-        set_error(ctx, "NULL argument");
+        set_error(ctx, "Null argument");
         return SLIC3R_ERR_ARGS;
     }
 
@@ -179,7 +179,7 @@ SLIC3R_API int slic3r_slice(
         if (stats_out && stats_size > 0) {
             size_t n = (json_str.size() < stats_size - 1)
                 ? json_str.size() : stats_size - 1;
-            memcpy(stats_out, json_str.c_str(), n);
+            std::copy_n(json_str.c_str(), n, stats_out);
             stats_out[n] = '\0';
         }
 
@@ -200,7 +200,7 @@ SLIC3R_API int slic3r_slice(
 }
 
 SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx) {
-    return ctx ? ctx->last_error.c_str() : "NULL context";
+    return ctx ? ctx->last_error.c_str() : "Null context";
 }
 
 SLIC3R_API const char* slic3r_version(void) {

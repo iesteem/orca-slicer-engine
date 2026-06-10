@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cmath>
 #include <string>
@@ -41,7 +41,7 @@ std::string generate_output_path(
 
 // Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic)
 inline int compute_column_count(int count) {
-    float value = sqrt((float)count);
-    float round_value = round(value);
-    return (value > round_value) ? (round_value + 1) : round_value;
+    const float value = std::sqrt(static_cast<float>(count));
+    const float round_value = std::round(value);
+    return static_cast<int>((value > round_value) ? (round_value + 1.0f) : round_value);
 }

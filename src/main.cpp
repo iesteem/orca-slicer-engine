@@ -1,4 +1,4 @@
-/**
+﻿/**
  * OrcaSlicer Cloud Slicing Engine
  * Minimal headless slicer for cloud deployment
  *

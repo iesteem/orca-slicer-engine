@@ -1,4 +1,4 @@
-/**
+﻿/**
  * slic3r_c_api.h — Pure C boundary for libslic3r shared library
  *
  * This header contains NO C++ types, NO STL, NO templates.
@@ -43,14 +43,14 @@ typedef struct slic3r_ctx_s slic3r_ctx_t;
 /* ---- Lifecycle ---- */
 
 /** Create a slicer context. resources_dir points to OrcaSlicer/resources/.
- *  Returns NULL on failure. */
+ *  Returns a null pointer on failure. */
 SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir);
 
 /** Destroy a slicer context and free all resources. */
 SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx);
 
 /** Enable Boost file logging. Call BEFORE slic3r_create() to capture all messages.
- *  @param path  Log file path, or NULL/"auto" to auto-derive from output_base. */
+ *  @param path  Log file path, or null/"auto" to auto-derive from output_base. */
 SLIC3R_API void slic3r_enable_file_log(const char* path);
 
 /* ---- Core operation ---- */
@@ -61,8 +61,8 @@ SLIC3R_API void slic3r_enable_file_log(const char* path);
  * @param ctx           Slicer context from slic3r_create()
  * @param input_3mf     Path to input .3mf file
  * @param output_base   Output path WITHOUT extension (e.g. "result")
- * @param params_json   JSON parameters (see below). NULL = defaults.
- * @param stats_out     Buffer for JSON statistics output. NULL = skip.
+ * @param params_json   JSON parameters (see below). Null = defaults.
+ * @param stats_out     Buffer for JSON statistics output. Null = skip.
  * @param stats_size    Size of stats_out buffer (including null terminator)
  *
  * @return SLIC3R_OK on success, error code on failure.

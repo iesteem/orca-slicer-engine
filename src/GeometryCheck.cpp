@@ -1,4 +1,4 @@
-#include "GeometryCheck.hpp"
+﻿#include "GeometryCheck.hpp"
 #include "Types.hpp"
 
 #include <boost/log/trivial.hpp>

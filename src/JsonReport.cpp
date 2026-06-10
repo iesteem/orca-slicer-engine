@@ -1,4 +1,4 @@
-#include "JsonReport.hpp"
+﻿#include "JsonReport.hpp"
 #include "Utils.hpp"
 
 #include <cmath>
