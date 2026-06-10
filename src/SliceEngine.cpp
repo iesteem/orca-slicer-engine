@@ -1,4 +1,4 @@
-#include "SliceEngine.hpp"
+﻿#include "SliceEngine.hpp"
 #include "GeometryCheck.hpp"
 #include "Utils.hpp"
 
@@ -236,7 +236,9 @@ bool SliceEngine::run() {
             if (has_geom_error) {
                 m_any_error = true;
                 set_error_type(EXIT_VALIDATION_ERROR);
-                m_stats.error_message = "模型文件中检测到几何缺陷（非流形/自相交/零体积），请修复后重新上传";
+                m_stats.error_message = "Geometry defects were detected in the model file "
+                                        "(non-manifold, self-intersection, or zero volume). "
+                                        "Please repair the model and upload it again.";
                 BOOST_LOG_TRIVIAL(error) << m_stats.error_message;
                 build_statistics();
                 return false;
@@ -303,7 +305,8 @@ bool SliceEngine::load_3mf() {
     // Extension check
     std::string ext = boost::filesystem::path(m_cfg.input_file).extension().string();
     if (ext != ".3mf") {
-        std::string msg = "仅支持上传 .3mf 格式的打印配置文件，请使用 Snapmaker Orca Slicer 导出";
+        std::string msg = "Only .3mf print configuration files are supported. "
+                          "Please export the file from Snapmaker Orca Slicer.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
         set_error_type(EXIT_LOAD_ERROR);
@@ -318,8 +321,8 @@ bool SliceEngine::load_3mf() {
         boost::system::error_code ec;
         boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, ec);
         if (!ec && file_size > max_file_size) {
-            std::string msg = "文件大小超过限制 (" + std::to_string(m_cfg.max_size_mb)
-                            + "MB)，请简化模型或减少面数后重试";
+            std::string msg = "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb)
+                            + " MB). Please simplify the model or reduce the face count and retry.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_any_error = true;
             set_error_type(EXIT_LOAD_ERROR);
@@ -379,7 +382,7 @@ bool SliceEngine::load_3mf() {
         auto pp = m_config.option<ConfigOptionStrings>("post_process", true);
         if (pp && !pp->values.empty()) {
             m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
-                "自定义后处理脚本在云切片中不被支持"));
+                "Custom post-processing scripts are not supported in cloud slicing."));
             m_config.set_key_value("post_process", new ConfigOptionStrings({}));
         }
     }
@@ -763,7 +766,7 @@ bool SliceEngine::validate_filament_official(bool enforce)
             }
 
             // Heuristic: user-modified system presets are exported with
-            // a suffix (e.g. "Generic PETG @U1 0.6 nozzle - 拷贝" or
+            // a suffix (e.g. "Generic PETG @U1 0.6 nozzle - copy" or
             // "Generic PETG @U1 0.6 nozzle 1").  Match by prefix: iterate
             // all loaded official presets and find the longest matching one.
             {
@@ -948,7 +951,7 @@ bool SliceEngine::validate_printer_model()
     const std::string ALLOWED_PRINTER_MODEL = "Snapmaker U1";
 
     if (!m_config.has("printer_model")) {
-        std::string msg = "打印机型号缺失，仅支持 Snapmaker U1 机型";
+        std::string msg = "Printer model is missing. Only Snapmaker U1 is supported.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
         set_error_type(EXIT_VALIDATION_ERROR);
@@ -959,8 +962,8 @@ bool SliceEngine::validate_printer_model()
 
     std::string printer_model = m_config.opt_string("printer_model");
     if (printer_model != ALLOWED_PRINTER_MODEL) {
-        std::string msg = "不支持的打印机型号: \"" + printer_model
-                        + "\"，仅支持 Snapmaker U1 机型";
+        std::string msg = "Unsupported printer model: \"" + printer_model
+                        + "\". Only Snapmaker U1 is supported.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
         set_error_type(EXIT_VALIDATION_ERROR);
@@ -1004,7 +1007,7 @@ bool SliceEngine::validate_printer_official(bool enforce)
 
     if (!current) {
         // Prefix matching heuristic: user-modified system printer presets
-        // are exported with a suffix (e.g. "Snapmaker U1 (0.6 nozzle) - 拷贝").
+        // are exported with a suffix (e.g. "Snapmaker U1 (0.6 nozzle) - copy").
         // Match the longest official printer preset that is a prefix.
         if (enforce && m_preset_bundle) {
             Preset* best = nullptr;
@@ -1313,7 +1316,8 @@ void SliceEngine::process_plate(int plate_id) {
         if (m_has_timeout && std::chrono::steady_clock::now() > m_timeout_deadline) {
             BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
             m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
-                "切片超时，模型可能过于复杂。如果您有异议，可点击申诉提交复审。"));
+                "Slicing timed out. The model may be too complex. "
+                "If you disagree, please submit an appeal for review."));
             m_any_error = true;
             set_error_type(EXIT_SLICING_ERROR);
             return;
@@ -1391,6 +1395,12 @@ void SliceEngine::process_plate(int plate_id) {
 
             BOOST_LOG_TRIVIAL(warning) << "G-code export failed for plate " << (plate_id + 1)
                 << " on attempt " << attempt;
+            // Preserve export error details in global stats.
+            // The retry-cleanup block above will clear previous errors
+            // on the next iteration, so only the last attempt's details
+            // will survive if all attempts fail.
+            for (auto& iss : slice_result.issues)
+                m_stats.issues.push_back(std::move(iss));
             slice_result.issues.clear();
             continue;
         }
@@ -1404,6 +1414,10 @@ void SliceEngine::process_plate(int plate_id) {
     // All retries exhausted
     BOOST_LOG_TRIVIAL(error) << "Slicing/export failed for plate " << (plate_id + 1)
         << " after " << MAX_RETRIES << " attempts";
+    m_stats.error_message = "Failed to slice plate " + std::to_string(plate_id + 1)
+        + " after " + std::to_string(MAX_RETRIES) + " attempts";
+    m_any_error = true;
+    set_error_type(EXIT_EXPORT_ERROR);
     } catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "Unhandled exception processing plate " << (plate_id + 1)
             << ": " << e.what();
@@ -1860,6 +1874,15 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         }
         result.gcode_path = exported;
 
+        if (exported.empty() && !gcode_output.empty()) {
+            BOOST_LOG_TRIVIAL(error) << "G-code export returned empty path for plate " << plate_id;
+            result.issues.push_back(make_error(plate_id, "GCODE_EXPORT_EMPTY",
+                "G-code export produced no output file. The model may contain geometry that cannot be sliced into printable toolpaths."));
+            m_any_error = true;
+            set_error_type(EXIT_EXPORT_ERROR);
+            return false;
+        }
+
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
@@ -1886,13 +1909,49 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
 
         return true;
     }
+    catch (const StringObjectException& e) {
+        auto [obj_name, opt_hint] = format_exception_context(e);
+        std::string detail = e.string + opt_hint;
+        BOOST_LOG_TRIVIAL(error) << "Failed to export G-code for plate " << plate_id
+            << ": " << detail << obj_name;
+        result.issues.push_back(make_error(plate_id, "GCODE_EXPORT_CONFIG_ERROR",
+            detail, obj_name));
+        m_any_error = true;
+        set_error_type(EXIT_EXPORT_ERROR);
+        return false;
+    }
+    catch (const SlicingErrors& exs) {
+        for (const auto& ex : exs.errors_) {
+            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " export error: " << ex.what();
+            result.issues.push_back(make_error(plate_id, "GCODE_EXPORT_SLICING_ERROR",
+                ex.what()));
+        }
+        m_any_error = true;
+        set_error_type(EXIT_EXPORT_ERROR);
+        return false;
+    }
+    catch (const SlicingError& ex) {
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " export error: " << ex.what();
+        result.issues.push_back(make_error(plate_id, "GCODE_EXPORT_SLICING_ERROR",
+            ex.what()));
+        m_any_error = true;
+        set_error_type(EXIT_EXPORT_ERROR);
+        return false;
+    }
+    catch (const CanceledException&) {
+        BOOST_LOG_TRIVIAL(error) << "G-code export cancelled for plate " << plate_id;
+        result.issues.push_back(make_error(plate_id, "GCODE_EXPORT_CANCELLED",
+            "G-code export was cancelled"));
+        m_any_error = true;
+        set_error_type(EXIT_EXPORT_ERROR);
+        return false;
+    }
     catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "Failed to export G-code for plate " << plate_id << ": " << e.what();
         result.issues.push_back(make_error(plate_id, "GCODE_EXPORT_ERROR",
-            "G-code export failed due to an internal error."));
+            std::string("G-code export failed: ") + e.what()));
         m_any_error = true;
         set_error_type(EXIT_EXPORT_ERROR);
-        m_plate_results[plate_id] = result;
         return false;
     }
 }
@@ -2039,7 +2098,8 @@ void SliceEngine::package_output() {
         pd->nozzle_diameters = nozzle_diameters_str;
 
         auto& modes = result.gcode_result.print_statistics.modes;
-        int print_time = (int)modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
+        const int print_time = static_cast<int>(
+            modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time);
         pd->gcode_prediction = std::to_string(print_time);
 
         if (result.total_weight != 0.0) {
