@@ -138,7 +138,7 @@ void output_slice_statistics(const SliceOutputStats& stats,
             ordered_json fils = ordered_json::array();
             for (const auto& detail : plate.filament_details) {
                 ordered_json fdj;
-                fdj["filament_id"] = detail.filament_id;
+                fdj["id"] = detail.id;
                 fdj["type"]        = detail.type;
                 fdj["color"]       = detail.color;
                 fdj["used_g"]      = round2(detail.used_g);

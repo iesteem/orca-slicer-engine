@@ -53,7 +53,7 @@ inline Issue make_tip(int plate_id, const std::string& code, const std::string& 
 struct SliceOutputStats {
     // Filament detail for each extruder
     struct FilamentDetail {
-        int filament_id;
+        int id;
         std::string type;         // Filament type (e.g., "PLA", "ABS")
         std::string color;        // Filament color (e.g., "#FF0000")
         double used_g;            // Used weight in grams
