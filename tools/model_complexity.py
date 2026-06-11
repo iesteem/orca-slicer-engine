@@ -2,8 +2,51 @@
 """
 3MF Slicing Complexity Score (20-point scale)
 
-S-curve (sigmoid) maps triangle count → 1–20, multiplied by config factors.
-Zero external dependencies — Python 3 stdlib only.
+S-curve (sigmoid) maps triangle count -> 1-20, multiplied by config factors.
+Zero external dependencies -- Python 3 stdlib only.
+
+---- Caller Decision Logic ----
+
+The scoring system provides two orthogonal signals:
+
+  score (1-20)       -> slice wall-clock time estimate
+  memory_risk (str)  -> G-code export OOM probability
+
+They are correlated but not equivalent. A model can be high-score but
+memory-safe (e.g. planar model with many triangles), or low-score but
+memory-risky (tall model with few triangles).
+
+Calibrated against 22-model k3s slicing run on 16 GiB pod (2026-06-11):
+
+                        memory_risk
+                  low      medium      high       critical
+  score          (safe)   (safe)     (>=32GiB)   (>=32GiB, may OOM)
+  ----------    -------  --------   ---------   ----------------
+  trivial (1-3)    2         -           -            -
+  normal  (4-7)    2         -           -            -
+  moderate(8-12)   7         4           1            -
+  long   (13-16)    7         1           -            -
+  extreme(17-20)    7         4           4            4
+
+  Cell value = number of models in that bucket.
+  Total OOMs: 3, all in (extreme, critical).
+
+Recommended caller rules:
+
+  1. Pod sizing (memory_risk):
+       low / medium  -> standard 16 GiB pod
+       high           -> 32 GiB pod recommended
+       critical       -> 32 GiB pod required; if still OOM, mark unslicable
+
+  2. Timeout (score):
+       trivial/normal ->  60s timeout
+       moderate       -> 180s timeout
+       long           -> 300s timeout
+       extreme        -> 600s timeout
+
+  3. Queue priority (score):
+       Trivial/normal models can be fast-tracked; extreme models should
+       be scheduled on idle nodes to avoid blocking the queue.
 
 Usage:
     from model_complexity import score_model, score_geometry, score_config
@@ -14,7 +57,7 @@ Usage:
         "ironing_enabled": False,
         "infill_density_pct": 15,
     })
-    # result = {"score": 14, "level": "long", "breakdown": {...}}
+    # result = {"score": 14, "level": "long", "memory_risk": {...}, "breakdown": {...}}
 """
 
 import math
@@ -30,14 +73,15 @@ SCORE_MIN = 1
 SCORE_MAX = 20
 
 # ── Level definitions (calibrated against actual slice wall-clock times) ──
-# "extreme" now doubles as OOM-risk flag: models scoring 17+ are likely to
-# exhaust memory during G-code export, not just run slowly.
+# Score predicts slice wall-clock time only. Use memory_risk for OOM prediction.
+# 22-model k3s validation (2026-06-11): 19/22 score>=17 models succeeded.
+# Score alone is NOT an OOM predictor — see assess_memory_risk() instead.
 LEVELS = [
-    ("trivial",   1,  3,  "<5s, memory-safe"),
-    ("normal",    4,  7,  "<10s, memory-safe"),
+    ("trivial",   1,  3,  "<5s"),
+    ("normal",    4,  7,  "<10s"),
     ("moderate",  8, 12,  "10-30s"),
-    ("long",     13, 16,  "30-60s, monitor memory"),
-    ("extreme",  17, 20,  "60s+, high OOM risk during G-code export"),
+    ("long",     13, 16,  "30-60s"),
+    ("extreme",  17, 20,  "60s+, check memory_risk for OOM"),
 ]
 
 # ── Config multipliers ─────────────────────────────────────────────
@@ -81,18 +125,25 @@ def score_layer_factor(estimated_layers: int) -> float:
 
 def assess_memory_risk(total_triangles: int, estimated_layers: int,
                        object_count: int = 1) -> dict:
-    """Assess G-code export OOM risk independently from wall-clock score.
+    """Assess G-code export OOM risk.
 
     The engine holds all plate G-code in memory until write completes.
     Total G-code volume ∝ layers × per-layer complexity.
     We proxy per-layer complexity with sqrt(triangles), giving:
-        memory_index = layers × sqrt(triangles) × object_factor.
+        memory_index = layers × sqrt(triangles).
 
-    This formula intentionally gives tall-thin models (many layers, moderate
-    triangles) a higher index than wide-flat models (few layers, many triangles),
-    matching the observed OOM pattern in production.
+    object_count is accepted for API compatibility but NOT factored into
+    the index — multi-object models spread the same total triangles across
+    more sub-objects, which adds G-code boilerplate but does not multiply
+    per-layer memory pressure.  k3s validation confirmed that object_factor
+    falsely inflated indices (e.g. 机甲暴龙 scored higher than 醒狮眼镜仔
+    but succeeded while 醒狮眼镜仔 OOMed).
 
-    Thresholds are provisional — calibrate against production OOM data.
+    Thresholds calibrated against 22-model k3s slicing run (2026-06-11):
+      - 醒狮眼镜仔(6):  523 × sqrt(9.2M)  = 1.59M → OOM
+      - 醒狮眼镜仔:     523 × sqrt(18.5M) = 2.25M → OOM
+      - 机甲暴龙:        727 × sqrt(1.3M)  = 822K → success
+      - 中式楼阁:        693 × sqrt(7.9M)  = 1.95M → success (134s, heavy)
 
     Returns:
         {"risk": "low"|"medium"|"high"|"critical",
@@ -102,17 +153,13 @@ def assess_memory_risk(total_triangles: int, estimated_layers: int,
         return {"risk": "unknown", "index": 0,
                 "label": "unknown (insufficient layer/triangle data)"}
 
-    # Each additional object adds overhead from per-object G-code boilerplate.
-    # Calibrated at 0.15/object: IKEA SKÅDIS (7 objects, 231K tris, 775 layers)
-    # succeeded in production while 0.30/object would have flagged it critical.
-    object_factor = 1.0 + 0.15 * max(object_count - 1, 0)
-    memory_index = estimated_layers * math.sqrt(total_triangles) * object_factor
+    memory_index = estimated_layers * math.sqrt(total_triangles)
 
-    if memory_index < 500_000:
+    if memory_index < 300_000:
         risk = "low"
-    elif memory_index < 1_000_000:
+    elif memory_index < 750_000:
         risk = "medium"
-    elif memory_index < 2_000_000:
+    elif memory_index < 1_500_000:
         risk = "high"
     else:
         risk = "critical"
@@ -120,7 +167,7 @@ def assess_memory_risk(total_triangles: int, estimated_layers: int,
     labels = {
         "low":      "low — G-code export memory is manageable",
         "medium":   "medium — monitor memory during export",
-        "high":     "high — significant memory pressure expected",
+        "high":     "high — significant memory pressure, recommend >=32 GiB pod",
         "critical": "critical — high probability of OOM during G-code export",
     }
     return {"risk": risk, "index": round(memory_index), "label": labels[risk]}
@@ -182,12 +229,25 @@ def score_model(total_triangles: int, config: dict = None,
                 estimated_layers: int = 0, object_count: int = 1) -> dict:
     """Composite score: geometry × config multiplier × layer factor.
 
+    Score (1-20) predicts slice wall-clock time.
+    memory_risk predicts G-code export OOM probability.
+    These are independent dimensions — a high score does NOT imply OOM risk,
+    and a low score does NOT guarantee memory safety.
+
+    Decision logic (calibrated against 22-model k3s run, 2026-06-11):
+        if mem_risk["risk"] == "critical":
+            # High OOM probability — reject or require 32+ GiB pod
+        elif mem_risk["risk"] == "high":
+            # Significant memory pressure — recommend >=32 GiB pod
+        else:
+            # Safe for standard 16 GiB pod
+
     Args:
         total_triangles: Total triangle count across all printable objects.
         config: Config dict, default empty (no extra multipliers).
         estimated_layers: Estimated layer count (Z-height / 0.2 mm).
                           Used for G-code export memory risk. 0 = unknown.
-        object_count: Number of printable objects on the plate.
+        object_count: Accepted for API compatibility, no longer affects index.
 
     Returns:
         {
