@@ -1466,7 +1466,7 @@ void SliceEngine::package_output() {
             if (filament_colors && idx < filament_colors->values.size())
                 info.color = filament_colors->values[idx];
             if (filament_ids && idx < filament_ids->values.size())
-                info.filament_id = filament_ids->values[idx];
+                info.id = filament_ids->values[idx];
         }
 
         // Rebuild objects_and_instances using model.objects array indices
@@ -1683,7 +1683,7 @@ void SliceEngine::build_statistics() {
 
             for (const auto& [extruder_id, used_g] : plate_stats.filament_used_g) {
                 SliceOutputStats::FilamentDetail detail;
-                detail.filament_id = extruder_id;
+                detail.id = extruder_id;
                 detail.used_g = used_g;
                 detail.used_m = plate_stats.filament_used_m.count(extruder_id)
                                      ? plate_stats.filament_used_m.at(extruder_id)
