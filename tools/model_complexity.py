@@ -30,12 +30,14 @@ SCORE_MIN = 1
 SCORE_MAX = 20
 
 # ── Level definitions (calibrated against actual slice wall-clock times) ──
+# "extreme" now doubles as OOM-risk flag: models scoring 17+ are likely to
+# exhaust memory during G-code export, not just run slowly.
 LEVELS = [
-    ("trivial",   1,  3,  "<5秒"),
-    ("normal",    4,  7,  "10秒内"),
-    ("moderate",  8, 12,  "10–30秒"),
-    ("long",     13, 16,  "30–60秒，建议预留"),
-    ("extreme",  17, 20,  "60秒+，建议先简化模型"),
+    ("trivial",   1,  3,  "<5s, memory-safe"),
+    ("normal",    4,  7,  "<10s, memory-safe"),
+    ("moderate",  8, 12,  "10-30s"),
+    ("long",     13, 16,  "30-60s, monitor memory"),
+    ("extreme",  17, 20,  "60s+, high OOM risk during G-code export"),
 ]
 
 # ── Config multipliers ─────────────────────────────────────────────
@@ -55,6 +57,73 @@ def score_geometry(total_triangles: int) -> float:
     exponent = -_SIGMOID_K * (logx - _SIGMOID_CENTER)
     sigmoid = 1.0 / (1.0 + math.exp(exponent))
     return SCORE_MIN + (SCORE_MAX - SCORE_MIN) * sigmoid
+
+
+def score_layer_factor(estimated_layers: int) -> float:
+    """Sigmoid multiplier for layer count (G-code export memory driver).
+
+    The engine holds all plate G-code in memory until write completes.
+    Memory during export scales with total layers × per-layer complexity.
+    Tall models with many layers are at disproportionate risk of OOM,
+    even when triangle count is moderate.
+
+    Returns:
+        1.0 (<=100 layers) to ~1.6 (5000+ layers)
+    """
+    if estimated_layers <= 100:
+        return 1.0
+    logx = math.log10(estimated_layers)
+    # Center at log10(800) ≈ 160 mm at 0.2 mm layer height
+    exponent = -2.0 * (logx - 2.9)
+    sigmoid = 1.0 / (1.0 + math.exp(exponent))
+    return 1.0 + 0.6 * sigmoid
+
+
+def assess_memory_risk(total_triangles: int, estimated_layers: int,
+                       object_count: int = 1) -> dict:
+    """Assess G-code export OOM risk independently from wall-clock score.
+
+    The engine holds all plate G-code in memory until write completes.
+    Total G-code volume ∝ layers × per-layer complexity.
+    We proxy per-layer complexity with sqrt(triangles), giving:
+        memory_index = layers × sqrt(triangles) × object_factor.
+
+    This formula intentionally gives tall-thin models (many layers, moderate
+    triangles) a higher index than wide-flat models (few layers, many triangles),
+    matching the observed OOM pattern in production.
+
+    Thresholds are provisional — calibrate against production OOM data.
+
+    Returns:
+        {"risk": "low"|"medium"|"high"|"critical",
+         "index": float, "label": str}
+    """
+    if estimated_layers <= 0 or total_triangles <= 0:
+        return {"risk": "unknown", "index": 0,
+                "label": "unknown (insufficient layer/triangle data)"}
+
+    # Each additional object adds overhead from per-object G-code boilerplate.
+    # Calibrated at 0.15/object: IKEA SKÅDIS (7 objects, 231K tris, 775 layers)
+    # succeeded in production while 0.30/object would have flagged it critical.
+    object_factor = 1.0 + 0.15 * max(object_count - 1, 0)
+    memory_index = estimated_layers * math.sqrt(total_triangles) * object_factor
+
+    if memory_index < 500_000:
+        risk = "low"
+    elif memory_index < 1_000_000:
+        risk = "medium"
+    elif memory_index < 2_000_000:
+        risk = "high"
+    else:
+        risk = "critical"
+
+    labels = {
+        "low":      "low — G-code export memory is manageable",
+        "medium":   "medium — monitor memory during export",
+        "high":     "high — significant memory pressure expected",
+        "critical": "critical — high probability of OOM during G-code export",
+    }
+    return {"risk": risk, "index": round(memory_index), "label": labels[risk]}
 
 
 def score_config(config: dict) -> dict:
@@ -109,20 +178,26 @@ def classify_score(score: int) -> dict:
     return {"level": "extreme", "label": "extreme"}
 
 
-def score_model(total_triangles: int, config: dict = None) -> dict:
-    """Composite score: geometry × config multiplier.
+def score_model(total_triangles: int, config: dict = None,
+                estimated_layers: int = 0, object_count: int = 1) -> dict:
+    """Composite score: geometry × config multiplier × layer factor.
 
     Args:
-        total_triangles: Total triangle count.
+        total_triangles: Total triangle count across all printable objects.
         config: Config dict, default empty (no extra multipliers).
+        estimated_layers: Estimated layer count (Z-height / 0.2 mm).
+                          Used for G-code export memory risk. 0 = unknown.
+        object_count: Number of printable objects on the plate.
 
     Returns:
         {
             "score": 14,                  # int, 1–20
             "level": "long",
-            "level_desc": "long (30–60秒，建议预留)",
+            "level_desc": "long (30-60s, monitor memory)",
+            "memory_risk": {"risk": "medium", "index": 750000, "label": "..."},
             "breakdown": {
                 "geometry": {"total_triangles": 234567, "score": 10.5},
+                "layers": {"estimated_layers": 800, "factor": 1.30},
                 "config": {"multiplier": 1.6, "factors": [...]},
                 "objects": None,
             },
@@ -133,20 +208,27 @@ def score_model(total_triangles: int, config: dict = None) -> dict:
 
     geom_score = score_geometry(total_triangles)
     cfg = score_config(config)
+    layer_factor = score_layer_factor(estimated_layers)
 
-    raw = geom_score * cfg["multiplier"]
+    raw = geom_score * cfg["multiplier"] * layer_factor
     final_score = min(SCORE_MAX, max(SCORE_MIN, round(raw)))
 
     level_info = classify_score(final_score)
+    mem_risk = assess_memory_risk(total_triangles, estimated_layers, object_count)
 
     return {
         "score": final_score,
         "level": level_info["level"],
         "level_desc": level_info["label"],
+        "memory_risk": mem_risk,
         "breakdown": {
             "geometry": {
                 "total_triangles": total_triangles,
                 "score": round(geom_score, 1),
+            },
+            "layers": {
+                "estimated_layers": estimated_layers,
+                "factor": round(layer_factor, 2),
             },
             "config": {
                 "multiplier": cfg["multiplier"],

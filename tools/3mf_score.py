@@ -407,7 +407,9 @@ def _format_text_report(path: str, result: dict, mesh_info: dict) -> str:
     b = result["breakdown"]
     g = b["geometry"]
     c = b["config"]
+    ly = b.get("layers", {})
     objects = mesh_info.get("objects", [])
+    mem = result.get("memory_risk", {})
 
     bar_len = 20
     filled = round(score / 20 * bar_len)
@@ -422,11 +424,23 @@ def _format_text_report(path: str, result: dict, mesh_info: dict) -> str:
         f"几何得分:   {g['score']:<5}  ({g['total_triangles']:,} 面片)",
     ]
 
+    # Layer info
+    est_layers = ly.get("estimated_layers", 0)
+    if est_layers > 0:
+        bb = mesh_info.get("bounding_box_mm", {})
+        h_str = f"{bb['h']:.0f}mm" if bb and bb.get("h") else "?"
+        lines.append(f"预估层数:   {est_layers} 层 (Z≈{h_str}) ×{ly.get('factor', 1.0):.2f}")
+
     if c["multiplier"] > 1.0:
         factors_str = ", ".join(f["label"] for f in c["factors"])
         lines.append(f"配置系数:   ×{c['multiplier']}  ({factors_str})")
     else:
         lines.append(f"配置系数:   ×{c['multiplier']}  (无额外开销)")
+
+    # Memory risk
+    if mem.get("risk") != "unknown":
+        risk_icon = {"low": "✓", "medium": "△", "high": "▲", "critical": "✗"}.get(mem.get("risk"), "?")
+        lines.append(f"导出内存风险: {risk_icon} {mem.get('risk')} (index={mem.get('index', 0):,})")
 
     lines.append("─" * 54)
 
@@ -468,8 +482,10 @@ def _format_json_report(path: str, result: dict, mesh_info: dict) -> str:
         "score": result["score"],
         "level": result["level"],
         "level_desc": result["level_desc"],
+        "memory_risk": result.get("memory_risk", {}),
         "breakdown": {
             "geometry": geom,
+            "layers": result["breakdown"].get("layers", {}),
             "config": result["breakdown"]["config"],
             "objects": mesh_info.get("objects", []),
         },
@@ -508,7 +524,12 @@ def main():
         print("错误: 3MF 中没有找到可打印的 mesh 数据", file=sys.stderr)
         sys.exit(2)
 
-    result = score_model(mesh_info["total_triangles"], config)
+    result = score_model(
+        mesh_info["total_triangles"],
+        config,
+        estimated_layers=mesh_info.get("estimated_layers", 0),
+        object_count=mesh_info.get("object_count", 1),
+    )
 
     if args.threshold is not None:
         sys.exit(1 if result["score"] >= args.threshold else 0)

@@ -56,6 +56,8 @@ def score_file(filepath, score_tool, timeout=120):
                     "error": f"rc={r.returncode} stderr={r.stderr[:200]}"}
         data = json.loads(r.stdout)
         features = data.get("breakdown", {}).get("geometry", {})
+        layers_info = data.get("breakdown", {}).get("layers", {})
+        mem_risk = data.get("memory_risk", {})
         return {
             "score": data.get("score", -1),
             "level": data.get("level", "unknown"),
@@ -64,7 +66,10 @@ def score_file(filepath, score_tool, timeout=120):
             "objects": features.get("object_count", len(data.get("breakdown", {}).get("objects", []))),
             "shells": features.get("shell_count", 0),
             "estimated_layers": features.get("estimated_layers", 0),
+            "layer_factor": layers_info.get("factor", 1.0),
             "bounding_box_mm": features.get("bounding_box_mm", None),
+            "memory_risk": mem_risk.get("risk", "unknown"),
+            "memory_index": mem_risk.get("index", 0),
         }
     except subprocess.TimeoutExpired:
         return {"score": -1, "level": "timeout", "triangles": 0, "error": f"score timeout after {timeout}s"}
@@ -274,9 +279,12 @@ def main():
             print(f"  Score: {sd.get('score')}, Level: {sd.get('level')}, Tris: {sd.get('triangles',0)}", end="")
             if sd.get("estimated_layers", 0) > 0:
                 print(f", Layers(est): {sd.get('estimated_layers')}", end="")
+                print(f" x{sd.get('layer_factor', 1.0):.2f}", end="")
             if sd.get("bounding_box_mm"):
                 bb = sd["bounding_box_mm"]
                 print(f", BB: {bb['w']}x{bb['d']}x{bb['h']}mm", end="")
+            if sd.get("memory_risk") not in (None, "unknown"):
+                print(f", MemRisk: {sd['memory_risk']}", end="")
             print()
         else:
             result.update({"score": -1, "level": "n/a", "triangles": 0})
