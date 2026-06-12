@@ -28,6 +28,7 @@ static void print_usage(const char* prog) {
     printf("  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit)\n");
     printf("  --max-size <mb>       Max input file size in MB (default: 200, 0 = no limit)\n");
     printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
+    printf("  --threads <N>         Limit TBB thread count to N cores (default: all cores)\n");
     printf("  --allow-custom-presets          Allow both custom printer and filament presets\n");
     printf("  --allow-custom-printer-presets  Allow custom printer presets\n");
     printf("  --allow-custom-filament-presets Allow custom filament presets\n");
@@ -59,6 +60,7 @@ int main(int argc, char* argv[]) {
     const char* cancel_file = NULL;
     int         substitute_printer   = 1;  /* default: enforce */
     int         substitute_filaments = 1;  /* default: enforce */
+    int         thread_count  = 0;         /* 0 = all cores */
     int         json_enabled = 0;          /* write JSON stats file */
     int         log_enabled  = 0;          /* enable file logging */
     const char* log_file     = NULL;       /* custom log file path */
@@ -107,6 +109,9 @@ int main(int argc, char* argv[]) {
             substitute_printer = 0;
         } else if (!strcmp(argv[i], "--allow-custom-filament-presets")) {
             substitute_filaments = 0;
+        } else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
+            thread_count = atoi(argv[++i]);
+            if (thread_count < 0) thread_count = 0;
         } else if (argv[i][0] != '-') {
             input_3mf = argv[i];
         } else {
@@ -201,12 +206,14 @@ int main(int argc, char* argv[]) {
         "\"timeout_seconds\":%d,"
         "\"max_size_mb\":%d,"
         "\"substitute_printer\":%s,"
-        "\"substitute_filaments\":%s"
+        "\"substitute_filaments\":%s,"
+        "\"thread_count\":%d"
         "%s"
         "}",
         plate_id, format, plate_id > 0 ? "true" : "false", timeout_sec, max_size_mb,
         substitute_printer   ? "true" : "false",
         substitute_filaments ? "true" : "false",
+        thread_count,
         cancel_str);
 
     /* Slice */

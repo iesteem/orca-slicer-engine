@@ -68,6 +68,7 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
             cfg.format = (fmt == "gcode") ? OutputFormat::GCODE : OutputFormat::GCODE_3MF;
         }
         if (j.contains("cancel_file"))    cfg.cancel_file    = j["cancel_file"].get<std::string>();
+        if (j.contains("thread_count"))  cfg.thread_count  = j["thread_count"].get<int>();
         return true;
     } catch (const std::exception& e) {
         fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());

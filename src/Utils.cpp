@@ -60,6 +60,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --max-size <mb>        Max input file size in MB (default: 200, 0 = no limit)" << std::endl;
     std::cout << "  --cancel-file <file>   Watchdog file for external cancellation" << std::endl;
     std::cout << "                         If the file is created, slicing is cancelled" << std::endl;
+    std::cout << "  --threads <N>          Limit TBB thread count to N cores (default: all cores)" << std::endl;
     std::cout << "  --allow-custom-presets          Allow both custom printer and filament presets" << std::endl;
     std::cout << "  --allow-custom-printer-presets  Allow custom printer presets" << std::endl;
     std::cout << "  --allow-custom-filament-presets Allow custom filament presets" << std::endl;

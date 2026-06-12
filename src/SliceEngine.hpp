@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,9 @@
 #include "Types.hpp"
 
 // Forward declarations for types used by pointer/reference only
+namespace tbb {
+    class global_control;
+}
 namespace Slic3r {
     class Print;
     class Preset;
@@ -33,6 +37,7 @@ struct EngineConfig {
     std::string cancel_file;       // watchdog file path for external cancellation
     bool substitute_printer  = true;   // whether to substitute printer preset with official parent
     bool substitute_filaments = true;  // whether to substitute filament presets with official parent
+    int  thread_count = 0;            // 0 = use all cores; N = limit TBB to N threads
 };
 
 // Intermediate result for a single plate during the pipeline
@@ -134,6 +139,9 @@ private:
     bool m_any_error = false;
     bool m_any_postprocess_warning = false;
     int m_error_type = EXIT_OK;  // most severe exit code encountered
+
+    // TBB thread count control (kept alive for entire slicing duration)
+    std::unique_ptr<tbb::global_control> m_tbb_control;
 
     // Loaded data
     Slic3r::Model m_model;

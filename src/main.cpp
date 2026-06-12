@@ -126,6 +126,16 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--allow-custom-filament-presets") {
             args.engine_cfg.substitute_filaments = false;
         }
+        else if (arg == "--threads" && i + 1 < argc) {
+            try {
+                int val = std::stoi(argv[++i]);
+                args.engine_cfg.thread_count = (val < 0) ? 0 : val;
+            } catch (...) {
+                std::cerr << "Error: Invalid thread count." << std::endl;
+                BOOST_LOG_TRIVIAL(info) << "Exiting with code " << EXIT_INVALID_ARGS;
+                std::exit(EXIT_INVALID_ARGS);
+            }
+        }
         else if ((arg == "-f" || arg == "--format") && i + 1 < argc) {
             std::string fmt = argv[++i];
             if (fmt == "gcode") {
