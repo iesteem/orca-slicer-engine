@@ -11,12 +11,11 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Semver.hpp"
 
+#include <tbb/global_control.h>
+
 #include "Types.hpp"
 
 // Forward declarations for types used by pointer/reference only
-namespace tbb {
-    class global_control;
-}
 namespace Slic3r {
     class Print;
     class Preset;

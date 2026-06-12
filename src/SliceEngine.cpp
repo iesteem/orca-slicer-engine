@@ -8,14 +8,7 @@
 #include <set>
 #include <sstream>
 
-#if TBB_VERSION_MAJOR >= 2021
-    #define TBB_HAS_GLOBAL_CONTROL
-#endif
-#ifdef TBB_HAS_GLOBAL_CONTROL
-    #include <tbb/global_control.h>
-#else
-    #include <tbb/task_scheduler_init.h>
-#endif
+#include <tbb/global_control.h>
 
 #include <boost/log/trivial.hpp>
 #include <boost/log/expressions.hpp>
@@ -257,13 +250,11 @@ bool SliceEngine::run() {
         // --- Thread count control ---
         // Limit TBB parallelism for the entire slicing + export pipeline.
         // The control object must stay alive until run() returns.
-#ifdef TBB_HAS_GLOBAL_CONTROL
         if (m_cfg.thread_count > 0) {
             m_tbb_control = std::make_unique<tbb::global_control>(
                 tbb::global_control::max_allowed_parallelism, m_cfg.thread_count);
             BOOST_LOG_TRIVIAL(info) << "TBB thread count limited to " << m_cfg.thread_count;
         }
-#endif
 
         // Collect plates to process (internal plate_index is 0-based)
         std::vector<int> plates_to_process;
