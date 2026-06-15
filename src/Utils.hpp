@@ -6,6 +6,7 @@
 
 #include <boost/filesystem.hpp>
 
+#include "libslic3r/Config.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/Print.hpp"
 
@@ -19,6 +20,10 @@ std::pair<std::string, std::string> format_exception_context(const Slic3r::Strin
 
 // Print CLI usage information
 void print_usage(const char* program_name);
+
+// Dump all config option definitions (key, type, min, max, enum values) as JSON.
+// Used by preprocessing layers to clamp/delete incompatible config keys.
+std::string dump_config_schema(const Slic3r::ConfigDef& config_def);
 
 // Simple progress callback for cloud environment.
 // When print and cancel_file are provided, the callback periodically checks

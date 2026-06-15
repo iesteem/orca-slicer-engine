@@ -9,6 +9,119 @@
 
 #include "libslic3r/libslic3r.h"
 
+// Map ConfigOptionType enum to JSON-friendly string
+static const char* config_type_name(int type) {
+    bool is_vector = (type & int(Slic3r::coVectorType)) != 0;
+    int base = is_vector ? (type & ~int(Slic3r::coVectorType)) : type;
+    switch (base) {
+        case Slic3r::coFloat:  return is_vector ? "floats"           : "float";
+        case Slic3r::coInt:    return is_vector ? "ints"             : "int";
+        case Slic3r::coString: return is_vector ? "strings"          : "string";
+        case Slic3r::coPercent:return is_vector ? "percents"         : "percent";
+        case Slic3r::coFloatOrPercent: return is_vector ? "floats_or_percents" : "float_or_percent";
+        case Slic3r::coBool:   return is_vector ? "bools"            : "bool";
+        case Slic3r::coEnum:   return is_vector ? "enums"            : "enum";
+        case Slic3r::coPoint:  return is_vector ? "points"           : "point";
+        case Slic3r::coPoint3: return "point3";
+        default:               return "unknown";
+    }
+}
+
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;
+        }
+    }
+    return out;
+}
+
+std::string dump_config_schema(const Slic3r::ConfigDef& config_def) {
+    std::string json = "{";
+    bool first_key = true;
+
+    for (const auto& kv : config_def.options) {
+        const std::string& key = kv.first;
+        const Slic3r::ConfigOptionDef& def = kv.second;
+
+        // Skip internal/disabled options with no CLI
+        if (def.cli == Slic3r::ConfigOptionDef::nocli && def.label.empty())
+            continue;
+
+        if (!first_key) json += ",";
+        first_key = false;
+        json += "\n  \"" + key + "\": {";
+
+        json += "\"type\":\"" + std::string(config_type_name(def.type)) + "\"";
+
+        if (!def.label.empty())
+            json += ",\"label\":\"" + json_escape(def.label) + "\"";
+
+        // Include min if not default INT_MIN
+        if (def.min > INT_MIN)
+            json += ",\"min\":" + std::to_string(def.min);
+
+        // Include max if not default INT_MAX
+        if (def.max < INT_MAX)
+            json += ",\"max\":" + std::to_string(def.max);
+
+        if (def.type == Slic3r::coFloatOrPercent || def.type == Slic3r::coFloatsOrPercents)
+            json += ",\"max_literal\":" + std::to_string(static_cast<int>(def.max_literal));
+
+        if (def.nullable)
+            json += ",\"nullable\":true";
+
+        // Enum values
+        if (!def.enum_values.empty()) {
+            json += ",\"enum_values\":[";
+            for (size_t i = 0; i < def.enum_values.size(); ++i) {
+                if (i > 0) json += ",";
+                json += "\"" + json_escape(def.enum_values[i]) + "\"";
+            }
+            json += "]";
+        }
+
+        if (!def.enum_labels.empty()) {
+            json += ",\"enum_labels\":[";
+            for (size_t i = 0; i < def.enum_labels.size(); ++i) {
+                if (i > 0) json += ",";
+                json += "\"" + json_escape(def.enum_labels[i]) + "\"";
+            }
+            json += "]";
+        }
+
+        // Extra U1-specific enum values
+        if (!def.enum_values_u1.empty()) {
+            json += ",\"enum_values_u1\":[";
+            for (size_t i = 0; i < def.enum_values_u1.size(); ++i) {
+                if (i > 0) json += ",";
+                json += "\"" + json_escape(def.enum_values_u1[i]) + "\"";
+            }
+            json += "]";
+        }
+
+        // ratio_over for coFloatOrPercent
+        if (!def.ratio_over.empty())
+            json += ",\"ratio_over\":\"" + json_escape(def.ratio_over) + "\"";
+
+        // sidetext (unit)
+        if (!def.sidetext.empty())
+            json += ",\"unit\":\"" + json_escape(def.sidetext) + "\"";
+
+        json += "}";
+    }
+
+    json += "\n}\n";
+    return json;
+}
+
 void log_plate_message(const char* stage, const char* level, int plate, const std::string& msg)
 {
     std::string full = std::string(stage) + " " + level + ": Plate " + std::to_string(plate) + ": " + msg;
@@ -69,6 +182,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --log-file <file>      Specify log file path (implies --log)" << std::endl;
     std::cout << "  -v, --verbose          Enable verbose logging" << std::endl;
     std::cout << "  -h, --help             Show this help message" << std::endl;
+    std::cout << "  --dump-config-schema   Dump all config option definitions as JSON and exit" << std::endl;
     std::cout << std::endl;
     std::cout << "Exit codes:" << std::endl;
     std::cout << "  0  Success" << std::endl;

@@ -22,6 +22,7 @@
 #include <boost/log/support/date_time.hpp>
 
 #include "libslic3r/libslic3r.h"
+#include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Utils.hpp"
 
 #include "Types.hpp"
@@ -50,6 +51,10 @@ CliArgs parse_args(int argc, char* argv[]) {
         if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             BOOST_LOG_TRIVIAL(info) << "Exiting with code " << EXIT_OK;
+            std::exit(EXIT_OK);
+        }
+        else if (arg == "--dump-config-schema") {
+            std::cout << dump_config_schema(Slic3r::print_config_def);
             std::exit(EXIT_OK);
         }
         else if (arg == "-v" || arg == "--verbose") {

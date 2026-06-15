@@ -10,12 +10,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
 
 // Internal C++ includes (hidden from API consumers)
 #include "libslic3r/libslic3r.h"
+#include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Utils.hpp"
 #include "nlohmann/json.hpp"
 #include <boost/filesystem.hpp>
@@ -26,6 +29,7 @@
 #include <boost/log/support/date_time.hpp>
 
 #include "Types.hpp"
+#include "Utils.hpp"
 #include "SliceEngine.hpp"
 #include "JsonReport.hpp"
 
@@ -206,6 +210,19 @@ SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx) {
 
 SLIC3R_API const char* slic3r_version(void) {
     return CLOUD_SLICER_ENGINE_VERSION;
+}
+
+SLIC3R_API char* slic3r_get_config_schema(void) {
+    std::string schema = dump_config_schema(Slic3r::print_config_def);
+    char* result = static_cast<char*>(malloc(schema.size() + 1));
+    if (result) {
+        memcpy(result, schema.c_str(), schema.size() + 1);
+    }
+    return result;
+}
+
+SLIC3R_API void slic3r_free_string(char* str) {
+    free(str);
 }
 
 SLIC3R_API void slic3r_cancel(slic3r_ctx_t* ctx) {

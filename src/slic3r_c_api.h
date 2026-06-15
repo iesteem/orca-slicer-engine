@@ -111,6 +111,18 @@ SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx);
 /** Get the libslic3r version string (e.g. "01.10.01.50"). */
 SLIC3R_API const char* slic3r_version(void);
 
+/* ---- Config Schema ---- */
+
+/** Dump all config option definitions (key, type, min, max, enum values)
+ *  as a JSON string. Useful for preprocessing layers that need to
+ *  clamp or strip incompatible config keys before slicing.
+ *
+ *  Caller must free the returned string with slic3r_free_string(). */
+SLIC3R_API char* slic3r_get_config_schema(void);
+
+/** Free a string returned by slic3r_get_config_schema(). */
+SLIC3R_API void slic3r_free_string(char* str);
+
 /* ---- Cancellation ---- */
 
 /** Request cancellation of the current slicing operation.

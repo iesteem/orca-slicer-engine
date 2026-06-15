@@ -35,6 +35,7 @@ static void print_usage(const char* prog) {
     printf("                                  (default: all presets substituted to official)\n");
     printf("  -v, --verbose         Verbose output\n");
     printf("  -h, --help            Show this help\n");
+    printf("  --dump-config-schema  Dump config option definitions as JSON and exit\n");
     printf("\n");
     printf("Exit codes:\n");
     printf("  0   Success\n");
@@ -69,6 +70,13 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             print_usage(argv[0]);
+            return 0;
+        } else if (!strcmp(argv[i], "--dump-config-schema")) {
+            char* schema = slic3r_get_config_schema();
+            if (schema) {
+                printf("%s", schema);
+                slic3r_free_string(schema);
+            }
             return 0;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
             verbose = 1;
