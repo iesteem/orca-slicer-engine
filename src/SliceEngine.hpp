@@ -124,6 +124,7 @@ private:
     bool run_slicing(int plate_id, Slic3r::Print& print);
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
     void run_postprocessing(int plate_id, PlateSliceResult& result);
+    void restore_baked_z_offsets();
 
     // --- State ---
     void report_error(int plate_id, int exit_code, const std::string& code,
@@ -155,6 +156,18 @@ private:
     // Preset validation (requires system profiles at resources_dir/profiles/)
     std::unique_ptr<Slic3r::PresetBundle> m_preset_bundle;
     bool m_presets_available = false;
+
+    // Transient storage for model transforms baked during apply_model().
+    // Z offsets are moved from instance into volume for print.apply() so
+    // PrintObject::m_trafo has the correct Z; they are restored after
+    // slicing so the model state is clean before the next plate.
+    struct BakedInstanceZ {
+        BakedInstanceZ() : inst(nullptr) {}
+        Slic3r::ModelInstance* inst;
+        Slic3r::Vec3d          inst_offset;
+        std::vector<std::pair<Slic3r::ModelVolume*, Slic3r::Vec3d>> volume_offsets;
+    };
+    std::vector<BakedInstanceZ> m_baked_instance_z;
 
     static constexpr double DEFAULT_PLATE_WIDTH = 200.0;
     static constexpr double DEFAULT_PLATE_DEPTH = 200.0;

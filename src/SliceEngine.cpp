@@ -1354,8 +1354,10 @@ void SliceEngine::process_plate(int plate_id) {
         print.is_BBL_printer() = is_bbl;
 
         // --- Apply model ---
-        if (!apply_model(plate_id, print, origin))
+        if (!apply_model(plate_id, print, origin)) {
+            restore_baked_z_offsets();
             return;
+        }
 
         // --- Assign arrange_order ---
         {
@@ -1388,6 +1390,7 @@ void SliceEngine::process_plate(int plate_id) {
         }
 
         BOOST_LOG_TRIVIAL(info) << "Slicing completed for plate " << (plate_id + 1);
+        restore_baked_z_offsets();
 
         // Export G-code
         PlateSliceResult slice_result;
@@ -1423,6 +1426,7 @@ void SliceEngine::process_plate(int plate_id) {
     }
 
     // All retries exhausted
+    restore_baked_z_offsets();
     BOOST_LOG_TRIVIAL(error) << "Slicing/export failed for plate " << (plate_id + 1)
         << " after " << MAX_RETRIES << " attempts";
     m_stats.error_message = "Failed to slice plate " + std::to_string(plate_id + 1)
@@ -1430,6 +1434,7 @@ void SliceEngine::process_plate(int plate_id) {
     m_any_error = true;
     set_error_type(EXIT_EXPORT_ERROR);
     } catch (const std::exception& e) {
+        restore_baked_z_offsets();
         BOOST_LOG_TRIVIAL(error) << "Unhandled exception processing plate " << (plate_id + 1)
             << ": " << e.what();
         m_any_error = true;
@@ -1437,6 +1442,7 @@ void SliceEngine::process_plate(int plate_id) {
         m_stats.issues.push_back(make_error(plate_id, "INTERNAL_ERROR",
             std::string("Plate ") + std::to_string(plate_id + 1) + " slicing failed: " + e.what()));
     } catch (...) {
+        restore_baked_z_offsets();
         BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception processing plate " << (plate_id + 1);
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
@@ -1704,16 +1710,7 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
             break;
         }
     }
-    struct BakedInstanceZ
-    {
-        BakedInstanceZ() : inst(nullptr) {}
-
-        ModelInstance* inst;
-        Vec3d          inst_offset;
-        std::vector<std::pair<ModelVolume*, Vec3d>> volume_offsets;
-    };
-
-    std::vector<BakedInstanceZ> baked_instance_z;
+    m_baked_instance_z.clear();
     for (ModelObject* obj : m_model.objects)
     {
         if (obj == nullptr)
@@ -1747,25 +1744,10 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
             vol->set_offset(vol->get_offset() + inst_offset.z() * Vec3d::UnitZ());
         }
         inst->set_offset(Vec3d(inst_offset.x(), inst_offset.y(), 0.0));
-        baked_instance_z.push_back(std::move(baked));
+        m_baked_instance_z.push_back(std::move(baked));
     }
 
     print.apply(m_model, merged_config);
-
-    for (std::vector<BakedInstanceZ>::reverse_iterator it = baked_instance_z.rbegin();
-         it != baked_instance_z.rend(); ++it)
-    {
-        if (it->inst == nullptr)
-            continue;
-        it->inst->set_offset(it->inst_offset);
-        for (std::vector<std::pair<ModelVolume*, Vec3d>>::const_iterator vol_it =
-                 it->volume_offsets.begin();
-             vol_it != it->volume_offsets.end(); ++vol_it)
-        {
-            if (vol_it->first != nullptr)
-                vol_it->first->set_offset(vol_it->second);
-        }
-    }
 
     if (print.num_object_instances() == 0) {
         m_stats.issues.push_back(make_warning(plate_id, "NO_PRINTABLE_OBJECTS",
@@ -1774,6 +1756,21 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
     }
 
     return true;
+}
+
+void SliceEngine::restore_baked_z_offsets()
+{
+    for (auto it = m_baked_instance_z.rbegin(); it != m_baked_instance_z.rend(); ++it) {
+        if (it->inst == nullptr)
+            continue;
+        it->inst->set_offset(it->inst_offset);
+        for (auto vol_it = it->volume_offsets.begin();
+             vol_it != it->volume_offsets.end(); ++vol_it) {
+            if (vol_it->first != nullptr)
+                vol_it->first->set_offset(vol_it->second);
+        }
+    }
+    m_baked_instance_z.clear();
 }
 
 bool SliceEngine::run_validation(int plate_id, Print& print) {
