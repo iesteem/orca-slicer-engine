@@ -46,7 +46,7 @@ static double round2(double v) {
 static ordered_json issue_to_json(const Issue& issue) {
     ordered_json j;
     j["level"]       = issue.level;
-    j["plate_id"]    = issue.plate_id;
+    j["plate_id"]    = issue.plate_id >= 0 ? issue.plate_id + 1 : issue.plate_id;
     j["object_name"] = issue.object_name;
     j["z_height"]    = issue.z_height;
     j["code"]        = issue.code;
@@ -120,7 +120,7 @@ void output_slice_statistics(const SliceOutputStats& stats,
     ordered_json plates_json = ordered_json::array();
     for (const auto& plate : stats.plates) {
         ordered_json pj;
-        pj["plate_id"] = plate.plate_id;
+        pj["plate_id"] = plate.plate_id + 1;
         pj["success"]  = plate.success;
 
         if (!plate.issues.empty()) {
@@ -138,7 +138,7 @@ void output_slice_statistics(const SliceOutputStats& stats,
             ordered_json fils = ordered_json::array();
             for (const auto& detail : plate.filament_details) {
                 ordered_json fdj;
-                fdj["filament_id"] = detail.filament_id;
+                fdj["id"] = detail.id + 1;
                 fdj["type"]        = detail.type;
                 fdj["color"]       = detail.color;
                 fdj["used_g"]      = round2(detail.used_g);
