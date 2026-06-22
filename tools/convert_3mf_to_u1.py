@@ -729,8 +729,11 @@ def convert_project_settings(proj):
     # 8. Clear time_lapse_gcode (U1 handles timelapse natively)
     result["time_lapse_gcode"] = ""
 
-    # 9. Fix the "from" field for Snapmaker consistency
-    result["from"] = "project"
+    # 9. Keep original "from" field — do NOT force to "project".
+    # When from="project" the engine looks for filament presets inside
+    # the 3MF's filament_settings files, but we skip generating those
+    # for official Snapmaker names (to avoid circular inherits).  The
+    # original value lets the engine find presets in the system bundle.
 
     # 10. Clean up Bambu multi-material flush/prime params (U1 handles differently)
     if "flush_volumes_matrix" in result:
