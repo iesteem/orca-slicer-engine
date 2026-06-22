@@ -1075,8 +1075,10 @@ def convert_3mf(input_path, output_path):
                 info_obj = zf.getinfo(name)
                 data = zf.read(name)
 
-                # Patch existing filament_settings files
+                # Patch existing filament_settings files — remove them if
+                # they map to official U1 presets (system handles those).
                 if name.startswith("Metadata/filament_settings_") and name.endswith(".config"):
+                    should_skip = False
                     try:
                         fs = json.loads(data.decode("utf-8"))
                         modified = False
@@ -1102,12 +1104,22 @@ def convert_3mf(input_path, output_path):
                                     if isinstance(fsid, list):
                                         fsid = fsid[0] if fsid else ""
                                     new_inherits = fsid
-                                # Avoid circular: inherits must not equal name
-                                if new_inherits and new_inherits == fs.get("name", ""):
-                                    new_inherits = ""
                                 if new_inherits and new_inherits != fs.get("inherits", ""):
                                     fs["inherits"] = new_inherits
                                     modified = True
+
+                        # If filament name maps to official preset, drop the
+                        # file — system preset handles it, avoids circular inherits.
+                        fs_name = fs.get("name", "")
+                        if fs_name in _SNAPMK_OFFICIAL_FILAMENT_NAMES:
+                            should_skip = True
+                        elif isinstance(fs.get("filament_settings_id"), list):
+                            if any(n in _SNAPMK_OFFICIAL_FILAMENT_NAMES for n in fs["filament_settings_id"]):
+                                should_skip = True
+
+                        if should_skip:
+                            info["changes"].append(f"removed {os.path.basename(name)} (now system preset)")
+                            continue
 
                         if "from" in fs and fs["from"] != "project":
                             fs["from"] = "project"
