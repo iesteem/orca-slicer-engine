@@ -735,16 +735,19 @@ def convert_project_settings(proj):
     # for official Snapmaker names (to avoid circular inherits).  The
     # original value lets the engine find presets in the system bundle.
 
-    # 10. Clean up Bambu multi-material flush/prime params (U1 handles differently)
+    # 10. Clean up Bambu multi-material flush/prime params.
+    # Only zero out for single-filament; multi-filament needs valid
+    # flush volumes & prime tower — zeroing them causes rc=6.
     if "flush_volumes_matrix" in result:
-        n_entries = n_fil * n_fil
-        result["flush_volumes_matrix"] = ["0"] * n_entries
+        if n_fil <= 1:
+            result["flush_volumes_matrix"] = ["0"]
     result["flush_volumes_vector"] = ["140"] * n_fil
     result["wiping_volumes_extruders"] = ["70"] * 10
-    result["enable_prime_tower"] = "0"
-    result["prime_volume"] = "0"
-    result["flush_into_infill"] = "0"
-    result["flush_into_objects"] = "0"
+    if n_fil <= 1:
+        result["enable_prime_tower"] = "0"
+        result["prime_volume"] = "0"
+        result["flush_into_infill"] = "0"
+        result["flush_into_objects"] = "0"
 
     # 11. Remap filament names to Snapmaker U1 official equivalents
     for key in ("filament_type", "filament_settings_id", "default_filament_colour",
