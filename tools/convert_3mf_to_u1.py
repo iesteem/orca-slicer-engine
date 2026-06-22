@@ -36,19 +36,34 @@ U1_NOZZLE_VOLUME = "143"
 U1_PRINTER_MODEL = "Snapmaker U1"
 U1_VERSION = "2.3.1"
 
-# Speed caps (Bambu printers are faster — we cap to U1 safe limits)
-SPEED_CAPS = {
-    "travel_speed": 500,
-    "outer_wall_speed": 150,
-    "inner_wall_speed": 250,
-    "sparse_infill_speed": 250,
-    "top_surface_speed": 100,
-    "gap_infill_speed": 100,
-    "internal_solid_infill_speed": 200,
-    "default_acceleration": 5000,
-    "outer_wall_acceleration": 3000,
-    "bridge_speed": 50,
-}
+# Speed caps for U1 (Bambu printers are faster — we cap to U1 safe limits)
+SPEED_CAPS_NUMERIC = [
+    ("travel_speed", 500),
+    ("outer_wall_speed", 200),
+    ("inner_wall_speed", 300),
+    ("sparse_infill_speed", 270),
+    ("top_surface_speed", 200),
+    ("gap_infill_speed", 250),
+    ("internal_solid_infill_speed", 250),
+    ("bridge_speed", 50),
+    ("support_speed", 150),
+    ("support_interface_speed", 80),
+    ("initial_layer_speed", 50),
+    ("initial_layer_infill_speed", 105),
+    ("skirt_speed", 50),
+    ("wipe_speed", 75),
+    ("travel_speed_z", 0),
+    ("ironing_speed", 30),
+]
+
+ACCEL_CAPS_NUMERIC = [
+    ("default_acceleration", 10000),
+    ("outer_wall_acceleration", 5000),
+    ("inner_wall_acceleration", 10000),
+    ("initial_layer_acceleration", 500),
+    ("top_surface_acceleration", 2000),
+    ("travel_acceleration", 10000),
+]
 
 # Keys to remove (Bambu/Prusa specific)
 KEYS_TO_REMOVE = {
@@ -333,15 +348,63 @@ KEYS_TO_ADD = {
     "z_offset": "0",
 }
 
-# G-code templates (static only — engine does NOT support {variable} placeholders)
+# G-code templates (engine expands {variable} placeholders at runtime)
 U1_MACHINE_START_GCODE = (
-    " ;===== date: 20260128 =====================\n"
-    "\n"
+    ";===== date: 20260128 =====================\n"
     "PRINT_START\n"
     "DEFECT_DETECTION_START\n"
+    "SET_PRINT_STATS_INFO TOTAL_LAYER={total_layer_count} CURRENT_LAYER=0\n"
+    "TIMELAPSE_START\n"
+    "M140 S{bed_temperature_initial_layer_single}\n"
+    "M104 T{initial_extruder} S140\n"
+    "M204 S10000\n"
+    "G28 X Y\n"
+    "T{initial_extruder}\n"
+    "G90\n"
+    "DEFECT_DETECTION_DETECT_BED\n"
+    "SM_PRINT_CHECK_SWITCH_EXTRUDER\n"
+    "M106 S255\n"
+    "M106 P2 S0\n"
+    "MOVE_TO_DISCARD_FILAMENT_POSITION\n"
+    "M109 T{initial_extruder} S{nozzle_temperature[initial_extruder] - 90}\n"
+    "ROUGHLY_CLEAN_NOZZLE_WITH_DISCARD\n"
+    "MOVE_TO_XY_IDLE_POSITION_EXTRUDER\n"
+    "G28 Z I140 J140\n"
+    "DETECT_BED_PLATE\n"
+    "G90\n"
+    "G0 Z5 F10000\n"
+    "MOVE_TO_DISCARD_FILAMENT_POSITION\n"
+    "M109 S{nozzle_temperature[initial_extruder] - 50}\n"
+    "ROUGHLY_CLEAN_NOZZLE\n"
+    "MOVE_TO_XY_IDLE_POSITION_EXTRUDER\n"
+    "FINELY_CLEAN_NOZZLE_STAGE_1\n"
+    "M104 S{nozzle_temperature[initial_extruder] - 90}\n"
+    "G0 Z5 F10000\n"
+    "MOVE_TO_DISCARD_FILAMENT_POSITION\n"
+    "ROUGHLY_CLEAN_NOZZLE\n"
+    "MOVE_TO_XY_IDLE_POSITION_EXTRUDER\n"
+    "FINELY_CLEAN_NOZZLE_STAGE_2\n"
+    "M106 S255\n"
+    "M109 S{nozzle_temperature[initial_extruder] - 90}\n"
+    "M190 S{bed_temperature_initial_layer_single}\n"
+    "M107 P2\n"
+    "G90\n"
+    "G0 Z5 F10000\n"
+    "G28 Z\n"
+    "BED_MESH_CALIBRATE PROBE_COUNT=11,11\n"
+    "G90\n"
+    "G1 Z1.5\n"
+    "G0 X85 Y1 Z2 F18000\n"
+    "M109 S{nozzle_temperature_initial_layer[initial_extruder]}\n"
+    "G1 Z0.2\n"
+    "M83\n"
+    "G1 X185 E15 F360\n"
+    "G1 Z1.5\n"
+    "G90\n"
+    "M106 S0\n"
 )
 
-U1_MACHINE_END_GCODE = "  PRINT_END\nTIMELAPSE_STOP\n"
+U1_MACHINE_END_GCODE = "PRINT_END\nTIMELAPSE_STOP\n"
 
 U1_BEFORE_LAYER_CHANGE_GCODE = (
     ";BEFORE_LAYER_CHANGE\n"
@@ -353,13 +416,15 @@ U1_BEFORE_LAYER_CHANGE_GCODE = (
 
 U1_LAYER_CHANGE_GCODE = (
     ";AFTER_LAYER_CHANGE\n"
-    ";[layer_z]"
+    ";[layer_z]\n"
+    "SET_PRINT_STATS_INFO TOTAL_LAYER={total_layer_count} CURRENT_LAYER={layer_num+1}"
 )
 
 U1_MACHINE_PAUSE_GCODE = "M600"
 
 U1_CHANGE_FILAMENT_GCODE = (
     ";===== date: 20251213=====================\n"
+    "; Change Tool[previous_extruder] -> Tool[next_extruder] (layer [layer_num])\n"
     "T[next_extruder]\n"
     "M109 S[temperature]\n"
 )
@@ -430,66 +495,138 @@ def _normalize_print_settings(raw):
     return str(raw)
 
 
+# ── Snapmaker U1 Official Filament Preset Names ─────────────────────────
+# These are the exact preset names on disk under:
+#   resources/profiles/Snapmaker/filament/Snapmaker XXX @U1.json
+# The engine validates filament_settings_id against these names.
+_SNAPMK_U1_FILAMENTS_BY_TYPE = {
+    # PLA variants
+    ("pla", "basic"):         "Snapmaker PLA Basic @U1",
+    ("pla", "matte"):         "Snapmaker PLA Matte @U1",
+    ("pla", "silk"):          "Snapmaker PLA Silk @U1",
+    ("pla", "eco"):           "Snapmaker PLA Eco @U1",
+    ("pla", "wood"):          "Snapmaker PLA Wood @U1",
+    ("pla", "metal"):         "Snapmaker PLA Metal @U1",
+    ("pla", "marble"):        "Snapmaker PLA Marble @U1",
+    ("pla", "glow"):          "Snapmaker PLA Glow @U1",
+    ("pla", "snapspeed"):     "Snapmaker PLA SnapSpeed @U1",
+    ("pla", "high speed"):    "Snapmaker PLA SnapSpeed @U1",
+    ("pla", "cf"):            "Snapmaker PLA-CF @U1",
+    ("pla", "carbon fiber"):  "Snapmaker PLA-CF @U1",
+    ("pla", "full spectrum"): "Snapmaker PLA Full Spectrum @U1",
+    ("pla", None):            "Snapmaker PLA @U1",
+    # PETG variants
+    ("petg", "cf"):           "Snapmaker PETG-CF @U1",
+    ("petg", "carbon fiber"): "Snapmaker PETG-CF @U1",
+    ("petg", None):           "Snapmaker PETG @U1",
+    ("pet", None):            "Snapmaker PET @U1",
+    # ABS/ASA
+    ("abs", None):            "Snapmaker ABS @U1",
+    ("asa", None):            "Snapmaker ASA @U1",
+    # TPU/TPE
+    ("tpu", "95a"):           "Snapmaker TPU 95A @U1",
+    ("tpu", "90a"):           "Snapmaker TPU 90A @U1",
+    ("tpu", "hf"):            "Snapmaker TPU High-Flow @U1",
+    ("tpu", "high flow"):     "Snapmaker TPU High-Flow @U1",
+    ("tpu", None):            "Snapmaker TPU @U1",
+    ("tpe", None):            "Snapmaker TPE @U1",
+    # PA / Nylon
+    ("pa", "cf"):             "Snapmaker PA-CF @U1",
+    ("pa", "carbon fiber"):   "Snapmaker PA-CF @U1",
+    ("pa", None):             "Generic PA @System",
+    # PC
+    ("pc", None):             "Generic PC @System",
+    # PVA / Support
+    ("pva", None):            "Snapmaker PVA @U1",
+    ("support", "pla"):       "Snapmaker Breakaway Support For PLA @U1",
+    ("support", None):        "Snapmaker Breakaway Support For PLA @U1",
+}
+
+# Fallback mapping from keyword-only detection
+_KEYWORD_TO_SNAPMK_FILAMENT = {
+    "PLA":       "Snapmaker PLA @U1",
+    "PETG":      "Snapmaker PETG @U1",
+    "PET":       "Snapmaker PET @U1",
+    "ABS":       "Snapmaker ABS @U1",
+    "ASA":       "Snapmaker ASA @U1",
+    "TPU":       "Snapmaker TPU @U1",
+    "TPE":       "Snapmaker TPE @U1",
+    "PA":        "Generic PA @System",
+    "NYLON":     "Generic PA @System",
+    "PC":        "Generic PC @System",
+    "PVA":       "Snapmaker PVA @U1",
+    "SUPPORT":   "Snapmaker Breakaway Support For PLA @U1",
+}
+
+# Recognized sub-type keywords for detection
+_SUBTYPE_KEYWORDS = [
+    "basic", "matte", "silk", "eco", "wood", "metal", "marble", "glow",
+    "snapspeed", "high speed", "cf", "carbon fiber", "full spectrum",
+    "95a", "90a", "hf", "high flow",
+]
+
+
 def _remap_filament_name(name):
-    """Map Bambu/Prusa filament names to Generic equivalents that U1 engine recognizes."""
+    """Map Bambu/Prusa filament names to Snapmaker U1 official preset names.
+
+    The engine's validate_filament_official() checks filament_settings_id
+    against system presets.  Mapping to exact Snapmaker @U1 preset names
+    ensures the engine finds a direct match (fast path #1).
+    """
     if not isinstance(name, str) or not name.strip():
         return name
 
-    # Remove filename annotations appended by Bambu Studio
-    # e.g. "Bambu PLA Basic @BBL X1C(all+multicolored.3mf)" -> "Bambu PLA Basic @BBL X1C"
+    # ---- Phase 1: strip Bambu annotations ----
+    # Remove filename annotations:  "Bambu PLA Basic @BBL X1C(all+multicolored.3mf)"
     name = re.sub(r"\([^)]*\.3mf\)$", "", name).strip()
-
-    # Remove printer suffixes: @BBL A1, @BBL X1C, @BBL A1M, @BBL P1S, etc.
+    # Remove printer suffixes: @BBL A1, @BBL X1C, @BBL A1M, @BBL P1S
     name = re.sub(r"\s*@BBL\s+\S+$", "", name).strip()
+    # Remove Prusa printer suffixes
+    name = re.sub(r"\s*@Prusa\s+\S+$", "", name).strip()
 
-    # Map brand prefixes to Generic
-    replacements = [
-        (r"^Bambu\s+PLA\s+.*", "Generic PLA"),
-        (r"^Bambu\s+PETG\s+.*", "Generic PETG"),
-        (r"^Bambu\s+ABS\s+.*", "Generic ABS"),
-        (r"^Bambu\s+ASA\s+.*", "Generic ASA"),
-        (r"^Bambu\s+TPU\s+.*", "Generic TPU"),
-        (r"^Bambu\s+PA\s*.*", "Generic PA"),
-        (r"^Bambu\s+PC\s+.*", "Generic PC"),
-        (r"^Bambu\s+Support\s+.*", "Generic Support"),
-        (r"^Generic\s+PLA\s*$", "Generic PLA"),
-        (r"^Generic\s+PETG\s*$", "Generic PETG"),
-        (r"^Generic\s+ABS\s*$", "Generic ABS"),
-        (r"^Generic\s+ASA\s*$", "Generic ASA"),
-        (r"^Generic\s+TPU\s*$", "Generic TPU"),
-        (r"^Generic\s+PA\s*$", "Generic PA"),
-        (r"^Generic\s+PC\s*$", "Generic PC"),
-        (r"^Generic\s+PVA\s*$", "Generic PVA"),
-        (r"^eSUN\s+.*", "Generic PLA"),
-        (r"^PolyLite\s+.*", "Generic PLA"),
-        (r"^PolyTerra\s+.*", "Generic PLA"),
-        (r"^Overture\s+.*", "Generic PLA"),
-        (r"^SUNLU\s+.*", "Generic PLA"),
-    ]
-    for pattern, replacement in replacements:
-        if re.match(pattern, name, re.IGNORECASE):
-            return replacement
-
-    # Map to nearest Generic
+    # ---- Phase 2: detect material type and sub-type ----
     upper = name.upper()
-    if "PLA" in upper:
-        return "Generic PLA"
-    if "PETG" in upper or "PET" in upper:
-        return "Generic PETG"
-    if "ABS" in upper:
-        return "Generic ABS"
-    if "ASA" in upper:
-        return "Generic ASA"
-    if "TPU" in upper or "TPE" in upper:
-        return "Generic TPU"
-    if "PA" in upper or "NYLON" in upper:
-        return "Generic PA"
-    if "PC" in upper:
-        return "Generic PC"
-    if "PVA" in upper:
-        return "Generic PVA"
-    if "SUPPORT" in upper:
-        return "Generic Support"
+    material = None
+    for key in ("PLA", "PETG", "PET", "ABS", "ASA", "TPU", "TPE",
+                 "PA", "PC", "PVA", "NYLON", "SUPPORT"):
+        if key in upper:
+            material = key
+            break
+
+    if material is None:
+        return name
+
+    # Resolve synonyms
+    if material == "NYLON":
+        material = "PA"
+    if material == "PET":
+        material = "PETG"
+
+    subtype = None
+    lower = name.lower()
+    for kw in _SUBTYPE_KEYWORDS:
+        if kw in lower:
+            subtype = kw
+            break
+
+    # Handle "Bambu PLA-CF" style combined names
+    if material == "PLA" and "PLA-CF" in upper:
+        material, subtype = "PLA", "cf"
+    if material == "PETG" and "PETG-CF" in upper:
+        material, subtype = "PETG", "cf"
+
+    # ---- Phase 3: lookup exact match in mapping table ----
+    key = (material.lower(), subtype)
+    if key in _SNAPMK_U1_FILAMENTS_BY_TYPE:
+        return _SNAPMK_U1_FILAMENTS_BY_TYPE[key]
+    # Try material-only fallback
+    key = (material.lower(), None)
+    if key in _SNAPMK_U1_FILAMENTS_BY_TYPE:
+        return _SNAPMK_U1_FILAMENTS_BY_TYPE[key]
+
+    # ---- Phase 4: keyword-based fallback ----
+    if material in _KEYWORD_TO_SNAPMK_FILAMENT:
+        return _KEYWORD_TO_SNAPMK_FILAMENT[material]
 
     return name
 
@@ -527,19 +664,27 @@ def convert_project_settings(proj):
     if isinstance(nozzle, list) and len(nozzle) < n_fil:
         result["nozzle_diameter"] = nozzle * n_fil
 
-    # 5. Cap speeds
-    for key, cap in SPEED_CAPS.items():
-        if key in result:
-            val = _norm(result[key])
-            try:
-                val = int(val) if isinstance(val, str) else val
-                if isinstance(val, (int, float)):
-                    if key == "inner_wall_acceleration" and val == 0:
-                        result[key] = cap  # 0 means "use default", set explicitly
-                    else:
-                        result[key] = min(val, cap)
-            except (ValueError, TypeError):
-                pass
+    # 5. Cap speeds (skip percentage values, handle 0-means-default)
+    def _cap_numeric(result, key, cap):
+        if key not in result:
+            return
+        val = _norm(result[key])
+        if isinstance(val, str) and "%" in val:
+            return  # percentage-based acceleration, skip
+        try:
+            val = int(val) if isinstance(val, str) else val
+            if isinstance(val, (int, float)):
+                if val == 0 and key in ("inner_wall_acceleration", "default_acceleration"):
+                    result[key] = cap  # 0 means "use default", set explicitly
+                elif cap > 0:
+                    result[key] = min(val, cap)
+        except (ValueError, TypeError):
+            pass
+
+    for key, cap in SPEED_CAPS_NUMERIC:
+        _cap_numeric(result, key, cap)
+    for key, cap in ACCEL_CAPS_NUMERIC:
+        _cap_numeric(result, key, cap)
 
     # 6. Support filament indices (0-based -> 1-based for U1)
     result["support_filament"] = "1"
@@ -553,7 +698,19 @@ def convert_project_settings(proj):
     # 8. Clear time_lapse_gcode (U1 handles timelapse natively)
     result["time_lapse_gcode"] = ""
 
-    # 9. Remap filament names to Generic equivalents
+    # 9. Fix the "from" field for Snapmaker consistency
+    result["from"] = "project"
+
+    # 10. Clean up Bambu multi-material flush/prime params (U1 handles differently)
+    if "flush_volumes_matrix" in result:
+        n_entries = n_fil * n_fil
+        result["flush_volumes_matrix"] = ["0"] * n_entries
+    result["enable_prime_tower"] = "0"
+    result["prime_volume"] = "0"
+    result["flush_into_infill"] = "0"
+    result["flush_into_objects"] = "0"
+
+    # 11. Remap filament names to Snapmaker U1 official equivalents
     for key in ("filament_type", "filament_settings_id", "default_filament_colour",
                 "filament_colour", "support_filament", "support_interface_filament"):
         if key in result:
@@ -563,10 +720,7 @@ def convert_project_settings(proj):
             elif isinstance(val, list):
                 result[key] = [_remap_filament_name(v) for v in val]
 
-    # Also fix filament-specific keys in filament_settings files
-    # (handled at the 3MF level — see convert_3mf)
-
-    # 10. Add Snapmaker U1 defaults
+    # 12. Add Snapmaker U1 defaults
     for key, val in KEYS_TO_ADD.items():
         result[key] = deepcopy(val)
 
@@ -589,6 +743,231 @@ def convert_slice_info(xml_str):
         return ET.tostring(root, encoding="unicode")
     except ET.ParseError:
         return xml_str
+
+
+# ── Filament Settings Generation ────────────────────────────────────────
+
+# Keys that belong in a filament_settings file (per-extruder values)
+_FILAMENT_PER_EXTRUDER_KEYS = [
+    "activate_air_filtration", "activate_chamber_temp_control",
+    "additional_cooling_fan_speed", "chamber_temperature",
+    "close_fan_the_first_x_layers", "complete_print_exhaust_fan_speed",
+    "cool_plate_temp", "cool_plate_temp_initial_layer",
+    "default_filament_colour", "dont_slow_down_outer_wall",
+    "during_print_exhaust_fan_speed", "enable_overhang_bridge_fan",
+    "enable_pressure_advance", "eng_plate_temp", "eng_plate_temp_initial_layer",
+    "fan_cooling_layer_time", "fan_max_speed", "fan_min_speed",
+    "filament_cooling_final_speed", "filament_cooling_initial_speed",
+    "filament_cooling_moves", "filament_cost", "filament_density",
+    "filament_deretraction_speed", "filament_diameter",
+    "filament_end_gcode", "filament_flow_ratio", "filament_is_support",
+    "filament_loading_speed", "filament_loading_speed_start",
+    "filament_long_retractions_when_cut", "filament_max_volumetric_speed",
+    "filament_minimal_purge_on_wipe_tower", "filament_multitool_ramming",
+    "filament_multitool_ramming_flow", "filament_multitool_ramming_volume",
+    "filament_notes", "filament_ramming_parameters",
+    "filament_retract_before_wipe", "filament_retract_length_toolchange",
+    "filament_retract_lift_above", "filament_retract_lift_below",
+    "filament_retract_lift_enforce", "filament_retract_restart_extra",
+    "filament_retract_restart_extra_toolchange",
+    "filament_retract_when_changing_layer",
+    "filament_retraction_distances_when_cut", "filament_retraction_length",
+    "filament_retraction_minimum_travel", "filament_retraction_speed",
+    "filament_settings_id", "filament_shrink",
+    "filament_shrinkage_compensation_z", "filament_soluble",
+    "filament_stamping_distance", "filament_stamping_loading_speed",
+    "filament_start_gcode", "filament_toolchange_delay", "filament_type",
+    "filament_unloading_speed", "filament_unloading_speed_start",
+    "filament_vendor", "filament_wipe", "filament_wipe_distance",
+    "filament_z_hop", "filament_z_hop_types", "full_fan_speed_layer",
+    "hot_plate_temp", "hot_plate_temp_initial_layer", "idle_temperature",
+    "internal_bridge_fan_speed", "ironing_fan_speed",
+    "nozzle_temperature", "nozzle_temperature_initial_layer",
+    "nozzle_temperature_range_high", "nozzle_temperature_range_low",
+    "overhang_fan_speed", "overhang_fan_threshold",
+    "pellet_flow_coefficient", "pressure_advance",
+    "reduce_fan_stop_start_freq", "required_nozzle_HRC",
+    "slow_down_for_layer_cooling", "slow_down_layer_time",
+    "slow_down_min_speed", "supertack_plate_temp",
+    "supertack_plate_temp_initial_layer",
+    "support_material_interface_fan_speed", "temperature_vitrification",
+    "textured_cool_plate_temp", "textured_cool_plate_temp_initial_layer",
+    "textured_plate_temp", "textured_plate_temp_initial_layer",
+]
+
+# Known official Snapmaker U1 filament preset names (for validation)
+_SNAPMK_OFFICIAL_FILAMENT_NAMES = set(
+    _SNAPMK_U1_FILAMENTS_BY_TYPE.values()
+) | {"Generic PLA @System", "Generic PETG @System", "Generic ABS @System",
+     "Generic ASA @System", "Generic PA @System", "Generic PC @System",
+     "Generic TPU @System", "Generic PVA @System", "Generic Support @System"}
+
+
+def generate_filament_settings(proj, n_fil, official_names):
+    """Generate filament_settings config dicts for each extruder with overrides.
+
+    Args:
+        proj: Modified project_settings dict (after convert_project_settings).
+        n_fil: Number of filaments/extruders.
+        official_names: List of official Snapmaker filament name strings used
+                       as filament_settings_id (and inherits fallback).
+
+    Returns:
+        List of dicts, each a filament_settings config for JSON serialization.
+        Empty list if no extruder has filament-level overrides.
+    """
+    filament_settings_list = []
+
+    for i in range(n_fil):
+        inherits_name = ""
+        if i < len(official_names):
+            inherits_name = official_names[i]
+        else:
+            # Reuse last known official name for extruders beyond the declared list
+            inherits_name = official_names[-1] if official_names else ""
+        if isinstance(inherits_name, list):
+            inherits_name = inherits_name[0] if inherits_name else ""
+        if isinstance(inherits_name, str):
+            inherits_name = inherits_name.strip()
+        if not inherits_name:
+            continue  # skip extruders with no identifiable filament
+
+        fs = {
+            "name": inherits_name,
+            "from": "project",
+            "inherits": inherits_name,
+            "filament_settings_id": [inherits_name],
+            "filament_type": ["PLA"],
+            "filament_vendor": ["Snapmaker"],
+            "version": "02.03.01.00",
+        }
+
+        has_overrides = False
+        for key in _FILAMENT_PER_EXTRUDER_KEYS:
+            if key not in proj:
+                continue
+            val = proj[key]
+            # Extract per-extruder value
+            if isinstance(val, list) and len(val) > i:
+                elem = val[i]
+            elif isinstance(val, list) and len(val) == 1:
+                elem = val[0]
+            elif isinstance(val, str):
+                elem = val
+            else:
+                continue
+
+            # Skip nil/empty sentinel values
+            if elem == "nil" or elem is None:
+                continue
+            # Skip empty strings that aren't meaningful
+            if isinstance(elem, str) and elem == "" and key not in (
+                "filament_end_gcode", "filament_start_gcode", "filament_notes"):
+                continue
+
+            fs[key] = [str(elem)]
+            has_overrides = True
+
+        if has_overrides:
+            filament_settings_list.append(fs)
+
+    return filament_settings_list
+
+
+# ── Post-Conversion Validation ──────────────────────────────────────────
+
+def validate_converted_3mf(zf_or_path):
+    """Validate a converted 3MF against Snapmaker U1 requirements.
+
+    Args:
+        zf_or_path: A zipfile.ZipFile instance or path string to the 3MF.
+
+    Returns:
+        (bool, list_of_str): (is_valid, list_of_warnings).
+        True = passes all critical checks.
+    """
+    import contextlib
+
+    warnings = []
+    is_valid = True
+
+    @contextlib.contextmanager
+    def _open_zf():
+        if isinstance(zf_or_path, zipfile.ZipFile):
+            yield zf_or_path
+        else:
+            with zipfile.ZipFile(zf_or_path, "r") as zf:
+                yield zf
+
+    with _open_zf() as zf:
+        names = zf.namelist()
+
+        # Check project_settings exists
+        if "Metadata/project_settings.config" not in names:
+            warnings.append("CRITICAL: Missing project_settings.config")
+            is_valid = False
+            return is_valid, warnings
+
+        proj = json.loads(zf.read("Metadata/project_settings.config"))
+
+        # 1. Printer model
+        model = proj.get("printer_model", "")
+        if model != U1_PRINTER_MODEL:
+            warnings.append(f"CRITICAL: printer_model is '{model}', expected '{U1_PRINTER_MODEL}'")
+            is_valid = False
+
+        # 2. Nozzle type
+        nozzle = proj.get("nozzle_type", "")
+        if nozzle != U1_NOZZLE_TYPE:
+            warnings.append(f"WARNING: nozzle_type is '{nozzle}', expected '{U1_NOZZLE_TYPE}'")
+
+        # 3. Bed dimensions
+        area = proj.get("printable_area", [])
+        if area != U1_PRINTABLE_AREA:
+            warnings.append(f"CRITICAL: printable_area mismatch, expected {U1_PRINTABLE_AREA}")
+            is_valid = False
+        height = proj.get("printable_height", "")
+        if height != U1_PRINTABLE_HEIGHT:
+            warnings.append(f"CRITICAL: printable_height is '{height}', expected '{U1_PRINTABLE_HEIGHT}'")
+            is_valid = False
+
+        # 4. Filament check
+        filament_ids = proj.get("filament_settings_id", [])
+        if isinstance(filament_ids, str):
+            filament_ids = [filament_ids]
+        for idx, fid in enumerate(filament_ids):
+            if not fid or not fid.strip():
+                warnings.append(f"WARNING: extruder {idx+1} filament_settings_id is empty")
+            elif fid not in _SNAPMK_OFFICIAL_FILAMENT_NAMES:
+                warnings.append(f"WARNING: extruder {idx+1} filament '{fid}' is not a recognized Snapmaker U1 preset")
+
+        # 5. Filament settings files inherits
+        for name in names:
+            if name.startswith("Metadata/filament_settings_") and name.endswith(".config"):
+                try:
+                    fs = json.loads(zf.read(name))
+                    inh = fs.get("inherits", "")
+                    if isinstance(inh, str) and (not inh or not inh.strip()):
+                        warnings.append(f"CRITICAL: {name} has empty inherits — engine will reject")
+                        is_valid = False
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    warnings.append(f"WARNING: {name} could not be parsed")
+
+        # 6. Check for leftover Bambu-specific keys
+        _bambu_indicators = ["host_type", "gcode_flavor", "printhost_apikey",
+                            "printhost_ssl", "printhost_port", "printhost_user",
+                            "scan_first_layer", "silent_mode", "remaining_times",
+                            "bbl_use_printhost"]
+        for key in _bambu_indicators:
+            if key in proj:
+                warnings.append(f"WARNING: Bambu-specific key '{key}' still present in project_settings")
+
+        # 7. Printer settings ID check
+        ps_id = proj.get("printer_settings_id", "")
+        if "Snapmaker U1" not in str(ps_id):
+            warnings.append(f"WARNING: printer_settings_id '{ps_id}' does not contain 'Snapmaker U1'")
+
+    return is_valid, warnings
 
 
 def convert_3mf(input_path, output_path):
@@ -623,8 +1002,17 @@ def convert_3mf(input_path, output_path):
             if new_si != si_xml:
                 info["changes"].append("updated slice_info.config (printer_model_id -> Snapmaker U1)")
 
-        # Read model_settings
-        has_ms = "Metadata/model_settings.config" in names
+        # Determine filament count and official names for filament_settings generation
+        n_fil = count_filaments(patched) if patched else 1
+        official_names = patched.get("filament_settings_id", []) if patched else []
+        if isinstance(official_names, str):
+            official_names = [official_names]
+
+        # Check if source already has filament_settings files
+        has_fil_settings = any(
+            n.startswith("Metadata/filament_settings_") and n.endswith(".config")
+            for n in names
+        )
 
         # Build output archive
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf_out:
@@ -642,18 +1030,47 @@ def convert_3mf(input_path, output_path):
                 info_obj = zf.getinfo(name)
                 data = zf.read(name)
 
-                # Patch filament_settings files: remap filament names
+                # Patch existing filament_settings files
                 if name.startswith("Metadata/filament_settings_") and name.endswith(".config"):
                     try:
                         fs = json.loads(data.decode("utf-8"))
+                        modified = False
+
                         for fkey in ("filament_settings_id", "filament_type", "filament_vendor"):
                             if fkey in fs and isinstance(fs[fkey], str):
-                                fs[fkey] = _remap_filament_name(fs[fkey])
-                        # Fix inherits chain
-                        if "inherits" in fs and isinstance(fs["inherits"], str):
-                            fs["inherits"] = _remap_filament_name(fs["inherits"])
-                        data = json.dumps(fs, indent=2, ensure_ascii=False).encode("utf-8")
-                        info["changes"].append("remapped filament names")
+                                new_val = _remap_filament_name(fs[fkey])
+                                if new_val != fs[fkey]:
+                                    fs[fkey] = new_val
+                                    modified = True
+                            elif fkey in fs and isinstance(fs[fkey], list):
+                                new_vals = [_remap_filament_name(v) for v in fs[fkey]]
+                                if new_vals != fs[fkey]:
+                                    fs[fkey] = new_vals
+                                    modified = True
+
+                        # Fix inherits: remap, fill from filament_settings_id if empty
+                        if "inherits" in fs:
+                            if isinstance(fs["inherits"], str):
+                                new_inherits = _remap_filament_name(fs["inherits"])
+                                if not new_inherits or not new_inherits.strip():
+                                    fsid = fs.get("filament_settings_id", "")
+                                    if isinstance(fsid, list):
+                                        fsid = fsid[0] if fsid else ""
+                                    new_inherits = fsid
+                                if new_inherits and new_inherits != fs.get("inherits", ""):
+                                    fs["inherits"] = new_inherits
+                                    modified = True
+
+                        if "from" in fs and fs["from"] != "project":
+                            fs["from"] = "project"
+                            modified = True
+                        if "version" in fs:
+                            fs["version"] = "02.03.01.00"
+                            modified = True
+
+                        if modified:
+                            data = json.dumps(fs, indent=2, ensure_ascii=False).encode("utf-8")
+                            info["changes"].append(f"remapped names in {os.path.basename(name)}")
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
 
@@ -670,6 +1087,20 @@ def convert_3mf(input_path, output_path):
                     "Metadata/slice_info.config",
                     new_si.encode("utf-8"),
                 )
+
+            # --- Generate missing filament_settings files ---
+            if not has_fil_settings and n_fil > 0:
+                generated = generate_filament_settings(patched, n_fil, official_names)
+                for i, fs_dict in enumerate(generated):
+                    fs_name = f"Metadata/filament_settings_{i+1}.config"
+                    zf_out.writestr(
+                        fs_name,
+                        json.dumps(fs_dict, indent=2, ensure_ascii=False),
+                    )
+                if generated:
+                    info["changes"].append(
+                        f"created {len(generated)} filament_settings file(s) with inherits chain"
+                    )
 
             # Add plate_1.json if missing
             if "Metadata/plate_1.json" not in names:
@@ -729,6 +1160,10 @@ def main():
     parser.add_argument("target", nargs="?", help="Target 3MF file or input directory")
     parser.add_argument("--out", "-o", help="Output path or directory")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Preview changes only")
+    parser.add_argument("--validate", action="store_true",
+                        help="Validate converted 3MF against Snapmaker U1 requirements")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Print detailed conversion steps")
     args = parser.parse_args()
 
     if not args.target:
@@ -756,6 +1191,17 @@ def main():
             print(f"  size: {in_size:,} -> {out_size:,} bytes")
             for c in info["changes"]:
                 print(f"  + {c}")
+
+            if args.validate:
+                print("\n--- Validation ---")
+                is_valid, warnings = validate_converted_3mf(out)
+                for w in warnings:
+                    print(f"  {'[FAIL]' if w.startswith('CRITICAL') else '[WARN]'} {w}")
+                if is_valid:
+                    print("  Validation: PASSED")
+                else:
+                    print("  Validation: FAILED (critical issues found)")
+                    sys.exit(1)
     else:
         print(f"Error: {args.target} not found")
         sys.exit(1)
