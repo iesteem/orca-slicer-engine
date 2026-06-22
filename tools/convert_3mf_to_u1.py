@@ -52,7 +52,6 @@ SPEED_CAPS_NUMERIC = [
     ("initial_layer_infill_speed", 105),
     ("skirt_speed", 50),
     ("wipe_speed", 75),
-    ("travel_speed_z", 0),
     ("ironing_speed", 30),
 ]
 
@@ -86,6 +85,7 @@ KEYS_TO_REMOVE = {
     "sparse_infill_anchor",
     "sparse_infill_anchor_max",
     "thumbnail_size",
+    "timelapse_type",
     "top_area_threshold",
     "top_one_wall_type",
     # Additional Bambu-specific keys found in some files
@@ -478,14 +478,27 @@ def _is_bambu_gcode(value, key):
     return any(ind in s for ind in bambu_indicators)
 
 
-def _normalize_printer_id(raw):
-    """Convert Bambu printer ID to Snapmaker U1."""
-    if not isinstance(raw, str):
-        return f"{U1_PRINTER_MODEL} (0.4 nozzle)"
-    # Extract nozzle size if present
-    m = re.search(r"(\d+\.?\d*)\s*mm\s*nozzle", raw, re.IGNORECASE)
-    nozzle = m.group(1) if m else "0.4"
-    return f"{U1_PRINTER_MODEL} ({nozzle} nozzle)"
+def _normalize_printer_id(raw, nozzle_diameters=None):
+    """Convert Bambu printer ID to Snapmaker U1, deriving nozzle from config."""
+    # Prefer nozzle_diameter from config (the actual hardware spec)
+    if nozzle_diameters:
+        sizes = []
+        for x in nozzle_diameters:
+            try:
+                sizes.append(float(x))
+            except (ValueError, TypeError):
+                pass
+        if sizes:
+            nozzle = str(max(sizes))
+            if nozzle.endswith(".0"):
+                nozzle = nozzle[:-2]
+            return f"{U1_PRINTER_MODEL} ({nozzle} nozzle)"
+    # Fallback: extract from printer_settings_id string
+    if isinstance(raw, str):
+        m = re.search(r"(\d+\.?\d*)\s*mm\s*nozzle", raw, re.IGNORECASE)
+        if m:
+            return f"{U1_PRINTER_MODEL} ({m.group(1)} nozzle)"
+    return f"{U1_PRINTER_MODEL} (0.4 nozzle)"
 
 
 def _normalize_print_settings(raw):
@@ -642,8 +655,12 @@ def convert_project_settings(proj):
 
     # 2. Set printer identity
     result["printer_model"] = U1_PRINTER_MODEL
-    if "printer_settings_id" in result:
-        result["printer_settings_id"] = _normalize_printer_id(result["printer_settings_id"])
+    # Get raw nozzle diameters before they are expanded, for printer ID
+    raw_nozzle = _norm(proj.get("nozzle_diameter", ["0.4"]))
+    if isinstance(raw_nozzle, str):
+        raw_nozzle = [raw_nozzle]
+    result["printer_settings_id"] = _normalize_printer_id(
+        result.get("printer_settings_id", ""), raw_nozzle)
     if "print_settings_id" in result:
         result["print_settings_id"] = _normalize_print_settings(result["print_settings_id"])
 
@@ -657,12 +674,24 @@ def convert_project_settings(proj):
     result["nozzle_volume"] = U1_NOZZLE_VOLUME
     result["version"] = U1_VERSION
 
-    # Expand nozzle_diameter array to match filament count
+    # Expand nozzle_diameter array to match filament count,
+    # clamping each value to U1 supported sizes [0.2, 0.4, 0.6, 0.8]
+    def _clamp_nozzle(value):
+        try:
+            v = float(value)
+        except (ValueError, TypeError):
+            return "0.4"
+        allowed = [0.2, 0.4, 0.6, 0.8]
+        return str(min(allowed, key=lambda x: abs(x - v)))
+
     nozzle = _norm(proj.get("nozzle_diameter", ["0.4"]))
     if isinstance(nozzle, str):
         nozzle = [nozzle]
-    if isinstance(nozzle, list) and len(nozzle) < n_fil:
-        result["nozzle_diameter"] = nozzle * n_fil
+    nozzle = [_clamp_nozzle(v) for v in nozzle]
+    if len(nozzle) < n_fil:
+        result["nozzle_diameter"] = (nozzle * n_fil)[:n_fil]
+    else:
+        result["nozzle_diameter"] = nozzle[:n_fil]
 
     # 5. Cap speeds (skip percentage values, handle 0-means-default)
     def _cap_numeric(result, key, cap):
@@ -707,6 +736,8 @@ def convert_project_settings(proj):
     if "flush_volumes_matrix" in result:
         n_entries = n_fil * n_fil
         result["flush_volumes_matrix"] = ["0"] * n_entries
+    result["flush_volumes_vector"] = ["140"] * n_fil
+    result["wiping_volumes_extruders"] = ["70"] * 10
     result["enable_prime_tower"] = "0"
     result["prime_volume"] = "0"
     result["flush_into_infill"] = "0"
