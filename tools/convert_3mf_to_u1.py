@@ -671,13 +671,15 @@ def convert_project_settings(proj):
         val = _norm(result[key])
         if isinstance(val, str) and "%" in val:
             return  # percentage-based acceleration, skip
+        was_str = isinstance(val, str)
         try:
-            val = int(val) if isinstance(val, str) else val
+            val = int(val) if was_str else val
             if isinstance(val, (int, float)):
                 if val == 0 and key in ("inner_wall_acceleration", "default_acceleration"):
-                    result[key] = cap  # 0 means "use default", set explicitly
+                    result[key] = str(cap) if was_str else cap
                 elif cap > 0:
-                    result[key] = min(val, cap)
+                    capped = min(val, cap)
+                    result[key] = str(capped) if was_str else capped
         except (ValueError, TypeError):
             pass
 
@@ -819,24 +821,30 @@ def generate_filament_settings(proj, n_fil, official_names):
     filament_settings_list = []
 
     for i in range(n_fil):
-        inherits_name = ""
+        filament_name = ""
         if i < len(official_names):
-            inherits_name = official_names[i]
+            filament_name = official_names[i]
         else:
-            # Reuse last known official name for extruders beyond the declared list
-            inherits_name = official_names[-1] if official_names else ""
-        if isinstance(inherits_name, list):
-            inherits_name = inherits_name[0] if inherits_name else ""
-        if isinstance(inherits_name, str):
-            inherits_name = inherits_name.strip()
-        if not inherits_name:
-            continue  # skip extruders with no identifiable filament
+            filament_name = official_names[-1] if official_names else ""
+        if isinstance(filament_name, list):
+            filament_name = filament_name[0] if filament_name else ""
+        if isinstance(filament_name, str):
+            filament_name = filament_name.strip()
+        if not filament_name:
+            continue
+
+        # Only generate a filament_settings file when the filament name is
+        # NOT already an official Snapmaker preset.  When it IS official the
+        # engine finds it directly via find_in_system() — wrapping it would
+        # create a self-referencing inherits loop (name == inherits).
+        if filament_name in _SNAPMK_OFFICIAL_FILAMENT_NAMES:
+            continue
 
         fs = {
-            "name": inherits_name,
+            "name": filament_name,
             "from": "project",
-            "inherits": inherits_name,
-            "filament_settings_id": [inherits_name],
+            "inherits": filament_name,
+            "filament_settings_id": [filament_name],
             "filament_type": ["PLA"],
             "filament_vendor": ["Snapmaker"],
             "version": "02.03.01.00",
@@ -1057,6 +1065,9 @@ def convert_3mf(input_path, output_path):
                                     if isinstance(fsid, list):
                                         fsid = fsid[0] if fsid else ""
                                     new_inherits = fsid
+                                # Avoid circular: inherits must not equal name
+                                if new_inherits and new_inherits == fs.get("name", ""):
+                                    new_inherits = ""
                                 if new_inherits and new_inherits != fs.get("inherits", ""):
                                     fs["inherits"] = new_inherits
                                     modified = True
