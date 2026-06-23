@@ -1,0 +1,21 @@
+name: "Bambu PLA tuning"
+description: >
+  Conservative values for Bambu PLA on Snapmaker U1.  Covers Basic, PLA+,
+  and unlisted PLA types.  You can raise speeds once you've verified
+  first-layer adhesion.
+match:
+  filament_vendor: "Bambu Lab"
+  filament_type: "PLA"
+overrides:
+  outer_wall_speed: 150
+  inner_wall_speed: 250
+  sparse_infill_speed: 250
+  internal_solid_infill_speed: 250
+  top_surface_speed: 100
+  gap_infill_speed: 100
+  default_acceleration: 5000
+  outer_wall_acceleration: 3000
+  inner_wall_acceleration: 5000
+  initial_layer_acceleration: 500
+priority: 0
+enabled: true
