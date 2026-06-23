@@ -2,6 +2,8 @@
 #include "GeometryCheck.hpp"
 #include "Utils.hpp"
 
+#include <cctype>
+#include <climits>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -173,6 +175,9 @@ bool SliceEngine::run() {
         build_statistics();
         return false;
     }
+
+    // Sanitize Bambu sentinel values (-1, 0-based filament IDs) before validation
+    sanitize_config();
 
     // Config & preset validation (desktop parity)
     validate_config();
@@ -399,6 +404,58 @@ bool SliceEngine::load_3mf() {
     }
 
     return true;
+}
+
+void SliceEngine::sanitize_config()
+{
+    const PrintConfigDef* def = &Slic3r::print_config_def;
+    std::vector<std::string> keys_to_erase;
+
+    for (auto it = m_config.cbegin(); it != m_config.cend(); ++it) {
+        const std::string& key = it->first;
+        const ConfigOption* opt = it->second.get();
+        const ConfigOptionDef* optdef = def->get(key);
+        if (!optdef) continue;
+
+        bool below_min = false;
+        switch (opt->type()) {
+        case coInt: {
+            auto* iopt = static_cast<const ConfigOptionInt*>(opt);
+            below_min = (iopt->value < optdef->min);
+            break;
+        }
+        case coInts: {
+            for (int v : static_cast<const ConfigOptionInts*>(opt)->values)
+                if (v < optdef->min) { below_min = true; break; }
+            break;
+        }
+        case coFloat:
+        case coPercent:
+        case coFloatOrPercent: {
+            auto* fopt = static_cast<const ConfigOptionFloat*>(opt);
+            below_min = (fopt->value < optdef->min);
+            break;
+        }
+        case coFloats:
+        case coPercents: {
+            for (double v : static_cast<const ConfigOptionFloats*>(opt)->values)
+                if (v < optdef->min) { below_min = true; break; }
+            break;
+        }
+        default: break;
+        }
+
+        if (below_min) {
+            keys_to_erase.push_back(key);
+            m_stats.issues.push_back(make_warning(-1, "CONFIG_SANITIZED",
+                key + " = " + opt->serialize()
+                + " is below minimum (" + std::to_string(optdef->min)
+                + "), reset to system default"));
+        }
+    }
+
+    for (const std::string& key : keys_to_erase)
+        m_config.erase(key);
 }
 
 // ============================================================================
@@ -798,6 +855,19 @@ bool SliceEngine::validate_filament_official(bool enforce)
                 }
             }
 
+            // Auto-match: try to match orphaned inline filament config to the
+            // closest official preset by comparing filament properties.
+            if (enforce && has_inline_filament_config(i)) {
+                Preset* matched = match_inline_to_official_preset(i);
+                if (matched) {
+                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
+                        << "\" auto-matched to official preset \""
+                        << matched->name << "\" via inline config properties";
+                    substitute_filament_params(filament_ids, i, *matched, name);
+                    continue;
+                }
+            }
+
             std::string msg = "Filament \"" + name + "\" is not a recognized preset";
             // FILAMENT_UNKNOWN: preset truly doesn't exist — always an error
             report(/*is_official_violation=*/false, "FILAMENT_UNKNOWN", msg);
@@ -856,6 +926,18 @@ bool SliceEngine::validate_filament_official(bool enforce)
         while (current && !resolved) {
             std::string inherits_name = current->inherits();
             if (inherits_name.empty()) {
+                // Auto-match: orphaned project preset with no inherits can
+                // be matched to the closest official preset by comparing
+                // filament properties from the preset's own config.
+                Preset* matched = match_inline_to_official_preset(&current->config, 0);
+                if (matched) {
+                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
+                        << "\" auto-matched to official preset \""
+                        << matched->name << "\" via preset config properties";
+                    substitute_filament_params(filament_ids, i, *matched, name);
+                    resolved = true;
+                    break;
+                }
                 std::string msg = "Filament \"" + name
                     + "\" is not derived from any Snapmaker or Generic filament";
                 BOOST_LOG_TRIVIAL(error) << msg;
@@ -955,6 +1037,131 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
             + "\" replaced with official preset \""
             + official_parent.name + "\" for cloud safety";
     m_stats.issues.push_back(make_warning(-1, "FILAMENT_SUBSTITUTED", msg));
+}
+
+Preset* SliceEngine::match_inline_to_official_preset(int ext_idx)
+{
+    return match_inline_to_official_preset(&m_config, ext_idx);
+}
+
+Preset* SliceEngine::match_inline_to_official_preset(const DynamicPrintConfig* cfg, int ext_idx)
+{
+    if (!cfg) return nullptr;
+
+    // Read filament_type — required for matching.
+    auto ft_opt = cfg->option<ConfigOptionStrings>("filament_type");
+    if (!ft_opt || ext_idx >= static_cast<int>(ft_opt->values.size()))
+        return nullptr;
+    const std::string& inline_ft = ft_opt->values[ext_idx];
+    if (inline_ft.empty())
+        return nullptr;
+
+    // Read nozzle_temperature (optional scoring signal).
+    double inline_nozzle_temp = 0;
+    bool   has_nozzle_temp = false;
+    auto nt_opt = cfg->option<ConfigOptionFloats>("nozzle_temperature");
+    if (nt_opt && ext_idx < static_cast<int>(nt_opt->values.size())
+        && !nt_opt->is_nil(ext_idx)) {
+        inline_nozzle_temp = nt_opt->values[ext_idx];
+        has_nozzle_temp = true;
+    }
+
+    // Read the first non-nil, non-zero bed temperature (optional scoring signal).
+    double inline_bed_temp = 0;
+    bool   has_bed_temp = false;
+    static const char* bed_keys[] = {
+        "hot_plate_temp", "cool_plate_temp",
+        "eng_plate_temp", "textured_plate_temp"
+    };
+    for (const char* bk : bed_keys) {
+        auto bed_opt = cfg->option<ConfigOptionFloats>(bk);
+        if (bed_opt && ext_idx < static_cast<int>(bed_opt->values.size())
+            && !bed_opt->is_nil(ext_idx) && bed_opt->values[ext_idx] > 0) {
+            inline_bed_temp = bed_opt->values[ext_idx];
+            has_bed_temp = true;
+            break;
+        }
+    }
+
+    // ASCII case-insensitive equality helper.
+    auto iequal = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(a[i]))
+                != std::tolower(static_cast<unsigned char>(b[i])))
+                return false;
+        return true;
+    };
+
+    // Iterate loaded official presets, score by property proximity.
+    const Preset* best = nullptr;
+    int    best_nozzle_diff = INT_MAX;
+    int    best_bed_diff    = INT_MAX;
+
+    for (const Preset& preset : m_preset_bundle->filaments) {
+        // Only consider official presets.
+        if (!(preset.vendor && preset.vendor->name == PresetBundle::SM_BUNDLE)
+            && !preset.m_from_orca_filament_lib)
+            continue;
+
+        // Primary filter: filament_type must match exactly (case-insensitive).
+        auto pft = preset.config.option<ConfigOptionStrings>("filament_type");
+        if (!pft || pft->values.empty()) continue;
+        if (!iequal(pft->values[0], inline_ft)) continue;
+
+        // Secondary score: nozzle temperature proximity.
+        int nozzle_diff = 0;
+        if (has_nozzle_temp) {
+            auto pnt = preset.config.option<ConfigOptionFloats>("nozzle_temperature");
+            if (!pnt || pnt->values.empty() || pnt->is_nil(0))
+                nozzle_diff = INT_MAX / 2;
+            else
+                nozzle_diff = std::abs(static_cast<int>(pnt->values[0])
+                                       - static_cast<int>(inline_nozzle_temp));
+        }
+
+        // Tertiary score: bed temperature proximity.
+        int bed_diff = 0;
+        if (has_bed_temp) {
+            int preset_bed = 0;
+            for (const char* bk : bed_keys) {
+                auto pbed = preset.config.option<ConfigOptionFloats>(bk);
+                if (pbed && !pbed->values.empty() && !pbed->is_nil(0)
+                    && pbed->values[0] > 0) {
+                    preset_bed = static_cast<int>(pbed->values[0]);
+                    break;
+                }
+            }
+            if (preset_bed == 0)
+                bed_diff = INT_MAX / 2;
+            else
+                bed_diff = std::abs(preset_bed - static_cast<int>(inline_bed_temp));
+        }
+
+        // Compare scores: lower is better.
+        bool better = false;
+        if (!best) {
+            better = true;
+        } else if (nozzle_diff < best_nozzle_diff) {
+            better = true;
+        } else if (nozzle_diff == best_nozzle_diff && bed_diff < best_bed_diff) {
+            better = true;
+        } else if (nozzle_diff == best_nozzle_diff && bed_diff == best_bed_diff) {
+            // Tie-break: prefer shorter (more base-like) name, then lexicographic.
+            if (preset.name.size() < best->name.size())
+                better = true;
+            else if (preset.name.size() == best->name.size() && preset.name < best->name)
+                better = true;
+        }
+
+        if (better) {
+            best = &preset;
+            best_nozzle_diff = nozzle_diff;
+            best_bed_diff    = bed_diff;
+        }
+    }
+
+    return const_cast<Preset*>(best);
 }
 
 bool SliceEngine::validate_printer_model()

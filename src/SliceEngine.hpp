@@ -96,6 +96,7 @@ public:
 private:
     // --- Pipeline stages ---
     bool load_3mf();
+    void sanitize_config();
     void validate_config();
     void load_system_presets();
     void validate_presets();
@@ -103,6 +104,8 @@ private:
     Slic3r::DynamicPrintConfig build_full_print_config();
     bool validate_filament_official(bool enforce = true);
     bool has_inline_filament_config(int ext_idx);
+    Slic3r::Preset* match_inline_to_official_preset(int ext_idx);
+    Slic3r::Preset* match_inline_to_official_preset(const Slic3r::DynamicPrintConfig* cfg, int ext_idx);
     void apply_printer_preset_config();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
                                     const Slic3r::Preset& official_parent,
