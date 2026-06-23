@@ -6,9 +6,16 @@
  */
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <vector>
 
 #include <boost/dll/runtime_symbol_info.hpp>
@@ -31,6 +38,105 @@
 #include "SliceEngine.hpp"
 
 namespace {
+
+// ========================================================================
+// Crash-protection: signal-safe emergency state.
+// Must be POD — no constructors, no destructors, no atomics — so that
+// the signal handler can safely reference them without allocation.
+// ========================================================================
+constexpr size_t EMERGENCY_PATH_SIZE = 1024;
+constexpr size_t EMERGENCY_JSON_SIZE  = 4096;
+constexpr size_t ALT_STACK_SIZE       = 65536;  // typical SIGSTKSZ value; large enough for nested signals
+
+static char                    g_emergency_json_path[EMERGENCY_PATH_SIZE] = {};
+static volatile sig_atomic_t   g_crash_occurred = 0;
+static char                    g_alt_stack[ALT_STACK_SIZE] = {};
+
+// Signal handler for fatal signals.
+// MUST be async-signal-safe: no heap allocation, no mutexes, no STL containers.
+// Uses only: open / write / close / signal / raise (all POSIX signal-safe).
+extern "C" void crash_signal_handler(int sig) {
+    g_crash_occurred = 1;
+
+    // Map signal number to name (no switch with strings in signal context)
+    const char* sig_name = "UNKNOWN";
+    if      (sig == SIGSEGV) sig_name = "SIGSEGV";
+    else if (sig == SIGABRT) sig_name = "SIGABRT";
+    else if (sig == SIGFPE)  sig_name = "SIGFPE";
+    else if (sig == SIGBUS)  sig_name = "SIGBUS";
+    else if (sig == SIGILL)  sig_name = "SIGILL";
+
+    // Build emergency JSON via snprintf (async-signal-safe on Linux/glibc)
+    char buf[EMERGENCY_JSON_SIZE];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"success\":false,"
+        "\"engine_version\":\"" CLOUD_SLICER_ENGINE_VERSION "\","
+        "\"error_message\":\"C++ engine crashed with signal %s (%d)\","
+        "\"issues\":[{"
+            "\"level\":\"error\","
+            "\"plate_id\":-1,"
+            "\"object_name\":\"\","
+            "\"z_height\":-1.0,"
+            "\"code\":\"ENGINE_CRASH\","
+            "\"message\":\"C++ engine crashed with signal %s (%d). "
+                         "Please try again or contact support.\""
+        "}],"
+        "\"plates\":[]}\n",
+        sig_name, sig, sig_name, sig);
+    if (n < 0) n = 0;
+    if (static_cast<size_t>(n) >= sizeof(buf)) n = static_cast<int>(sizeof(buf)) - 1;
+    buf[n] = '\0';
+
+    // Write to stderr (always safe)
+    ::write(STDERR_FILENO, "\n=== SLICE STATISTICS (JSON) ===\n", 33);
+    ::write(STDERR_FILENO, buf, static_cast<size_t>(n));
+    ::write(STDERR_FILENO, "\n=== END STATISTICS ===\n", 24);
+
+    // Write to the expected JSON output file so the cloud service sees it
+    if (g_emergency_json_path[0] != '\0') {
+        int fd = ::open(g_emergency_json_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            ::write(fd, buf, static_cast<size_t>(n));
+            ::close(fd);
+        }
+    }
+
+    // Re-raise with default handler for core dump
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+// std::terminate handler -- called when a C++ exception escapes all catch blocks
+// or when a noexcept function throws.
+[[noreturn]] void terminate_handler() {
+    static const char msg[] =
+        "{\"success\":false,"
+        "\"engine_version\":\"" CLOUD_SLICER_ENGINE_VERSION "\","
+        "\"error_message\":\"C++ engine crashed: unhandled exception (std::terminate called)\","
+        "\"issues\":[{"
+            "\"level\":\"error\","
+            "\"plate_id\":-1,"
+            "\"object_name\":\"\","
+            "\"z_height\":-1.0,"
+            "\"code\":\"ENGINE_CRASH\","
+            "\"message\":\"C++ engine crashed due to an unhandled exception.\""
+        "}],"
+        "\"plates\":[]}\n";
+
+    ::write(STDERR_FILENO, "\n=== SLICE STATISTICS (JSON) ===\n", 33);
+    ::write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    ::write(STDERR_FILENO, "\n=== END STATISTICS ===\n", 24);
+
+    if (g_emergency_json_path[0] != '\0') {
+        int fd = ::open(g_emergency_json_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            ::write(fd, msg, sizeof(msg) - 1);
+            ::close(fd);
+        }
+    }
+
+    std::abort();
+}
 
 struct CliArgs {
     EngineConfig engine_cfg;
@@ -299,19 +405,82 @@ int main(int argc, char* argv[]) {
     }
     set_temporary_dir(cfg.temp_dir);
 
+    // --- Register crash handlers BEFORE any slicing operations ---
+    // Pre-compute the expected JSON output path so the signal handler
+    // can write emergency output to the right location.
+    {
+        std::string emergency_path = generate_output_path(
+            cfg.input_file, cfg.output_base, cfg.plate_id, cfg.format, cfg.single_plate);
+        boost::filesystem::path out_p(emergency_path);
+        emergency_path = (out_p.parent_path() / out_p.stem().stem()).string() + ".json";
+        std::strncpy(g_emergency_json_path, emergency_path.c_str(), EMERGENCY_PATH_SIZE - 1);
+        g_emergency_json_path[EMERGENCY_PATH_SIZE - 1] = '\0';
+    }
+
+    // Install signal handlers for fatal signals
+    {
+        struct sigaction sa;
+        std::memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = crash_signal_handler;
+        sa.sa_flags   = SA_NODEFER;
+
+        // Use alternate stack for SIGSEGV to survive stack overflow
+        stack_t ss;
+        ss.ss_sp    = g_alt_stack;
+        ss.ss_size  = ALT_STACK_SIZE;
+        ss.ss_flags = 0;
+        if (::sigaltstack(&ss, nullptr) == 0) {
+            sa.sa_flags |= SA_ONSTACK;
+        }
+
+        ::sigaction(SIGSEGV, &sa, nullptr);
+        ::sigaction(SIGABRT, &sa, nullptr);
+        ::sigaction(SIGFPE,  &sa, nullptr);
+        ::sigaction(SIGBUS,  &sa, nullptr);
+        ::sigaction(SIGILL,  &sa, nullptr);
+    }
+
+    // Install terminate handler for unhandled C++ exceptions
+    std::set_terminate(terminate_handler);
+
     // --- Run the slicing pipeline ---
     std::vector<std::string> temp_files;
     TempFileGuard temp_guard(temp_files);
 
     SliceEngine engine(cfg, temp_files);
-    engine.run();
+
+    try {
+        engine.run();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "Fatal engine exception: " << e.what();
+        std::cerr << "[FATAL] Engine exception: " << e.what() << std::endl;
+        engine.report_error(-1, EXIT_SLICING_ERROR, "ENGINE_CRASH",
+            std::string("Engine internal error: ") + e.what(), true);
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "Fatal unknown engine exception";
+        std::cerr << "[FATAL] Unknown engine exception" << std::endl;
+        engine.report_error(-1, EXIT_SLICING_ERROR, "ENGINE_CRASH",
+            "Engine internal error: unknown exception", true);
+    }
 
     // --- Output JSON ---
     if (json_output_path.empty()) {
         boost::filesystem::path out_path(engine.output_path());
         json_output_path = (out_path.parent_path() / out_path.stem().stem()).string() + ".json";
     }
-    output_slice_statistics(engine.stats(), json_output_path, engine.output_path());
+
+    try {
+        output_slice_statistics(engine.stats(), json_output_path, engine.output_path());
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "Failed to write JSON output: " << e.what();
+        std::ofstream fallback(json_output_path);
+        if (fallback.is_open()) {
+            fallback << "{\"success\":false,\"engine_version\":\"" << CLOUD_SLICER_ENGINE_VERSION
+                     << "\",\"error_message\":\"Failed to write statistics JSON\","
+                     << "\"issues\":[{\"level\":\"error\",\"plate_id\":-1,\"code\":\"ENGINE_CRASH\","
+                     << "\"message\":\"Engine crashed with no output\"}],\"plates\":[]}";
+        }
+    }
 
     // --- Cleanup & exit ---
     // Remove the per-process temp subdirectory

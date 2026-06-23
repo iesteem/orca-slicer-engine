@@ -5,6 +5,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -155,6 +156,10 @@ bool SliceEngine::run() {
     m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base,
                                          m_cfg.plate_id, m_cfg.format, m_cfg.single_plate);
 
+    m_stats.issues.reserve(32);
+
+    try {
+
     // --- Config layering & mutation order ---
     // m_config is the shared project config from the 3MF. The following
     // pipeline stages mutate it in order, each building on the previous:
@@ -230,7 +235,6 @@ bool SliceEngine::run() {
                                + std::chrono::seconds(m_cfg.timeout_seconds);
         }
 
-        try {
         // --- Geometry defect detection (once for entire model, before per-plate loop) ---
         {
             auto geom_issues = run_geometry_checks(m_model);
@@ -271,8 +275,18 @@ bool SliceEngine::run() {
         }
 
         // Process each plate
-        for (int plate_id : plates_to_process) {
-            process_plate(plate_id);
+        if (plates_to_process.empty()) {
+            BOOST_LOG_TRIVIAL(error) << "No plates to process";
+            m_any_error = true;
+            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.error_message = "No plates found in the 3MF file to slice";
+            m_stats.issues.push_back(make_error(-1, "NO_PLATES",
+                "No plates found in the 3MF file to slice. "
+                "Please add objects to at least one plate and try again."));
+        } else {
+            for (int plate_id : plates_to_process) {
+                process_plate(plate_id);
+            }
         }
 
         // Package output — only if no errors occurred
@@ -287,21 +301,6 @@ bool SliceEngine::run() {
             BOOST_LOG_TRIVIAL(info) << "Removed output file due to errors: " << m_output_path;
         }
 
-        } catch (const std::exception& e) {
-            BOOST_LOG_TRIVIAL(error) << "Unhandled exception in slicing pipeline: " << e.what();
-            std::cerr << "[ERROR] An unexpected internal error occurred during slicing." << std::endl;
-            m_any_error = true;
-            set_error_type(EXIT_SLICING_ERROR);
-            m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
-                "An unexpected internal error occurred during slicing. Please try again or contact support."));
-        } catch (...) {
-            BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in slicing pipeline";
-            std::cerr << "[ERROR] An unexpected internal error occurred." << std::endl;
-            m_any_error = true;
-            set_error_type(EXIT_SLICING_ERROR);
-            m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
-                "Unhandled unknown exception in slicing pipeline"));
-        }
     }
 
     // Always build JSON statistics (even on early failure) so
@@ -309,6 +308,26 @@ bool SliceEngine::run() {
     build_statistics();
 
     return !m_plate_results.empty();
+
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "Fatal exception in slicing pipeline: " << e.what();
+        std::cerr << "[ERROR] An unexpected internal error occurred during slicing." << std::endl;
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
+            std::string("An unexpected internal error occurred: ") + e.what()));
+        build_statistics();
+        return false;
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "Fatal non-standard exception in slicing pipeline";
+        std::cerr << "[ERROR] An unexpected internal error occurred." << std::endl;
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
+            "Unhandled unknown exception in slicing pipeline"));
+        build_statistics();
+        return false;
+    }
 }
 
 // ============================================================================
@@ -1495,6 +1514,8 @@ void SliceEngine::process_plate(int plate_id) {
 
     if (instances_on_plate == 0) {
         BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate " << (plate_id + 1);
+        m_stats.issues.push_back(make_warning(plate_id, "EMPTY_PLATE",
+            "Plate " + std::to_string(plate_id + 1) + " has no printable objects and was skipped."));
         return;
     }
 
@@ -1642,19 +1663,28 @@ void SliceEngine::process_plate(int plate_id) {
     set_error_type(EXIT_EXPORT_ERROR);
     } catch (const std::exception& e) {
         restore_baked_z_offsets();
+        // Use raw stderr for OOM safety — no Boost.Log allocation
+        std::fprintf(stderr, "[FATAL] Plate %d exception: %s\n", plate_id + 1, e.what());
         BOOST_LOG_TRIVIAL(error) << "Unhandled exception processing plate " << (plate_id + 1)
             << ": " << e.what();
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
-        m_stats.issues.push_back(make_error(plate_id, "INTERNAL_ERROR",
-            std::string("Plate ") + std::to_string(plate_id + 1) + " slicing failed: " + e.what()));
+        std::snprintf(m_emergency_msg, EMERGENCY_MSG_SIZE,
+            "Slicing failed for plate %d: %s", plate_id + 1, e.what());
+        m_stats.issues.emplace_back(
+            Issue{"error", plate_id, "", -1.0, "INTERNAL_ERROR",
+                  std::string(m_emergency_msg), ""});
     } catch (...) {
         restore_baked_z_offsets();
+        std::fprintf(stderr, "[FATAL] Plate %d unknown exception\n", plate_id + 1);
         BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception processing plate " << (plate_id + 1);
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
-        m_stats.issues.push_back(make_error(plate_id, "INTERNAL_ERROR",
-            std::string("Plate ") + std::to_string(plate_id + 1) + " slicing failed with unknown error"));
+        std::snprintf(m_emergency_msg, EMERGENCY_MSG_SIZE,
+            "Slicing failed for plate %d with unknown error", plate_id + 1);
+        m_stats.issues.emplace_back(
+            Issue{"error", plate_id, "", -1.0, "INTERNAL_ERROR",
+                  std::string(m_emergency_msg), ""});
     }
 }
 

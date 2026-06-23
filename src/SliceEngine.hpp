@@ -143,6 +143,11 @@ private:
     bool m_any_postprocess_warning = false;
     int m_error_type = EXIT_OK;  // most severe exit code encountered
 
+    // Fixed-size buffer for OOM-safe error message formatting in catch blocks.
+    // Avoids heap allocation when memory is exhausted.
+    static constexpr size_t EMERGENCY_MSG_SIZE = 256;
+    char m_emergency_msg[EMERGENCY_MSG_SIZE] = {};
+
     // TBB thread count control (kept alive for entire slicing duration)
     std::unique_ptr<tbb::global_control> m_tbb_control;
 
