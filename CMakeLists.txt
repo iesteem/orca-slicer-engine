@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(orca-slice-engine VERSION 02.01.12 LANGUAGES C CXX)
+project(orca-slice-engine VERSION 02.01.15 LANGUAGES C CXX)
 
 option(BUILD_SLIC3R_DLL "Build slic3r shared library from engine source (DLL on Windows, SO on Linux). Requires libslic3r SDK." OFF)
 
@@ -477,7 +477,7 @@ if(UNIX AND NOT APPLE)
         C_VISIBILITY_PRESET hidden
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
-        VERSION 02.01.12
+        VERSION 02.01.15
         SOVERSION 2
     )
 
