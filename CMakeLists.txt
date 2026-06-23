@@ -313,7 +313,7 @@ if(WIN32)
     foreach(lib ${OCCT_LIBS})
         target_link_libraries(slic3r PRIVATE ${OCCT_LIB_DIR}/${lib}.lib)
     endforeach()
-    target_link_libraries(slic3r PRIVATE ${CMAKE_PREFIX_PATH}/lib/libgmp-10.lib ${CMAKE_PREFIX_PATH}/lib/libmpfr-4.lib)
+    target_link_libraries(slic3r PRIVATE ${DEP_LIB}/libgmp-10.lib ${DEP_LIB}/libmpfr-4.lib)
 
     message(STATUS "slic3r.dll target enabled")
 endif()

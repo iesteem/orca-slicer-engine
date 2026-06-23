@@ -1833,7 +1833,23 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
         return false;
     }
     catch (const SlicingError& ex) {
-        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
+        std::string msg = ex.what();
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << msg;
+
+        // Non-fatal slicing errors: GUI downgrades these to warnings and
+        // still produces gcode. Match GUI behavior.
+        bool is_non_fatal = (msg.find("empty initial layer") != std::string::npos ||
+                             msg.find("No layers were detected") != std::string::npos);
+
+        if (is_non_fatal) {
+            BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id
+                << ": non-fatal slicing issue (matching GUI behavior), "
+                << "proceeding with export: " << msg;
+            m_stats.issues.push_back(make_warning(plate_id, "SLICING_WARNING",
+                "Slicing completed with warnings: " + msg));
+            return true;
+        }
+
         std::cerr << "[ERROR] Plate " << plate_id << ": slicing failed" << std::endl;
         m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
             "Slicing failed for this plate. The model may contain geometry that cannot be sliced."));
@@ -2034,13 +2050,15 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result) {
     // Slice warnings
     for (const auto& w : result.gcode_result.warnings) {
         if (w.error_code == "1000C001") continue; // bed temp warning irrelevant for cloud slicing
-        if (w.level >= 2) {
+        // Level 2 = "severe warning" in GUI — still produces gcode.
+        // Only level 3+ is a true error that blocks export.
+        if (w.level >= 3) {
             log_plate_message("[Post-processing]", "ERROR", plate_id,
                 w.msg + " (code: " + w.error_code + ")");
             has_postprocess_error = true;
             result.issues.push_back(make_error(plate_id, w.error_code,
                 w.msg + " (code: " + w.error_code + ")"));
-        } else if (w.level == 1) {
+        } else if (w.level >= 1) {
             has_postprocess_warning = true;
             result.issues.push_back(make_warning(plate_id, w.error_code,
                 w.msg + " (code: " + w.error_code + ")"));
