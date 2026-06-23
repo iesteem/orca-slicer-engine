@@ -6,7 +6,7 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="${PROJECT_DIR}/build-consumer"
+BUILD_DIR="${PROJECT_DIR}/build-dll"
 ORCASLICER_DIR="/home/joyx/Desktop/code/OrcaSlicer"
 PKG_DIR="${PROJECT_DIR}/package"
 
@@ -23,10 +23,13 @@ echo "  bin/orca-slice-engine"
 
 # 2. 拷贝共享库
 echo "[2/4] Copying shared library..."
-cp -f "${BUILD_DIR}/libslic3r.so.1.0.0" "${PKG_DIR}/lib/"
-ln -sf libslic3r.so.1.0.0 "${PKG_DIR}/lib/libslic3r.so.1"
-ln -sf libslic3r.so.1      "${PKG_DIR}/lib/libslic3r.so"
-echo "  lib/libslic3r.so.1.0.0"
+# Detect actual .so version file (matches current CMake VERSION)
+SO_FILE=$(ls "${BUILD_DIR}/libslic3r.so."*.*.* 2>/dev/null | head -1)
+cp -f "${SO_FILE}" "${PKG_DIR}/lib/"
+SO_BASENAME=$(basename "${SO_FILE}")
+ln -sf "${SO_BASENAME}" "${PKG_DIR}/lib/libslic3r.so.2"
+ln -sf libslic3r.so.2      "${PKG_DIR}/lib/libslic3r.so"
+echo "  lib/${SO_BASENAME}"
 
 # 3. 拷贝资源（仅引擎必需的 vendor）
 echo "[3/4] Copying resources (Snapmaker + OrcaFilamentLibrary)..."
@@ -59,7 +62,7 @@ echo "  run.sh"
 
 # 统计
 EXE_SIZE=$(du -h "${PKG_DIR}/bin/orca-slice-engine" | cut -f1)
-SO_SIZE=$(du -h "${PKG_DIR}/lib/libslic3r.so.1.0.0" | cut -f1)
+SO_SIZE=$(du -h "${PKG_DIR}/lib/${SO_BASENAME}" | cut -f1)
 TOTAL_SIZE=$(du -sh "${PKG_DIR}" | cut -f1)
 
 echo ""
