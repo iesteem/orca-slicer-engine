@@ -201,7 +201,6 @@ bool SliceEngine::run() {
         build_statistics();
         return false;
     }
-
     apply_printer_preset_config();
 
     // Filament validation: always run to catch truly invalid presets.
@@ -854,14 +853,21 @@ bool SliceEngine::validate_filament_official(bool enforce)
 
             // Heuristic: user-modified system presets are exported with
             // a suffix (e.g. "Generic PETG @U1 0.6 nozzle - copy" or
-            // "Generic PETG @U1 0.6 nozzle 1").  Match by prefix: iterate
-            // all loaded official presets and find the longest matching one.
+            // "Generic PETG @U1 0.6 nozzle 1").  Match by bidirectional
+            // prefix: whichever string is shorter must be a prefix of the
+            // longer one.
+            // This handles both:
+            //   search="Snapmaker PETG @U1" matches "Snapmaker PETG @U1 0.4 nozzle"
+            //   search="Snapmaker PETG @U1 0.4 nozzle - copy" matches "Snapmaker PETG @U1 0.4 nozzle"
             {
                 Preset* best = nullptr;
                 for (auto& preset : m_preset_bundle->filaments) {
                     if (!is_official_preset(preset)) continue;
-                    if (preset.name.size() >= name.size()) continue;
-                    if (name.compare(0, preset.name.size(), preset.name) != 0) continue;
+                    const std::string& shorter = (preset.name.size() <= name.size())
+                                                   ? preset.name : name;
+                    const std::string& longer  = (preset.name.size() > name.size())
+                                                   ? preset.name : name;
+                    if (longer.compare(0, shorter.size(), shorter) != 0) continue;
                     if (!best || preset.name.size() > best->name.size())
                         best = &preset;
                 }
@@ -1245,13 +1251,19 @@ bool SliceEngine::validate_printer_official(bool enforce)
     if (!current) {
         // Prefix matching heuristic: user-modified system printer presets
         // are exported with a suffix (e.g. "Snapmaker U1 (0.6 nozzle) - copy").
-        // Match the longest official printer preset that is a prefix.
+        // Match by bidirectional prefix — whichever string is shorter must
+        // be a prefix of the longer one.  This handles both:
+        //   search="Snapmaker U1 (0.4 nozzle) (converted)" (longer) matches "Snapmaker U1 (0.4 nozzle)" (shorter)
+        //   search="Snapmaker U1" (shorter) matches "Snapmaker U1 (0.4 nozzle)" (longer)
         if (enforce && m_preset_bundle) {
             Preset* best = nullptr;
             for (auto& preset : m_preset_bundle->printers) {
                 if (!is_official_machine_file(preset.name)) continue;
-                if (preset.name.size() >= name.size()) continue;
-                if (name.compare(0, preset.name.size(), preset.name) != 0) continue;
+                const std::string& shorter = (preset.name.size() <= name.size())
+                                               ? preset.name : name;
+                const std::string& longer  = (preset.name.size() > name.size())
+                                               ? preset.name : name;
+                if (longer.compare(0, shorter.size(), shorter) != 0) continue;
                 if (!best || preset.name.size() > best->name.size())
                     best = &preset;
             }
@@ -1344,36 +1356,34 @@ bool SliceEngine::validate_printer_official(bool enforce)
 void SliceEngine::substitute_printer_params(const std::string& original_name,
                                              const std::string& parent_name)
 {
+    try {
     BOOST_LOG_TRIVIAL(info) << "Substituting printer preset \"" << original_name
         << "\" with official parent \"" << parent_name << "\"";
 
-    m_config.set_key_value("printer_settings_id",
-        new ConfigOptionString(parent_name));
-
-    // Load the parent preset config from disk
+    // Load the parent preset config from disk and merge.
+    // Defer m_config mutations until after fill_nil_from succeeds,
+    // so that a bad_alloc during the merge does not leave m_config
+    // in a corrupted state.
     std::string parent_path = Slic3r::resources_dir()
         + SNAPMK_MACHINE_DIR + parent_name + ".json";
 
     DynamicPrintConfig parent_cfg;
     std::map<std::string, std::string> key_values;
     std::string reason;
-    try {
-        parent_cfg.load_from_json(parent_path,
-            ForwardCompatibilitySubstitutionRule::EnableSilent,
-            key_values, reason);
+    parent_cfg.load_from_json(parent_path,
+        ForwardCompatibilitySubstitutionRule::EnableSilent,
+        key_values, reason);
 
-        // Copy printer_model from parent if available
-        auto pm = parent_cfg.option<ConfigOptionString>("printer_model");
-        if (pm && m_config.has("printer_model"))
-            m_config.set_key_value("printer_model",
-                new ConfigOptionString(pm->value));
+    fill_nil_from(m_config, parent_cfg);
 
-        fill_nil_from(m_config, parent_cfg);
-    } catch (const std::exception& e) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "Failed to load parent preset config from " << parent_path
-            << ": " << e.what();
-    }
+    // Only now update the printer name — all heavy operations succeeded.
+    m_config.set_key_value("printer_settings_id",
+        new ConfigOptionString(parent_name));
+
+    auto pm = parent_cfg.option<ConfigOptionString>("printer_model");
+    if (pm && m_config.has("printer_model"))
+        m_config.set_key_value("printer_model",
+            new ConfigOptionString(pm->value));
 
     const std::string printer_msg = original_name == parent_name
         ? std::string("Printer preset \"") + original_name
@@ -1382,6 +1392,12 @@ void SliceEngine::substitute_printer_params(const std::string& original_name,
             + "\" replaced with official preset \""
             + parent_name + "\" for cloud safety";
     m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", printer_msg));
+
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error)
+            << "Failed to substitute printer preset \"" << original_name
+            << "\": " << e.what() << ". Keeping original preset.";
+    }
 }
 
 // ============================================================================
