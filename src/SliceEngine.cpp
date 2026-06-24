@@ -851,14 +851,11 @@ bool SliceEngine::validate_filament_official(bool enforce)
                 continue;
             }
 
-            // Heuristic: user-modified system presets are exported with
-            // a suffix (e.g. "Generic PETG @U1 0.6 nozzle - copy" or
-            // "Generic PETG @U1 0.6 nozzle 1").  Match by bidirectional
-            // prefix: whichever string is shorter must be a prefix of the
-            // longer one.
+            // Heuristic: match by bidirectional prefix.
             // This handles both:
             //   search="Snapmaker PETG @U1" matches "Snapmaker PETG @U1 0.4 nozzle"
             //   search="Snapmaker PETG @U1 0.4 nozzle - copy" matches "Snapmaker PETG @U1 0.4 nozzle"
+            // Falls through to auto-match on failure.
             {
                 Preset* best = nullptr;
                 for (auto& preset : m_preset_bundle->filaments) {

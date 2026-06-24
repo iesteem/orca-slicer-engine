@@ -419,8 +419,30 @@ def _append_nozzle_suffix(name, suffix):
     if not isinstance(name, str) or not name.strip():
         return name
     if suffix in name:
-        return name  # already has the suffix
+        return name
     return f"{name} {suffix}"
+
+
+def _append_nozzle_suffix_if_exists(name, suffix, profiles_dir=None):
+    """Append nozzle suffix only if the resulting preset file exists."""
+    if not isinstance(name, str) or not name.strip():
+        return name
+    if suffix in name:
+        return name
+    candidate = f"{name} {suffix}"
+    if profiles_dir and os.path.isdir(profiles_dir):
+        candidate_file = os.path.join(profiles_dir, f"{candidate}.json")
+        if os.path.exists(candidate_file):
+            return candidate
+    # Check default Snapmaker filament dir relative to this script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_filament_dir = os.path.join(
+        script_dir, "..", "package", "resources", "profiles", "Snapmaker", "filament")
+    if os.path.isdir(default_filament_dir):
+        if os.path.exists(os.path.join(default_filament_dir, f"{candidate}.json")):
+            return candidate
+    # No per-nozzle variant exists — keep the base name
+    return name
 
 
 def _remap_filament_name(name):
@@ -618,16 +640,17 @@ def convert_project_settings(proj, machine_cfg, process_cfg, rules=None):
                 result[key] = [_remap_filament_name(v) for v in val]
 
     # --- Step 9b: Append nozzle suffix to filament_settings_id ---
-    # The system presets are named like "Snapmaker PETG @U1 0.4 nozzle".
-    # Ensure filament_settings_id values match exactly by appending the
-    # nozzle diameter from the 3MF (e.g. "Snapmaker PETG @U1" →
-    # "Snapmaker PETG @U1 0.4 nozzle").
+    # Only add nozzle suffix if the system preset with that exact name
+    # actually exists.  Some filament families (e.g. "Snapmaker PLA @U1")
+    # use nozzles inherited from base presets and do NOT have per-nozzle
+    # variant files.
     nozzle_suffix = _get_nozzle_suffix(result)
     if nozzle_suffix and "filament_settings_id" in result:
         fids = result["filament_settings_id"]
         if isinstance(fids, list):
             result["filament_settings_id"] = [
-                _append_nozzle_suffix(v, nozzle_suffix) for v in fids
+                _append_nozzle_suffix_if_exists(v, nozzle_suffix)
+                for v in fids
             ]
 
     return result, dropped, clamp_events, rule_applied, added
