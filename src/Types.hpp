@@ -17,7 +17,7 @@ constexpr int EXIT_VALIDATION_ERROR = 6;
 constexpr int EXIT_POSTPROCESS_WARNING = 7;
 
 // Cloud slicer engine version (independent of SLIC3R_VERSION)
-constexpr auto CLOUD_SLICER_ENGINE_VERSION = "02.01.15";
+constexpr auto CLOUD_SLICER_ENGINE_VERSION = "02.01.16";
 
 // Output format enum
 enum class OutputFormat {

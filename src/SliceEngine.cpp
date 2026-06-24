@@ -1412,6 +1412,82 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
         // Layer 2: System filament config (per-extruder)
         auto filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id");
         if (filament_ids && !filament_ids->values.empty()) {
+            // Normalize: if model has more filaments than printer extruders,
+            // trim to printer extruder count to prevent crashes in wipe tower /
+            // ToolOrdering which index flush_volumes_matrix by extruder ID.
+            if (out.has("nozzle_diameter")) {
+                auto* nd = out.option<ConfigOptionFloats>("nozzle_diameter");
+                if (nd && nd->values.size() < filament_ids->values.size()) {
+                    const size_t original_count = filament_ids->values.size();
+
+                    // Determine the correct trim target.
+                    // Priority 1: variant config nozzle_diameter size (normal case).
+                    // Priority 2: fall back to system preset by printer_model + variant.
+                    // Priority 3: if target still <= 1, skip trimming entirely.
+                    size_t target = nd->values.size();
+
+                    if (target <= 1) {
+                        // Try fallback: look up the official system preset
+                        std::string printer_model = m_config.opt_string("printer_model");
+                        if (!printer_model.empty()) {
+                            std::string printer_variant = m_config.opt_string("printer_variant");
+                            const Preset* sys_preset =
+                                bundle.printers.find_system_preset_by_model_and_variant(
+                                    printer_model, printer_variant);
+                            if (sys_preset && sys_preset->config.has("nozzle_diameter")) {
+                                auto* sys_nd = sys_preset->config.option<ConfigOptionFloats>("nozzle_diameter");
+                                if (sys_nd && sys_nd->values.size() > 1)
+                                    target = sys_nd->values.size();
+                            }
+                        }
+                    }
+
+                    if (target <= 1) {
+                        // Cannot determine a reliable extruder count — skip trim
+                        BOOST_LOG_TRIVIAL(warning)
+                            << "Cannot determine printer extruder count (nozzle_diameter size="
+                            << nd->values.size() << "); keeping " << original_count << " filaments";
+                    } else if (target < original_count) {
+                        // Trim to target
+                        BOOST_LOG_TRIVIAL(warning) << "Trimming filament count from "
+                            << original_count << " to " << target
+                            << " to match printer extruder count";
+                        filament_ids->values.resize(target);
+                        // Trim other per-extruder arrays in m_config
+                        const char* per_filament_keys[] = {
+                            "filament_diameter", "filament_density", "filament_cost",
+                            "nozzle_temperature", "nozzle_temperature_initial_layer",
+                            "filament_type", "filament_colour", "filament_vendor", nullptr
+                        };
+                        for (int k = 0; per_filament_keys[k]; ++k) {
+                            if (m_config.has(per_filament_keys[k])) {
+                                auto* opt = m_config.option(per_filament_keys[k]);
+                                if (opt && opt->is_vector()) {
+                                    auto* vec = dynamic_cast<ConfigOptionStrings*>(opt);
+                                    if (vec && vec->values.size() > target) vec->values.resize(target);
+                                    auto* vecf = dynamic_cast<ConfigOptionFloats*>(opt);
+                                    if (vecf && vecf->values.size() > target) vecf->values.resize(target);
+                                    auto* vecs = dynamic_cast<ConfigOptionFloatsNullable*>(opt);
+                                    if (vecs && vecs->values.size() > target) vecs->values.resize(target);
+                                }
+                            }
+                        }
+
+                        // Report to issues and mark as postprocess warning
+                        m_stats.issues.push_back(make_warning(-1, "FILAMENT_COUNT_MISMATCH",
+                            "Filament count trimmed from "
+                            + std::to_string(original_count) + " to "
+                            + std::to_string(target)
+                            + ": the model references " + std::to_string(original_count)
+                            + " filaments but the printer supports only "
+                            + std::to_string(target) + " extruders. "
+                            + "The excess filaments have been dropped, which may affect "
+                            + "multi-color/material output."));
+                        m_any_postprocess_warning = true;
+                    }
+                }
+            }
+
             const size_t num_filaments = filament_ids->values.size();
 
             // Collect filament config pointers for each extruder.
@@ -2079,6 +2155,21 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
                              msg.find("No layers were detected") != std::string::npos);
 
         if (is_non_fatal) {
+            // "No layers were detected" is treated as non-fatal in the GUI to
+            // allow multi-plate prints where other plates have valid geometry.
+            // However, proceeding with G-code export when the current plate has
+            // zero layers causes a SIGSEGV in GCode::_do_export. Skip export
+            // and report the plate as failed.
+            if (msg.find("No layers were detected") != std::string::npos) {
+                BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id
+                    << ": no layers to slice, skipping export";
+                m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
+                    "No layers to export: all objects have zero thickness "
+                    "or are below the minimum layer height."));
+                return false;
+            }
+
+            // Other non-fatal errors (e.g., empty initial layer) — proceed
             BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id
                 << ": non-fatal slicing issue (matching GUI behavior), "
                 << "proceeding with export: " << msg;
