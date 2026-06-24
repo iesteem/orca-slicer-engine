@@ -398,6 +398,31 @@ _SNAPMK_OFFICIAL_FILAMENT_NAMES = set(
      "Generic TPU @System", "Generic PVA @System", "Generic Support @System"}
 
 
+def _get_nozzle_suffix(proj):
+    """Extract nozzle size suffix from project settings.
+
+    Returns a string like '0.4 nozzle' if the 3MF has nozzle_diameter set.
+    Only uses the first nozzle diameter value (the most common case).
+    """
+    nd = proj.get("nozzle_diameter")
+    if isinstance(nd, list) and len(nd) > 0:
+        nozzle_val = str(nd[0]).strip()
+        # Strip trailing 'mm' if present, then re-add space + nozzle
+        nozzle_val = re.sub(r'\s*mm$', '', nozzle_val, flags=re.IGNORECASE)
+        if nozzle_val:
+            return f"{nozzle_val} nozzle"
+    return None
+
+
+def _append_nozzle_suffix(name, suffix):
+    """Append nozzle suffix to a filament preset name if not already present."""
+    if not isinstance(name, str) or not name.strip():
+        return name
+    if suffix in name:
+        return name  # already has the suffix
+    return f"{name} {suffix}"
+
+
 def _remap_filament_name(name):
     if not isinstance(name, str) or not name.strip():
         return name
@@ -592,6 +617,18 @@ def convert_project_settings(proj, machine_cfg, process_cfg, rules=None):
             elif isinstance(val, list):
                 result[key] = [_remap_filament_name(v) for v in val]
 
+    # --- Step 9b: Append nozzle suffix to filament_settings_id ---
+    # The system presets are named like "Snapmaker PETG @U1 0.4 nozzle".
+    # Ensure filament_settings_id values match exactly by appending the
+    # nozzle diameter from the 3MF (e.g. "Snapmaker PETG @U1" →
+    # "Snapmaker PETG @U1 0.4 nozzle").
+    nozzle_suffix = _get_nozzle_suffix(result)
+    if nozzle_suffix and "filament_settings_id" in result:
+        fids = result["filament_settings_id"]
+        if isinstance(fids, list):
+            result["filament_settings_id"] = [
+                _append_nozzle_suffix(v, nozzle_suffix) for v in fids
+            ]
 
     return result, dropped, clamp_events, rule_applied, added
 
