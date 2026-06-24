@@ -892,25 +892,8 @@ def unpack_bundle(input_path, output_dir, machine_cfg, process_cfg, rules):
             except Exception:
                 pass
 
-        # Phase 2: extract STL files
-        for name in names:
-            if not name.lower().endswith(".stl"):
-                continue
-            data = zf.read(name)
-            stl_name = os.path.basename(name)
-            safe_stl = re.sub(r'[<>:"/\\|?*]', '_', stl_name)
-            prefix = re.sub(r'[<>:"/\\|?*]', '_', bundle_stem)
-            if len(prefix) > 30:
-                prefix = prefix[:30]
-            out_name = f"{prefix}_{safe_stl}"
-            out_path = os.path.join(output_dir, out_name)
-            with open(out_path, "wb") as f:
-                f.write(data)
-            results.append({"file": out_name, "changes": ["extracted STL from bundle"]})
-            stl_found = True
-
-        # Phase 3: unsupported
-        if not nested_3mf_found and not stl_found:
+        # Phase 2: unsupported (STL extraction disabled — only 3MF is needed)
+        if not nested_3mf_found:
             other_exts = set()
             for name in names:
                 if "." in name and not name.endswith("/"):
