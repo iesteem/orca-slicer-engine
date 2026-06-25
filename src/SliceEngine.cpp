@@ -483,12 +483,12 @@ void SliceEngine::sanitize_config()
 void SliceEngine::validate_config()
 {
     // A1: Validate config values (layer_height, nozzle_diameter, etc.)
-    std::map<std::string, std::string> invalid = m_config.validate(true);
+    // Use under_cli=false to match desktop GUI behavior — invalid config
+    // values produce warnings but do NOT block slicing.
+    std::map<std::string, std::string> invalid = m_config.validate(false);
     if (!invalid.empty()) {
         for (const auto& [key, msg] : invalid)
-            m_stats.issues.push_back(make_error(-1, "CONFIG_INVALID_" + key, msg));
-        m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.issues.push_back(make_warning(-1, "CONFIG_INVALID_" + key, msg));
     }
 
     // A2: Check config substitutions (unknown keys, forward-compat changes)
@@ -656,7 +656,7 @@ void SliceEngine::validate_presets()
             for (const auto& name : modified_gcodes)
                 details += (details.empty() ? "" : ", ") + name;
             std::string msg = "Custom G-code detected in presets (" + details
-                + ") — disabled for cloud safety";
+                + ") — retained as-is (desktop parity)";
             m_stats.issues.push_back(make_warning(-1, "PRESET_MODIFIED_GCODES", msg));
             break;
         }
