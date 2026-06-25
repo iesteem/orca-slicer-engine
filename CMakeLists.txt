@@ -73,6 +73,7 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         -DUSE_TBB
         -DTBB_USE_CAPTURED_EXCEPTION=0
         -DBOOST_ALL_NO_LIB
+        "CLOUD_SLICER_ENGINE_VERSION=\"v02.01.16\""
     )
 
     # ---- Link all static libraries (derived from OrcaSlicer build.ninja link line) ----

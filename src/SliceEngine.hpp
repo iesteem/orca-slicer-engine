@@ -94,6 +94,11 @@ public:
     int exit_code() const;
     void set_error_type(int code);
 
+    // Record an error issue and update exit-code tracking.  Public so that
+    // the main() crash handler can report ENGINE_CRASH from outside the engine.
+    void report_error(int plate_id, int exit_code, const std::string& code,
+                      const std::string& message, bool set_main_message = false);
+
 private:
     // --- Pipeline stages ---
     bool load_3mf();
@@ -129,8 +134,6 @@ private:
     void run_postprocessing(int plate_id, PlateSliceResult& result);
     void restore_baked_z_offsets();
     // --- State ---
-    void report_error(int plate_id, int exit_code, const std::string& code,
-                      const std::string& message, bool set_main_message = false);
     EngineConfig m_cfg;
     std::string m_output_path;
     SliceOutputStats m_stats;
