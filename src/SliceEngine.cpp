@@ -1373,6 +1373,24 @@ void SliceEngine::substitute_printer_params(const std::string& original_name,
 
     fill_nil_from(m_config, parent_cfg);
 
+    // Force-overwrite G-code keys from the official printer preset.
+    // fill_nil_from preserves existing (non-nil) values, but Bambu-
+    // specific variables like min_vitrification_temperature are not
+    // recognized by Snapmaker's PlaceholderParser.  Cloud slicing
+    // must always use official G-code.
+    static const std::vector<std::string> gcode_keys = {
+        "machine_start_gcode", "machine_end_gcode",
+        "before_layer_change_gcode", "layer_change_gcode",
+        "change_filament_gcode", "machine_pause_gcode",
+        "template_custom_gcode", "printing_by_object_gcode",
+        "time_lapse_gcode",
+    };
+    for (const auto& key : gcode_keys) {
+        auto* src = parent_cfg.option(key, false);
+        if (src && m_config.has(key))
+            m_config.set_key_value(key, src->clone());
+    }
+
     // Only now update the printer name — all heavy operations succeeded.
     m_config.set_key_value("printer_settings_id",
         new ConfigOptionString(parent_name));
