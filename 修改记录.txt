@@ -1,0 +1,32 @@
+orca-slice-engine v02.01.16 修改记录
+======================================
+
+v02.01.16 (2026-06-25)
+  [修复] 服务器默认模式下 std::bad_alloc 崩溃（32.2%→0%）
+  [修复] 空层模型 G-code 导出 SIGSEGV
+  [修复] Filament 数量不匹配时 WipeTower 连环 SIGSEGV
+  [修复] 双向前缀匹配：短名/长名耗材均可找到系统预设
+  [修复] 转换器：智能追加喷嘴后缀到 filament_settings_id
+  [修复] 转换器：仅产出 3MF，不再提取 STL
+  [修复] print.validate() 未定义异常类型按 warning 处理，匹配桌面行为
+  [修复] TOOL_HEIGHT_OUTSIDE 后处理检查从 error 降级为 warning
+  [修复] 打印机预设替换时强制覆盖 Bambu G-code 为官方 U1 G-code
+  [优化] 配置验证改为 GUI 宽松模式（无效值降级为警告）
+  [优化] 合并 OrcaSlicer 上游 main 最新代码
+
+v02.01.15 (2026-06-12)
+  [新增] --threads 参数限制 TBB 线程数
+  [优化] JSON 字段重命名 (filament_id → id)
+  [修复] UTF-8 BOM 处理
+
+v02.01.13 / v02.01.12
+  [变更] JSON 输出 plate_id 和 filament id 改为 1-based
+  [新增] --dump-config-schema 导出全部配置项定义
+
+测试关注点
+----------
+  P0: 默认模式（不加 --allow-custom-presets）大批量切片，bad_alloc=0
+  P0: 空层/极薄模型不 SIGSEGV，报 SLICING_ERROR
+  P1: Bambu AMS 多色模型（5-6 filament）自动裁剪，报 FILAMENT_COUNT_MISMATCH
+  P1: 所有失败都有 JSON 输出（含 issues 数组）
+  P2: 转换后耗材名匹配系统预设（含喷嘴后缀）
