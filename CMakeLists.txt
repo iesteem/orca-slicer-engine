@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(orca-slice-engine VERSION 02.01.16 LANGUAGES C CXX)
+project(orca-slice-engine VERSION 02.01.17 LANGUAGES C CXX)
 
 option(BUILD_SLIC3R_DLL "Build slic3r shared library from engine source (DLL on Windows, SO on Linux). Requires libslic3r SDK." OFF)
 
@@ -73,7 +73,7 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         -DUSE_TBB
         -DTBB_USE_CAPTURED_EXCEPTION=0
         -DBOOST_ALL_NO_LIB
-        "CLOUD_SLICER_ENGINE_VERSION=\"v02.01.16\""
+        "CLOUD_SLICER_ENGINE_VERSION=\"v02.01.17\""
     )
 
     # ---- Link all static libraries (derived from OrcaSlicer build.ninja link line) ----
@@ -478,7 +478,7 @@ if(UNIX AND NOT APPLE)
         C_VISIBILITY_PRESET hidden
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
-        VERSION 02.01.16
+        VERSION 02.01.17
         SOVERSION 2
     )
 
