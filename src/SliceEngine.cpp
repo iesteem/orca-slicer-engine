@@ -36,9 +36,6 @@ using namespace Slic3r;
 
 namespace {
 
-// Bed3D::Axes::DefaultTipRadius, used in plate size calculation
-constexpr double BED_AXES_TIP_RADIUS = 1.25;
-
 // 1/5, same as GUI's LOGICAL_PART_PLATE_GAP
 constexpr double LOGICAL_PART_PLATE_GAP = 0.2;
 
@@ -145,6 +142,20 @@ bool has_no_layers_on_plate(const std::vector<Issue>& issues, int plate_id) {
         if (iss.plate_id == plate_id &&
             iss.code == "SLICING_ERROR" &&
             iss.message.find("No layers to export") != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+// Check if the plate has a fatal slicing error (geometry-level failure).
+// Unlike "no layers" (which is model placement), SlicingError/SlicingErrors
+// from print.process() are deterministic — retrying with the same input
+// will always produce the same failure.  Skip retry to save CPU.
+bool has_fatal_slicing_error_on_plate(const std::vector<Issue>& issues, int plate_id) {
+    for (const auto& iss : issues) {
+        if (iss.plate_id == plate_id &&
+            iss.code == "SLICING_ERROR" &&
+            iss.message.find("No layers to export") == std::string::npos)
             return true;
     }
     return false;
@@ -1552,8 +1563,14 @@ void SliceEngine::process_plate(int plate_id) {
             BoundingBoxf bbox;
             for (const Vec2d& pt : printable_area_opt->values)
                 bbox.merge(pt);
-            plate_width = bbox.size().x() - BED_AXES_TIP_RADIUS;
-            plate_depth = bbox.size().y() - BED_AXES_TIP_RADIUS;
+            // Match desktop: PartPlateList::reset_size(int, int) truncates the
+            // printable-area bounding-box width to int.  The desktop computes
+            //   int(extended_bbox.max.x - extended_bbox.min.x - DefaultTipRadius)
+            // where extended_bbox.min was already expanded by -DefaultTipRadius,
+            // so the subtraction cancels — the result is simply int(original_width).
+            // We apply the same truncation directly on bbox.size().
+            plate_width = static_cast<double>(static_cast<int>(bbox.size().x()));
+            plate_depth = static_cast<double>(static_cast<int>(bbox.size().y()));
         }
     }
 
@@ -1644,6 +1661,16 @@ void SliceEngine::process_plate(int plate_id) {
                 restore_baked_z_offsets();
                 return;
             }
+            // Fatal slicing errors (SlicingError / SlicingErrors from geometry
+            // issues) are deterministic — retrying with unchanged input will
+            // always fail identically.  Skip the plate instead of burning CPU
+            // on 3 doomed retries.  (Matches desktop: no retry for these.)
+            if (has_fatal_slicing_error_on_plate(m_stats.issues, plate_id)) {
+                BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                    << ": fatal slicing error, skipping (deterministic geometry failure)";
+                restore_baked_z_offsets();
+                return;
+            }
             BOOST_LOG_TRIVIAL(warning) << "Slicing failed for plate " << (plate_id + 1)
                 << " on attempt " << attempt;
             continue;
@@ -1692,7 +1719,10 @@ void SliceEngine::process_plate(int plate_id) {
     m_stats.error_message = "Failed to slice plate " + std::to_string(plate_id + 1)
         + " after " + std::to_string(MAX_RETRIES) + " attempts";
     m_any_error = true;
-    set_error_type(EXIT_EXPORT_ERROR);
+    // Preserve EXIT_SLICING_ERROR if set by run_slicing() (e.g. std::exception);
+    // otherwise the failure came from export_gcode().
+    if (m_error_type < EXIT_SLICING_ERROR)
+        set_error_type(EXIT_EXPORT_ERROR);
     } catch (const std::exception& e) {
         restore_baked_z_offsets();
         // Use raw stderr for OOM safety — no Boost.Log allocation
@@ -1986,6 +2016,17 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
     // in the transformation matrix, the Z translation must be divided by
     // Z_scale before adding to the volume, because Print::apply() preserves
     // Z_scale and the combined Z = Z_scale * (volume_z + mesh_z).
+    //
+    // Invalidate ModelObject bounding-box caches before Z-baking.
+    // ModelObject::update_min_max_z() caches its result via m_min_max_z_valid,
+    // which is only cleared by invalidate_bounding_box().  If a previous plate
+    // left this cache valid after restoring baked offsets, the next plate would
+    // compute layer heights from stale Z extents, causing "No layers were
+    // detected" errors for plates whose instance Z offset differs.
+    for (ModelObject* obj : m_model.objects)
+        if (obj != nullptr)
+            obj->invalidate_bounding_box();
+
     m_baked_instance_z.clear();
     for (ModelObject* obj : m_model.objects) {
         if (obj == nullptr) continue;
@@ -2201,13 +2242,18 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
         // Collect PrintBase warnings (EmptyGcodeLayers, G-code overlap, etc.)
+        // CRITICAL warnings (e.g. EmptyGcodeLayers) are mapped to "warning" level
+        // (not "error") because G-code was generated successfully.  The desktop GUI
+        // shows them as modal dialogs for UX prominence, not as blocking failures.
+        // Using a distinct code preserves severity for API consumers while keeping
+        // the exit code, success flags, and statistics collection correct.
         for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step) {
             auto wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
             for (const auto& w : wstate.warnings) {
                 if (!w.current) continue;
                 bool is_critical = (w.level == PrintStateBase::WarningLevel::CRITICAL);
                 if (is_critical)
-                    result.issues.push_back(make_error(plate_id, "PRINT_WARNING", w.message));
+                    result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
                 else
                     result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
             }
