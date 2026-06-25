@@ -63,10 +63,11 @@ struct PlateSliceResult {
 //   Stage 3 — package_output() → build_statistics()
 //
 // Config flow (four layers, applied in order):
-//   1. FullPrintConfig::defaults() — system defaults
-//   2. System printer preset  — Snapmaker U1, from m_preset_bundle
-//   3. System filament preset — per-extruder, from m_preset_bundle
-//   4. m_config              — 3MF project config (highest priority)
+//   1. FullPrintConfig::defaults()  — system defaults
+//   2. System process preset  — from print_settings_id (fills unspecified)
+//   3. System printer preset  — Snapmaker U1, loaded by nozzle diameter
+//   4. System filament preset — per-extruder, from filament_settings_id
+//   5. m_config               — 3MF project config (highest priority)
 //   Merged in build_full_print_config(), then engine overrides + per-plate
 //   applied in apply_model() before passing to Print::apply().
 //
@@ -104,8 +105,7 @@ private:
     Slic3r::DynamicPrintConfig build_full_print_config();
     bool validate_filament_official(bool enforce = true);
     bool has_inline_filament_config(int ext_idx);
-    Slic3r::Preset* match_inline_to_official_preset(int ext_idx);
-    Slic3r::Preset* match_inline_to_official_preset(const Slic3r::DynamicPrintConfig* cfg, int ext_idx);
+    void apply_printer_official_preset();
     void apply_printer_preset_config();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
                                     const Slic3r::Preset& official_parent,
@@ -128,7 +128,6 @@ private:
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
     void run_postprocessing(int plate_id, PlateSliceResult& result);
     void restore_baked_z_offsets();
-
     // --- State ---
     void report_error(int plate_id, int exit_code, const std::string& code,
                       const std::string& message, bool set_main_message = false);
@@ -166,9 +165,10 @@ private:
     bool m_presets_available = false;
 
     // Transient storage for model transforms baked during apply_model().
-    // Z offsets are moved from instance into volume for print.apply() so
-    // PrintObject::m_trafo has the correct Z; they are restored after
-    // slicing so the model state is clean before the next plate.
+    // Instance Z translation is moved into volume Z offset (divided by
+    // Z_scale to account for Print::apply() preserving Z_scale but dropping
+    // Z translation).  Restored after slicing so model state is clean for
+    // the next plate.
     struct BakedInstanceZ {
         BakedInstanceZ() : inst(nullptr) {}
         Slic3r::ModelInstance* inst;

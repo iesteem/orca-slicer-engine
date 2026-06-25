@@ -204,26 +204,19 @@ bool SliceEngine::run() {
         validate_presets();
     }
 
-    // Printer preset substitution (includes G-code from official printer).
-    // When substitute_printer is true (default), force substitution to official.
-    // When false (--allow-custom-printer-presets), accept custom with warning.
-    if (!validate_printer_official(m_cfg.substitute_printer)) {
+    // Printer preset substitution: always use official Snapmaker U1 preset.
+    // Cloud slicing only supports U1; custom printer presets are rejected.
+    if (!validate_printer_model()) {
         build_statistics();
         return false;
     }
-    apply_printer_preset_config();
+    apply_printer_official_preset();
 
     // Filament validation: always run to catch truly invalid presets.
     // When substitute_filaments is true (default), enforce official-only policy.
     // When false (--allow-custom-filament-presets), validate structural soundness but
     // accept custom filaments with a warning.
     if (!validate_filament_official(m_cfg.substitute_filaments)) {
-        build_statistics();
-        return false;
-    }
-
-    // Block slicing if printer model is not Snapmaker U1
-    if (!validate_printer_model()) {
         build_statistics();
         return false;
     }
@@ -689,14 +682,6 @@ void SliceEngine::apply_printer_preset_config()
         return;
     }
 
-    // Build a fully-resolved config via the engine's own config builder.
-    // This correctly resolves printer preset inheritance chains and includes
-    // all defaults.  We merge back only nil keys so project config wins.
-    DynamicPrintConfig resolved = build_full_print_config();
-    BOOST_LOG_TRIVIAL(info) << "Applying printer preset config";
-
-    fill_nil_from(m_config, resolved);
-
     // Verify printer-specific parameters have been overridden by the U1
     // preset and are NOT still at FullPrintConfig defaults.
     // FullPrintConfig sets printable_area = [(0,0),(200,0),(200,200),(0,200)]
@@ -861,45 +846,6 @@ bool SliceEngine::validate_filament_official(bool enforce)
                 continue;
             }
 
-            // Heuristic: match by bidirectional prefix.
-            // This handles both:
-            //   search="Snapmaker PETG @U1" matches "Snapmaker PETG @U1 0.4 nozzle"
-            //   search="Snapmaker PETG @U1 0.4 nozzle - copy" matches "Snapmaker PETG @U1 0.4 nozzle"
-            // Falls through to auto-match on failure.
-            {
-                Preset* best = nullptr;
-                for (auto& preset : m_preset_bundle->filaments) {
-                    if (!is_official_preset(preset)) continue;
-                    const std::string& shorter = (preset.name.size() <= name.size())
-                                                   ? preset.name : name;
-                    const std::string& longer  = (preset.name.size() > name.size())
-                                                   ? preset.name : name;
-                    if (longer.compare(0, shorter.size(), shorter) != 0) continue;
-                    if (!best || preset.name.size() > best->name.size())
-                        best = &preset;
-                }
-                if (best) {
-                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
-                        << "\" resolved via prefix matching to \""
-                        << best->name << "\"";
-                    substitute_filament_params(filament_ids, i, *best, name);
-                    continue;
-                }
-            }
-
-            // Auto-match: try to match orphaned inline filament config to the
-            // closest official preset by comparing filament properties.
-            if (enforce && has_inline_filament_config(i)) {
-                Preset* matched = match_inline_to_official_preset(i);
-                if (matched) {
-                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
-                        << "\" auto-matched to official preset \""
-                        << matched->name << "\" via inline config properties";
-                    substitute_filament_params(filament_ids, i, *matched, name);
-                    continue;
-                }
-            }
-
             std::string msg = "Filament \"" + name + "\" is not a recognized preset";
             // FILAMENT_UNKNOWN: preset truly doesn't exist — always an error
             report(/*is_official_violation=*/false, "FILAMENT_UNKNOWN", msg);
@@ -928,8 +874,7 @@ bool SliceEngine::validate_filament_official(bool enforce)
                 }
                 Preset* next = find_ancestor(inherits_name);
                 if (!next) {
-                    // In non-enforce mode the caller will attempt auto-match
-                    // recovery; report as warning to avoid blocking the slice.
+                    // Report as warning to avoid blocking the slice in non-enforce mode.
                     std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
                                     + inherits_name + "\"";
                     BOOST_LOG_TRIVIAL(warning) << msg;
@@ -946,22 +891,8 @@ bool SliceEngine::validate_filament_official(bool enforce)
             Preset* walk = current;
             std::set<std::string> visited;
             if (!walk_chain(walk, visited)) {
-                // Recovery: try to match by material properties when the
-                // inheritance chain is broken (e.g. missing "@System" ancestor).
-                // Prefer m_config (project-level per-extruder data) first,
-                // then fall back to the preset's own config.
-                Preset* matched = match_inline_to_official_preset(i);
-                if (!matched)
-                    matched = match_inline_to_official_preset(&current->config, 0);
-                if (matched) {
-                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
-                        << "\" auto-matched to official preset \""
-                        << matched->name << "\" via config properties"
-                        << " (inherits chain broken)";
-                    substitute_filament_params(filament_ids, i, *matched, name);
-                    continue;
-                }
-                // Cannot recover — skip this filament (already warned in walk_chain).
+                // walk_chain already emitted FILAMENT_UNKNOWN_ANCESTOR warning.
+                // Cannot auto-recover — skip this filament.
                 continue;
             }
             // Custom filament with sound structure — accepted with warning
@@ -977,18 +908,6 @@ bool SliceEngine::validate_filament_official(bool enforce)
         while (current && !resolved) {
             std::string inherits_name = current->inherits();
             if (inherits_name.empty()) {
-                // Auto-match: orphaned project preset with no inherits can
-                // be matched to the closest official preset by comparing
-                // filament properties from the preset's own config.
-                Preset* matched = match_inline_to_official_preset(&current->config, 0);
-                if (matched) {
-                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
-                        << "\" auto-matched to official preset \""
-                        << matched->name << "\" via preset config properties";
-                    substitute_filament_params(filament_ids, i, *matched, name);
-                    resolved = true;
-                    break;
-                }
                 std::string msg = "Filament \"" + name
                     + "\" is not derived from any Snapmaker or Generic filament";
                 BOOST_LOG_TRIVIAL(error) << msg;
@@ -1007,24 +926,6 @@ bool SliceEngine::validate_filament_official(bool enforce)
 
             Preset* parent = find_ancestor(inherits_name);
             if (!parent) {
-                // Recovery: when the named ancestor cannot be found
-                // (e.g. "@System" namespace from Bambu Studio not loaded),
-                // fall back to matching by material properties — same
-                // pattern used for orphaned presets (empty inherits) above.
-                // Prefer m_config (project-level per-extruder data) first,
-                // then fall back to the preset's own config.
-                Preset* matched = match_inline_to_official_preset(i);
-                if (!matched)
-                    matched = match_inline_to_official_preset(&current->config, 0);
-                if (matched) {
-                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
-                        << "\" auto-matched to official preset \""
-                        << matched->name << "\" via config properties"
-                        << " (inherits \"" << inherits_name << "\" not found)";
-                    substitute_filament_params(filament_ids, i, *matched, name);
-                    resolved = true;
-                    break;
-                }
                 std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
                                 + inherits_name + "\"";
                 BOOST_LOG_TRIVIAL(error) << msg;
@@ -1108,131 +1009,6 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
     m_stats.issues.push_back(make_warning(-1, "FILAMENT_SUBSTITUTED", msg));
 }
 
-Preset* SliceEngine::match_inline_to_official_preset(int ext_idx)
-{
-    return match_inline_to_official_preset(&m_config, ext_idx);
-}
-
-Preset* SliceEngine::match_inline_to_official_preset(const DynamicPrintConfig* cfg, int ext_idx)
-{
-    if (!cfg) return nullptr;
-
-    // Read filament_type — required for matching.
-    auto ft_opt = cfg->option<ConfigOptionStrings>("filament_type");
-    if (!ft_opt || ext_idx >= static_cast<int>(ft_opt->values.size()))
-        return nullptr;
-    const std::string& inline_ft = ft_opt->values[ext_idx];
-    if (inline_ft.empty())
-        return nullptr;
-
-    // Read nozzle_temperature (optional scoring signal).
-    double inline_nozzle_temp = 0;
-    bool   has_nozzle_temp = false;
-    auto nt_opt = cfg->option<ConfigOptionFloats>("nozzle_temperature");
-    if (nt_opt && ext_idx < static_cast<int>(nt_opt->values.size())
-        && !nt_opt->is_nil(ext_idx)) {
-        inline_nozzle_temp = nt_opt->values[ext_idx];
-        has_nozzle_temp = true;
-    }
-
-    // Read the first non-nil, non-zero bed temperature (optional scoring signal).
-    double inline_bed_temp = 0;
-    bool   has_bed_temp = false;
-    static const char* bed_keys[] = {
-        "hot_plate_temp", "cool_plate_temp",
-        "eng_plate_temp", "textured_plate_temp"
-    };
-    for (const char* bk : bed_keys) {
-        auto bed_opt = cfg->option<ConfigOptionFloats>(bk);
-        if (bed_opt && ext_idx < static_cast<int>(bed_opt->values.size())
-            && !bed_opt->is_nil(ext_idx) && bed_opt->values[ext_idx] > 0) {
-            inline_bed_temp = bed_opt->values[ext_idx];
-            has_bed_temp = true;
-            break;
-        }
-    }
-
-    // ASCII case-insensitive equality helper.
-    auto iequal = [](const std::string& a, const std::string& b) {
-        if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i)
-            if (std::tolower(static_cast<unsigned char>(a[i]))
-                != std::tolower(static_cast<unsigned char>(b[i])))
-                return false;
-        return true;
-    };
-
-    // Iterate loaded official presets, score by property proximity.
-    const Preset* best = nullptr;
-    int    best_nozzle_diff = INT_MAX;
-    int    best_bed_diff    = INT_MAX;
-
-    for (const Preset& preset : m_preset_bundle->filaments) {
-        // Only consider official presets.
-        if (!(preset.vendor && preset.vendor->name == PresetBundle::SM_BUNDLE)
-            && !preset.m_from_orca_filament_lib)
-            continue;
-
-        // Primary filter: filament_type must match exactly (case-insensitive).
-        auto pft = preset.config.option<ConfigOptionStrings>("filament_type");
-        if (!pft || pft->values.empty()) continue;
-        if (!iequal(pft->values[0], inline_ft)) continue;
-
-        // Secondary score: nozzle temperature proximity.
-        int nozzle_diff = 0;
-        if (has_nozzle_temp) {
-            auto pnt = preset.config.option<ConfigOptionFloats>("nozzle_temperature");
-            if (!pnt || pnt->values.empty() || pnt->is_nil(0))
-                nozzle_diff = INT_MAX / 2;
-            else
-                nozzle_diff = std::abs(static_cast<int>(pnt->values[0])
-                                       - static_cast<int>(inline_nozzle_temp));
-        }
-
-        // Tertiary score: bed temperature proximity.
-        int bed_diff = 0;
-        if (has_bed_temp) {
-            int preset_bed = 0;
-            for (const char* bk : bed_keys) {
-                auto pbed = preset.config.option<ConfigOptionFloats>(bk);
-                if (pbed && !pbed->values.empty() && !pbed->is_nil(0)
-                    && pbed->values[0] > 0) {
-                    preset_bed = static_cast<int>(pbed->values[0]);
-                    break;
-                }
-            }
-            if (preset_bed == 0)
-                bed_diff = INT_MAX / 2;
-            else
-                bed_diff = std::abs(preset_bed - static_cast<int>(inline_bed_temp));
-        }
-
-        // Compare scores: lower is better.
-        bool better = false;
-        if (!best) {
-            better = true;
-        } else if (nozzle_diff < best_nozzle_diff) {
-            better = true;
-        } else if (nozzle_diff == best_nozzle_diff && bed_diff < best_bed_diff) {
-            better = true;
-        } else if (nozzle_diff == best_nozzle_diff && bed_diff == best_bed_diff) {
-            // Tie-break: prefer shorter (more base-like) name, then lexicographic.
-            if (preset.name.size() < best->name.size())
-                better = true;
-            else if (preset.name.size() == best->name.size() && preset.name < best->name)
-                better = true;
-        }
-
-        if (better) {
-            best = &preset;
-            best_nozzle_diff = nozzle_diff;
-            best_bed_diff    = bed_diff;
-        }
-    }
-
-    return const_cast<Preset*>(best);
-}
-
 bool SliceEngine::validate_printer_model()
 {
     const std::string ALLOWED_PRINTER_MODEL = "Snapmaker U1";
@@ -1270,15 +1046,18 @@ bool SliceEngine::validate_printer_official(bool enforce)
 
     const std::string& name = printer_id->value;
 
-    // Case 1: The printer_settings_id directly matches an official
-    // Snapmaker preset file — no substitution needed.
+    // Case 1: Direct official match — no substitution needed.
     if (is_official_machine_file(name)) {
         return true;
     }
 
-    // Case 2: Not directly official. Look for the preset in
-    // project-embedded presets or system presets and walk the
-    // inherits chain to find an official ancestor.
+    // enforce mode: actual preset replacement is handled by
+    // apply_printer_official_preset() which loads the U1
+    // preset by nozzle diameter.
+    if (enforce)
+        return true;
+
+    // Non-enforce mode: warn about custom presets but accept them.
     const Preset* current = nullptr;
     if (m_presets_available && m_preset_bundle) {
         current = m_preset_bundle->printers.find_preset(name, false);
@@ -1293,50 +1072,14 @@ bool SliceEngine::validate_printer_official(bool enforce)
     }
 
     if (!current) {
-        // Prefix matching heuristic: user-modified system printer presets
-        // are exported with a suffix (e.g. "Snapmaker U1 (0.6 nozzle) - copy").
-        // Match by bidirectional prefix — whichever string is shorter must
-        // be a prefix of the longer one.  This handles both:
-        //   search="Snapmaker U1 (0.4 nozzle) (converted)" (longer) matches "Snapmaker U1 (0.4 nozzle)" (shorter)
-        //   search="Snapmaker U1" (shorter) matches "Snapmaker U1 (0.4 nozzle)" (longer)
-        if (enforce && m_preset_bundle) {
-            Preset* best = nullptr;
-            for (auto& preset : m_preset_bundle->printers) {
-                if (!is_official_machine_file(preset.name)) continue;
-                const std::string& shorter = (preset.name.size() <= name.size())
-                                               ? preset.name : name;
-                const std::string& longer  = (preset.name.size() > name.size())
-                                               ? preset.name : name;
-                if (longer.compare(0, shorter.size(), shorter) != 0) continue;
-                if (!best || preset.name.size() > best->name.size())
-                    best = &preset;
-            }
-            if (best) {
-                BOOST_LOG_TRIVIAL(info) << "Printer \"" << name
-                    << "\" resolved via prefix matching to \""
-                    << best->name << "\"";
-                substitute_printer_params(name, best->name);
-                return true;
-            }
-        }
-
-        if (!enforce) {
-            BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
-                << "\" not found in system presets; accepted in allow-custom mode";
-            m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM_NOT_FOUND",
-                std::string("Printer preset \"") + name + "\" not found in system presets"));
-            return true;
-        }
-        std::string msg = "Printer preset \"" + name + "\" is not a recognized preset";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_UNKNOWN", msg));
-        return false;
+        BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
+            << "\" not found in system presets; accepted in allow-custom mode";
+        m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM_NOT_FOUND",
+            std::string("Printer preset \"") + name + "\" not found in system presets"));
+        return true;
     }
 
-    // Walk the inherits chain to find official Snapmaker ancestor
+    // Walk the inherits chain to check for official ancestry
     std::set<std::string> visited;
     const Preset* walk = current;
     while (walk) {
@@ -1352,14 +1095,10 @@ bool SliceEngine::validate_printer_official(bool enforce)
         }
 
         if (is_official_machine_file(inherits_name)) {
-            if (enforce) {
-                substitute_printer_params(name, inherits_name);
-            } else {
-                BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
-                    << "\" is a custom preset (not official)";
-                m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
-                    std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
-            }
+            BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
+                << "\" is a custom preset (not official)";
+            m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
+                std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
             return true;
         }
 
@@ -1379,22 +1118,11 @@ bool SliceEngine::validate_printer_official(bool enforce)
         walk = parent;
     }
 
-    if (!enforce) {
-        BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
-            << "\" is a custom preset (not official)";
-        m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
-            std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
-        return true;
-    }
-
-    std::string msg = "Printer preset \"" + name
-        + "\" is not derived from any Snapmaker official printer preset";
-    BOOST_LOG_TRIVIAL(error) << msg;
-    m_any_error = true;
-    set_error_type(EXIT_VALIDATION_ERROR);
-    m_stats.error_message = msg;
-    m_stats.issues.push_back(make_error(-1, "PRINTER_NO_OFFICIAL_ANCESTOR", msg));
-    return false;
+    BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
+        << "\" is a custom preset (not official)";
+    m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
+        std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
+    return true;
 }
 
 void SliceEngine::substitute_printer_params(const std::string& original_name,
@@ -1462,6 +1190,131 @@ void SliceEngine::substitute_printer_params(const std::string& original_name,
     }
 }
 
+void SliceEngine::apply_printer_official_preset()
+{
+    // Read nozzle diameter to determine which U1 preset file to load
+    double nozzle = 0.4;  // default fallback
+    auto nd_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+    if (nd_opt && !nd_opt->values.empty() && nd_opt->values[0] > 0)
+        nozzle = nd_opt->values[0];
+
+    // Format nozzle string (0.2, 0.4, 0.6, 0.8)
+    auto fmt_nozzle = [](double d) {
+        char buf[8];
+        int precision = (std::abs(d - std::round(d)) < 0.05) ? 0 : 1;
+        snprintf(buf, sizeof(buf), "%.*f", precision, d);
+        return std::string(buf);
+    };
+
+    std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
+    std::string preset_path = Slic3r::resources_dir()
+        + SNAPMK_MACHINE_DIR + preset_name + ".json";
+
+    if (!boost::filesystem::exists(preset_path)) {
+        // Fallback: try with single decimal (0.4 not 0.40)
+        std::string alt_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
+        // If exact match fails, try the common nozzle sizes
+        static const char* known[] = {"0.2", "0.4", "0.6", "0.8", nullptr};
+        for (int i = 0; known[i]; ++i) {
+            std::string candidate = std::string(Slic3r::resources_dir())
+                + SNAPMK_MACHINE_DIR + "Snapmaker U1 (" + known[i] + " nozzle).json";
+            if (boost::filesystem::exists(candidate)) {
+                preset_path = candidate;
+                preset_name = "Snapmaker U1 (" + std::string(known[i]) + " nozzle)";
+                break;
+            }
+        }
+    }
+
+    try {
+        DynamicPrintConfig official_cfg;
+        std::map<std::string, std::string> key_values;
+        std::string reason;
+        official_cfg.load_from_json(preset_path,
+            ForwardCompatibilitySubstitutionRule::EnableSilent,
+            key_values, reason);
+
+        // Fill nil values from official preset
+        fill_nil_from(m_config, official_cfg);
+
+        // Force-overwrite G-code keys from official printer preset
+        static const std::vector<std::string> gcode_keys = {
+            "machine_start_gcode", "machine_end_gcode",
+            "before_layer_change_gcode", "layer_change_gcode",
+            "change_filament_gcode", "machine_pause_gcode",
+            "template_custom_gcode", "printing_by_object_gcode",
+            "time_lapse_gcode",
+        };
+        for (const auto& key : gcode_keys) {
+            auto* src = official_cfg.option(key, false);
+            if (src && m_config.has(key))
+                m_config.set_key_value(key, src->clone());
+        }
+
+        // Update printer identity
+        m_config.set_key_value("printer_settings_id",
+            new ConfigOptionString(preset_name));
+        auto pm = official_cfg.option<ConfigOptionString>("printer_model");
+        if (pm && m_config.has("printer_model"))
+            m_config.set_key_value("printer_model",
+                new ConfigOptionString(pm->value));
+
+        m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED",
+            "Printer preset substituted with official preset \""
+            + preset_name + "\" for cloud safety"));
+
+    } catch (const std::exception& e) {
+        std::string msg = "Failed to load official printer preset \""
+            + preset_name + "\": " + e.what();
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
+        return;
+    }
+
+    // Verify printer-specific parameters are not defaults
+    {
+        auto pa = m_config.option<ConfigOptionPoints>("printable_area");
+        if (!pa || pa->values.size() != 4) {
+            std::string msg = "Printer configuration incomplete: printable_area missing";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.error_message = msg;
+            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+            return;
+        }
+        bool is_default =
+            (pa->values[0].x() == 0.0 && pa->values[0].y() == 0.0) &&
+            (pa->values[1].x() == 200.0 && pa->values[1].y() == 0.0) &&
+            (pa->values[2].x() == 200.0 && pa->values[2].y() == 200.0) &&
+            (pa->values[3].x() == 0.0 && pa->values[3].y() == 200.0);
+        if (is_default) {
+            std::string msg = "Printer configuration incomplete: printable_area is still the 200x200 default. "
+                "The U1 printer preset was not applied correctly.";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.error_message = msg;
+            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+            return;
+        }
+        auto ph = m_config.option<ConfigOptionFloat>("printable_height");
+        if (!ph || ph->value == 100.0) {
+            std::string msg = "Printer configuration incomplete: printable_height is still the 100.0 default. "
+                "The U1 printer preset was not applied correctly.";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats.error_message = msg;
+            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+            return;
+        }
+    }
+}
+
 // ============================================================================
 // Build a full print config by merging system presets (printer + filament)
 // underneath the project config from the 3MF.  This mirrors what the desktop
@@ -1479,7 +1332,22 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
     if (m_presets_available && m_preset_bundle) {
         auto& bundle = *m_preset_bundle;
 
-        // Layer 1: System printer config (Snapmaker U1)
+        // Layer 1: System print (process) preset config
+        // This matches PresetBundle::full_fff_config() in the desktop —
+        // process settings (layer_height, speeds, etc.) must be sourced
+        // from the system profile to fill defaults not overridden by
+        // project config.
+        auto print_id_opt = m_config.option<ConfigOptionString>("print_settings_id");
+        if (print_id_opt && !print_id_opt->value.empty()) {
+            const Preset* process_preset = bundle.prints.find_preset(print_id_opt->value, true);
+            if (!process_preset) {
+                process_preset = bundle.prints.find_preset(print_id_opt->value, true);
+            }
+            if (process_preset)
+                out.apply(process_preset->config);
+        }
+
+        // Layer 2: System printer config
         auto printer_id_opt = m_config.option<ConfigOptionString>("printer_settings_id");
         if (printer_id_opt && !printer_id_opt->value.empty()) {
             const Preset* printer_preset = bundle.printers.find_preset(printer_id_opt->value, true);
@@ -1487,7 +1355,7 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
                 out.apply(printer_preset->config);
         }
 
-        // Layer 2: System filament config (per-extruder)
+        // Layer 3: System filament config (per-extruder)
         auto filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id");
         if (filament_ids && !filament_ids->values.empty()) {
             // Normalize: if model has more filaments than printer extruders,
@@ -1603,7 +1471,7 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
         }
     }
 
-    // Layer 3: Project config from 3MF (highest priority)
+    // Layer 4: Project config from 3MF (highest priority)
     out.apply(m_config);
 
     return out;
@@ -2111,38 +1979,38 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
             break;
         }
     }
+    // Z-baking: move instance Z translation into volume Z offset.
+    // Print::apply() (PrintApply.cpp:155-157) zeroes the instance Z
+    // translation in the PrintObject trafo, so the mesh Z position must
+    // come entirely from the volume transform.  For instances with Z_scale
+    // in the transformation matrix, the Z translation must be divided by
+    // Z_scale before adding to the volume, because Print::apply() preserves
+    // Z_scale and the combined Z = Z_scale * (volume_z + mesh_z).
     m_baked_instance_z.clear();
-    for (ModelObject* obj : m_model.objects)
-    {
-        if (obj == nullptr)
-            continue;
-
+    for (ModelObject* obj : m_model.objects) {
+        if (obj == nullptr) continue;
         std::vector<ModelInstance*> printable_instances;
-        for (ModelInstance* inst : obj->instances)
-        {
-            if (inst == nullptr)
-                continue;
-            if (inst->is_printable())
+        for (ModelInstance* inst : obj->instances) {
+            if (inst != nullptr && inst->is_printable())
                 printable_instances.push_back(inst);
         }
-
-        if (printable_instances.size() != 1)
-            continue;
-
+        if (printable_instances.size() != 1) continue;
         ModelInstance* inst = printable_instances.front();
         const Vec3d inst_offset = inst->get_offset();
-        if (std::abs(inst_offset.z()) < 1e-9)
-            continue;
-
+        if (std::abs(inst_offset.z()) < 1e-9) continue;
+        // Get Z_scale from the instance transformation matrix.
+        // The 4x4 matrix (Transform3d) is stored column-major in Eigen.
+        // Element (2,2) is the Z scaling factor.
+        double z_scale = inst->get_transformation().get_matrix()(2, 2);
+        if (std::abs(z_scale) < 1e-9) continue;
+        double z_adjustment = inst_offset.z() / z_scale;
         BakedInstanceZ baked;
         baked.inst = inst;
         baked.inst_offset = inst_offset;
-        for (ModelVolume* vol : obj->volumes)
-        {
-            if (vol == nullptr)
-                continue;
+        for (ModelVolume* vol : obj->volumes) {
+            if (vol == nullptr) continue;
             baked.volume_offsets.emplace_back(vol, vol->get_offset());
-            vol->set_offset(vol->get_offset() + inst_offset.z() * Vec3d::UnitZ());
+            vol->set_offset(vol->get_offset() + z_adjustment * Vec3d::UnitZ());
         }
         inst->set_offset(Vec3d(inst_offset.x(), inst_offset.y(), 0.0));
         m_baked_instance_z.push_back(std::move(baked));
@@ -2196,14 +2064,10 @@ bool SliceEngine::run_validation(int plate_id, Print& print) {
 
     if (!err.string.empty()) {
         auto [obj_name, opt_hint] = format_exception_context(err);
-        // STRING_EXCEPT_NOT_DEFINED (type 0) is used by the library for
-        // generic checks (e.g. exceeds-build-volume-height) that the
-        // desktop GUI treats as non-fatal warnings.  Match that behavior.
-        if (err.type == STRING_EXCEPT_NOT_DEFINED) {
-            std::cerr << "[WARNING] Plate " << plate_id << ": " << err.string << obj_name << opt_hint << std::endl;
-            m_stats.issues.push_back(make_warning(plate_id, "PRINT_VALIDATE_WARNING",
-                err.string + opt_hint, obj_name));
-        } else {
+        // All non-empty err.string types (including STRING_EXCEPT_NOT_DEFINED)
+        // are treated as blocking errors, matching the desktop GUI behavior
+        // (Plater.cpp:12290-12339 sets UPDATE_BACKGROUND_PROCESS_INVALID).
+        {
             std::cerr << "[ERROR] Plate " << plate_id << ": " << err.string << obj_name << opt_hint << std::endl;
             std::string ecode;
             switch (err.type) {
@@ -2409,44 +2273,33 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result) {
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
 
-    // Toolpaths outside print volume (matches desktop SLICING_ERROR severity)
+    // Toolpaths outside print volume. Desktop uses this only for
+    // GCode preview visualization, not to block gcode output.
     if (result.gcode_result.toolpath_outside) {
-        log_plate_message("[Post-processing]", "ERROR", plate_id,
+        log_plate_message("[Post-processing]", "WARNING", plate_id,
             "Some toolpaths are outside the printable area.");
-        has_postprocess_error = true;
-        result.issues.push_back(make_error(plate_id, "TOOLPATH_OUTSIDE",
-            "Some toolpaths are outside the printable area"));
+        has_postprocess_warning = true;
+        result.issues.push_back(make_warning(plate_id, "TOOLPATH_OUTSIDE",
+            "Some toolpaths are outside the printable area. "
+            "The object may not print correctly."));
     }
 
     // Tool height outside check.
-    // The desktop shows this as a non-blocking visual warning.  Match that
-    // behavior — report as warning so gcode is still produced.
-    if (!result.gcode_result.moves.empty() && result.gcode_result.printable_height > 0.0f) {
-        float max_z = result.gcode_result.moves[0].position.z();
-        for (const auto& move : result.gcode_result.moves)
-            if (move.position.z() > max_z) max_z = move.position.z();
-        if (max_z - result.gcode_result.printable_height >= 1e-6) {
-            log_plate_message("[Post-processing]", "WARNING", plate_id,
-                "A G-code path goes beyond the max print height.");
-            has_postprocess_warning = true;
-            Issue h = make_warning(plate_id, "TOOL_HEIGHT_OUTSIDE",
-                "A G-code path goes beyond the max print height. "
-                "The object may not print correctly.");
-            h.z_height = static_cast<double>(max_z);
-            result.issues.push_back(h);
-        }
-    }
+    // Desktop already checks height in Print::validate() (Print.cpp:1629-1643).
+    // No need for a duplicate post-processing check.
 
-    // Toolpath conflict detection
+    // Toolpath conflict detection.
+    // Desktop allows printing with conflicts (PartPlate.hpp:433:
+    // "gcode conflict can also print"). Match that behavior — warning only.
     if (result.gcode_result.conflict_result.has_value()) {
         const auto& cr = result.gcode_result.conflict_result.value();
         std::string obj1 = cr._obj1 ? cr._objName1 : "Wipe Tower";
         std::string obj2 = cr._obj2 ? cr._objName2 : "Wipe Tower";
-        log_plate_message("[Post-processing]", "ERROR", plate_id,
+        log_plate_message("[Post-processing]", "WARNING", plate_id,
             "Toolpath conflict detected between \"" + obj1 + "\" and \"" + obj2
             + "\" at Z=" + std::to_string(cr._height) + "mm.");
-        has_postprocess_error = true;
-        Issue conflict = make_error(plate_id, "TOOLPATH_CONFLICT",
+        has_postprocess_warning = true;
+        Issue conflict = make_warning(plate_id, "TOOLPATH_CONFLICT",
             "Toolpath conflict detected between \"" + obj1 + "\" and \"" + obj2
             + "\" at Z=" + std::to_string(cr._height) + "mm",
             obj1 + " vs " + obj2);
