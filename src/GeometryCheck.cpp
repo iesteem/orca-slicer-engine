@@ -170,9 +170,10 @@ void check_empty(const Slic3r::ModelVolume& volume,
 {
     if (volume.mesh().its.indices.empty()) {
         out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_EMPTY",
+            "error", plate_id, obj_name, "GEOM_EMPTY",
             "Empty mesh: no triangles in model volume. "
-            "The object has no geometry and cannot be sliced.",
+            "The object has no geometry and cannot be sliced. "
+            "This is an unrecoverable geometry error.",
             "Remove the empty object from the project. "
             "Check the original CAD export — the part may have been empty "
             "or excluded from the export selection."));
@@ -187,10 +188,11 @@ void check_zero_volume(const Slic3r::ModelVolume& volume,
     // Threshold matching Model::removed_objects_with_zero_volume (1e-10)
     if (!volume.mesh().its.indices.empty() && std::abs(vol) < 1e-10) {
         out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_ZERO_VOLUME",
+            "error", plate_id, obj_name, "GEOM_ZERO_VOLUME",
             "Zero-volume mesh: the computed volume (" +
                 std::to_string(vol) + " mm³) is effectively zero. "
-                "This object cannot produce any extrusion.",
+                "This object cannot produce any extrusion. "
+                "This is an unrecoverable geometry error.",
             "Verify the model is a solid 3D body, not a 2D surface or a single plane. "
             "In CAD: ensure the model has thickness in all three dimensions. "
             "Common cause: exported a sketch or surface instead of a solid body."));

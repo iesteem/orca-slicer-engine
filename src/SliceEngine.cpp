@@ -2080,6 +2080,17 @@ void SliceEngine::restore_baked_z_offsets()
                 vol_it->first->set_offset(vol_it->second);
         }
     }
+    // Invalidate ModelObject bounding-box caches after restoring offsets.
+    // This is a defensive measure: even if a future code path bypasses
+    // apply_model()'s explicit invalidate_bounding_box(), the stale cached
+    // Z extents won't carry over to the next plate.
+    for (const auto& baked : m_baked_instance_z) {
+        if (baked.inst != nullptr) {
+            Slic3r::ModelObject* obj = baked.inst->get_object();
+            if (obj != nullptr)
+                obj->invalidate_bounding_box();
+        }
+    }
     m_baked_instance_z.clear();
 }
 
@@ -2138,10 +2149,11 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
     }
     catch (const SlicingErrors& exs) {
         for (const auto& ex : exs.errors_) {
-            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-            std::cerr << "[ERROR] Plate " << plate_id << ": slicing failed" << std::endl;
+            std::string msg = ex.what();
+            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << msg;
+            std::cerr << "[ERROR] Plate " << plate_id << ": slicing failed: " << msg << std::endl;
             m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
-                "Slicing failed for this plate. The model may contain geometry that cannot be sliced."));
+                "Slicing failed for this plate: " + msg));
         }
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
