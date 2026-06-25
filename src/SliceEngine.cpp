@@ -928,11 +928,12 @@ bool SliceEngine::validate_filament_official(bool enforce)
                 }
                 Preset* next = find_ancestor(inherits_name);
                 if (!next) {
+                    // In non-enforce mode the caller will attempt auto-match
+                    // recovery; report as warning to avoid blocking the slice.
                     std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
                                     + inherits_name + "\"";
-                    BOOST_LOG_TRIVIAL(error) << msg;
-                    m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
-                    any_error = true;
+                    BOOST_LOG_TRIVIAL(warning) << msg;
+                    m_stats.issues.push_back(make_warning(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
                     return false;
                 }
                 walk = next;
@@ -944,7 +945,25 @@ bool SliceEngine::validate_filament_official(bool enforce)
         if (!enforce) {
             Preset* walk = current;
             std::set<std::string> visited;
-            if (!walk_chain(walk, visited)) continue;
+            if (!walk_chain(walk, visited)) {
+                // Recovery: try to match by material properties when the
+                // inheritance chain is broken (e.g. missing "@System" ancestor).
+                // Prefer m_config (project-level per-extruder data) first,
+                // then fall back to the preset's own config.
+                Preset* matched = match_inline_to_official_preset(i);
+                if (!matched)
+                    matched = match_inline_to_official_preset(&current->config, 0);
+                if (matched) {
+                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
+                        << "\" auto-matched to official preset \""
+                        << matched->name << "\" via config properties"
+                        << " (inherits chain broken)";
+                    substitute_filament_params(filament_ids, i, *matched, name);
+                    continue;
+                }
+                // Cannot recover — skip this filament (already warned in walk_chain).
+                continue;
+            }
             // Custom filament with sound structure — accepted with warning
             std::string msg = "Filament \"" + name + "\" is a custom preset (not official)";
             BOOST_LOG_TRIVIAL(warning) << msg;
@@ -988,6 +1007,24 @@ bool SliceEngine::validate_filament_official(bool enforce)
 
             Preset* parent = find_ancestor(inherits_name);
             if (!parent) {
+                // Recovery: when the named ancestor cannot be found
+                // (e.g. "@System" namespace from Bambu Studio not loaded),
+                // fall back to matching by material properties — same
+                // pattern used for orphaned presets (empty inherits) above.
+                // Prefer m_config (project-level per-extruder data) first,
+                // then fall back to the preset's own config.
+                Preset* matched = match_inline_to_official_preset(i);
+                if (!matched)
+                    matched = match_inline_to_official_preset(&current->config, 0);
+                if (matched) {
+                    BOOST_LOG_TRIVIAL(info) << "Filament \"" << name
+                        << "\" auto-matched to official preset \""
+                        << matched->name << "\" via config properties"
+                        << " (inherits \"" << inherits_name << "\" not found)";
+                    substitute_filament_params(filament_ids, i, *matched, name);
+                    resolved = true;
+                    break;
+                }
                 std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
                                 + inherits_name + "\"";
                 BOOST_LOG_TRIVIAL(error) << msg;

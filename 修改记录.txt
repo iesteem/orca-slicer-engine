@@ -11,6 +11,7 @@ v02.01.16 (2026-06-25)
   [修复] print.validate() 未定义异常类型按 warning 处理，匹配桌面行为
   [修复] TOOL_HEIGHT_OUTSIDE 后处理检查从 error 降级为 warning
   [修复] 打印机预设替换时强制覆盖 Bambu G-code 为官方 U1 G-code
+  [修复] FILAMENT_UNKNOWN_ANCESTOR：祖先缺失时回退到属性自动匹配，覆盖 @System 命名空间兼容
   [优化] 配置验证改为 GUI 宽松模式（无效值降级为警告）
   [优化] 合并 OrcaSlicer 上游 main 最新代码
 
