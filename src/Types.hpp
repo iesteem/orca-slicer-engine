@@ -17,7 +17,11 @@ constexpr int EXIT_VALIDATION_ERROR = 6;
 constexpr int EXIT_POSTPROCESS_WARNING = 7;
 
 // Cloud slicer engine version (independent of SLIC3R_VERSION)
+// When compiling the standalone consumer (CMake defines CLOUD_SLICER_ENGINE_VERSION as a
+// macro for signal-safe string concatenation), the constexpr is skipped to avoid collision.
+#ifndef CLOUD_SLICER_ENGINE_VERSION
 constexpr auto CLOUD_SLICER_ENGINE_VERSION = "02.01.16";
+#endif
 
 // Output format enum
 enum class OutputFormat {
