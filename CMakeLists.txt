@@ -41,25 +41,17 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
     message(STATUS "OrcaSlicer source dir: ${ORCASLICER_SOURCE_DIR}")
     message(STATUS "Deps install dir: ${DEPS_DIR}")
 
-    # ---- Source files ----
-    add_executable(orca-slice-engine
-        src/main.cpp
-        src/SliceEngine.cpp
-        src/JsonReport.cpp
-        src/GeometryCheck.cpp
-        src/Utils.cpp
-        src/nanosvg.cpp
-    )
+    # === Shared library collections (de-duplicated across targets) ===
 
-    # ---- Include directories ----
-    target_include_directories(orca-slice-engine PRIVATE
+    set(ENGINE_INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${ORCASLICER_SOURCE_DIR}/src
         ${ORCASLICER_BUILD_DIR}/src
         ${ORCASLICER_SOURCE_DIR}/src/libslic3r
         ${ORCASLICER_BUILD_DIR}/src/libslic3r
     )
-    target_include_directories(orca-slice-engine SYSTEM PRIVATE
+
+    set(ENGINE_SYSTEM_INCLUDE_DIRS
         ${DEPS_DIR}/include
         ${DEPS_DIR}/include/opencascade
         ${DEPS_DIR}/include/opencv4
@@ -73,30 +65,7 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         ${ORCASLICER_SOURCE_DIR}/deps_src/libnest2d/include
     )
 
-    # ---- Compile definitions ----
-    target_compile_definitions(orca-slice-engine PRIVATE
-        -DUSE_TBB
-        -DTBB_USE_CAPTURED_EXCEPTION=0
-        -DBOOST_ALL_NO_LIB
-        "CLOUD_SLICER_ENGINE_VERSION=\"v02.01.17\""
-    )
-
-    # ---- Link all static libraries (derived from OrcaSlicer build.ninja link line) ----
-    target_link_libraries(orca-slice-engine PRIVATE
-        # Core libslic3r
-        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r.a
-        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r_cgal.a
-
-        # TBB
-        ${DEPS_DIR}/lib/libtbb.a
-        ${DEPS_DIR}/lib/libtbbmalloc.a
-
-        # OpenSSL
-        ${DEPS_DIR}/lib/libssl.a
-        ${DEPS_DIR}/lib/libcrypto.a
-        ${CMAKE_DL_LIBS}
-
-        # deps_src static libs
+    set(DEPS_SRC_LIBS
         ${BUILD_DEPS_SRC}/libnest2d/liblibnest2d.a
         ${BUILD_DEPS_SRC}/miniz/libminiz_static.a
         ${BUILD_DEPS_SRC}/clipper/libclipper.a
@@ -105,13 +74,9 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         ${BUILD_DEPS_SRC}/mcut/libmcut.a
         ${BUILD_DEPS_SRC}/qoi/libqoi.a
         ${BUILD_LIB}/libsemver.a
+    )
 
-        # OpenCV
-        ${DEPS_DIR}/lib/libopencv_world.a
-        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibjpeg-turbo.a
-        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibpng.a
-
-        # OCCT (38 libs)
+    set(OCCT_LIBS
         ${DEPS_DIR}/lib/libTKXDESTEP.a
         ${DEPS_DIR}/lib/libTKSTEP.a
         ${DEPS_DIR}/lib/libTKSTEP209.a
@@ -138,8 +103,9 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         ${DEPS_DIR}/lib/libTKG2d.a
         ${DEPS_DIR}/lib/libTKMath.a
         ${DEPS_DIR}/lib/libTKernel.a
+    )
 
-        # Boost
+    set(BOOST_LIBS
         ${DEPS_DIR}/lib/libboost_log_setup.a
         ${DEPS_DIR}/lib/libboost_log.a
         ${DEPS_DIR}/lib/libboost_filesystem.a
@@ -157,13 +123,15 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         ${DEPS_DIR}/lib/libboost_nowide.a
         ${DEPS_DIR}/lib/libboost_iostreams.a
         ${DEPS_DIR}/lib/libboost_random.a
+    )
 
-        # Math
+    set(MATH_LIBS
         ${DEPS_DIR}/lib/libgmpxx.a
         ${DEPS_DIR}/lib/libmpfr.a
         ${DEPS_DIR}/lib/libgmp.a
+    )
 
-        # Other deps
+    set(OTHER_DEPS_LIBS
         ${DEPS_DIR}/lib/liblibnoise_static.a
         ${DEPS_DIR}/lib/libpng.a
         ${DEPS_DIR}/lib/libqhullcpp.a
@@ -174,16 +142,48 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         ${DEPS_DIR}/lib/libHalf-2_5.a
         ${DEPS_DIR}/lib/libblosc.a
         ${DEPS_DIR}/lib/libnlopt.a
+    )
 
-        # System libs
-        pthread
-        rt
-        m
-        fontconfig
-        expat
-        z
-        tiff
-        lzma
+    # ---- Source files ----
+    add_executable(orca-slice-engine
+        src/main.cpp
+        src/SliceEngine.cpp
+        src/JsonReport.cpp
+        src/GeometryCheck.cpp
+        src/Utils.cpp
+        src/nanosvg.cpp
+    )
+
+    # ---- Include directories ----
+    target_include_directories(orca-slice-engine PRIVATE ${ENGINE_INCLUDE_DIRS})
+    target_include_directories(orca-slice-engine SYSTEM PRIVATE ${ENGINE_SYSTEM_INCLUDE_DIRS})
+
+    # ---- Compile definitions ----
+    target_compile_definitions(orca-slice-engine PRIVATE
+        -DUSE_TBB
+        -DTBB_USE_CAPTURED_EXCEPTION=0
+        -DBOOST_ALL_NO_LIB
+        "CLOUD_SLICER_ENGINE_VERSION=\"v02.01.17\""
+    )
+
+    # ---- Link all static libraries ----
+    target_link_libraries(orca-slice-engine PRIVATE
+        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r.a
+        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r_cgal.a
+        ${DEPS_DIR}/lib/libtbb.a
+        ${DEPS_DIR}/lib/libtbbmalloc.a
+        ${DEPS_DIR}/lib/libssl.a
+        ${DEPS_DIR}/lib/libcrypto.a
+        ${CMAKE_DL_LIBS}
+        ${DEPS_SRC_LIBS}
+        ${DEPS_DIR}/lib/libopencv_world.a
+        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibjpeg-turbo.a
+        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibpng.a
+        ${OCCT_LIBS}
+        ${BOOST_LIBS}
+        ${MATH_LIBS}
+        ${OTHER_DEPS_LIBS}
+        pthread rt m fontconfig expat z tiff lzma
     )
 
     message(STATUS "orca-slice-engine configured (Linux standalone mode)")
@@ -343,60 +343,16 @@ if(UNIX AND NOT APPLE)
     message(STATUS "OrcaSlicer build dir: ${ORCASLICER_BUILD_DIR}")
     message(STATUS "OrcaSlicer source dir: ${ORCASLICER_SOURCE_DIR}")
 
-    # ---- libslic3r.so: shared library = C API wrapper + engine ----
-    add_library(slic3r SHARED
-        src/slic3r_c_api.h src/slic3r_c_api.cpp
-        src/SliceEngine.cpp src/SliceEngine.hpp
-        src/JsonReport.cpp src/JsonReport.hpp
-        src/GeometryCheck.cpp src/GeometryCheck.hpp
-        src/Utils.cpp src/Utils.hpp
-        src/Types.hpp
-        src/nanosvg.cpp
-    )
-
-    target_include_directories(slic3r PRIVATE
+    # === Shared library collections (same as standalone block) ===
+    set(ENGINE_INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${ORCASLICER_SOURCE_DIR}/src
         ${ORCASLICER_BUILD_DIR}/src
         ${ORCASLICER_SOURCE_DIR}/src/libslic3r
         ${ORCASLICER_BUILD_DIR}/src/libslic3r
     )
-    target_include_directories(slic3r SYSTEM PRIVATE
-        ${DEPS_DIR}/include
-        ${DEPS_DIR}/include/opencascade
-        ${DEPS_DIR}/include/opencv4
-        ${ORCASLICER_SOURCE_DIR}/deps_src/nlohmann
-        ${ORCASLICER_SOURCE_DIR}/deps_src/nanosvg
-        ${ORCASLICER_SOURCE_DIR}/deps_src/miniz
-        ${ORCASLICER_SOURCE_DIR}/deps_src/eigen
-        ${ORCASLICER_SOURCE_DIR}/deps_src/libigl
-        ${ORCASLICER_SOURCE_DIR}/deps_src/admesh
-        ${ORCASLICER_SOURCE_DIR}/deps_src/admesh/..
-        ${ORCASLICER_SOURCE_DIR}/deps_src/libnest2d/include
-    )
 
-    target_compile_definitions(slic3r PRIVATE
-        -DSLIC3R_DLL_EXPORTS
-        -DUSE_TBB
-        -DTBB_USE_CAPTURED_EXCEPTION=0
-        -DBOOST_ALL_NO_LIB
-    )
-
-    target_link_libraries(slic3r PRIVATE
-        # Core libslic3r
-        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r.a
-        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r_cgal.a
-
-        # TBB
-        ${DEPS_DIR}/lib/libtbb.a
-        ${DEPS_DIR}/lib/libtbbmalloc.a
-
-        # OpenSSL
-        ${DEPS_DIR}/lib/libssl.a
-        ${DEPS_DIR}/lib/libcrypto.a
-        ${CMAKE_DL_LIBS}
-
-        # deps_src static libs
+    set(DEPS_SRC_LIBS
         ${BUILD_DEPS_SRC}/libnest2d/liblibnest2d.a
         ${BUILD_DEPS_SRC}/miniz/libminiz_static.a
         ${BUILD_DEPS_SRC}/clipper/libclipper.a
@@ -405,13 +361,9 @@ if(UNIX AND NOT APPLE)
         ${BUILD_DEPS_SRC}/mcut/libmcut.a
         ${BUILD_DEPS_SRC}/qoi/libqoi.a
         ${BUILD_LIB}/libsemver.a
+    )
 
-        # OpenCV
-        ${DEPS_DIR}/lib/libopencv_world.a
-        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibjpeg-turbo.a
-        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibpng.a
-
-        # OCCT
+    set(OCCT_LIBS
         ${DEPS_DIR}/lib/libTKXDESTEP.a
         ${DEPS_DIR}/lib/libTKSTEP.a
         ${DEPS_DIR}/lib/libTKSTEP209.a
@@ -438,8 +390,9 @@ if(UNIX AND NOT APPLE)
         ${DEPS_DIR}/lib/libTKG2d.a
         ${DEPS_DIR}/lib/libTKMath.a
         ${DEPS_DIR}/lib/libTKernel.a
+    )
 
-        # Boost
+    set(BOOST_LIBS
         ${DEPS_DIR}/lib/libboost_log_setup.a
         ${DEPS_DIR}/lib/libboost_log.a
         ${DEPS_DIR}/lib/libboost_filesystem.a
@@ -457,13 +410,15 @@ if(UNIX AND NOT APPLE)
         ${DEPS_DIR}/lib/libboost_nowide.a
         ${DEPS_DIR}/lib/libboost_iostreams.a
         ${DEPS_DIR}/lib/libboost_random.a
+    )
 
-        # Math
+    set(MATH_LIBS
         ${DEPS_DIR}/lib/libgmpxx.a
         ${DEPS_DIR}/lib/libmpfr.a
         ${DEPS_DIR}/lib/libgmp.a
+    )
 
-        # Other deps
+    set(OTHER_DEPS_LIBS
         ${DEPS_DIR}/lib/liblibnoise_static.a
         ${DEPS_DIR}/lib/libpng.a
         ${DEPS_DIR}/lib/libqhullcpp.a
@@ -474,8 +429,60 @@ if(UNIX AND NOT APPLE)
         ${DEPS_DIR}/lib/libHalf-2_5.a
         ${DEPS_DIR}/lib/libblosc.a
         ${DEPS_DIR}/lib/libnlopt.a
+    )
 
-        # System libs
+    set(ENGINE_SYSTEM_INCLUDE_DIRS
+        ${DEPS_DIR}/include
+        ${DEPS_DIR}/include/opencascade
+        ${DEPS_DIR}/include/opencv4
+        ${ORCASLICER_SOURCE_DIR}/deps_src/nlohmann
+        ${ORCASLICER_SOURCE_DIR}/deps_src/nanosvg
+        ${ORCASLICER_SOURCE_DIR}/deps_src/miniz
+        ${ORCASLICER_SOURCE_DIR}/deps_src/eigen
+        ${ORCASLICER_SOURCE_DIR}/deps_src/libigl
+        ${ORCASLICER_SOURCE_DIR}/deps_src/admesh
+        ${ORCASLICER_SOURCE_DIR}/deps_src/admesh/..
+        ${ORCASLICER_SOURCE_DIR}/deps_src/libnest2d/include
+    )
+
+    # ---- libslic3r.so: shared library = C API wrapper + engine ----
+    add_library(slic3r SHARED
+        src/slic3r_c_api.h src/slic3r_c_api.cpp
+        src/SliceEngine.cpp src/SliceEngine.hpp
+        src/JsonReport.cpp src/JsonReport.hpp
+        src/GeometryCheck.cpp src/GeometryCheck.hpp
+        src/Utils.cpp src/Utils.hpp
+        src/ExitCodes.hpp src/Issue.hpp src/SliceStats.hpp
+        src/TempFileGuard.hpp src/Types.hpp
+        src/nanosvg.cpp
+    )
+
+    target_include_directories(slic3r PRIVATE ${ENGINE_INCLUDE_DIRS})
+    target_include_directories(slic3r SYSTEM PRIVATE ${ENGINE_SYSTEM_INCLUDE_DIRS})
+
+    target_compile_definitions(slic3r PRIVATE
+        -DSLIC3R_DLL_EXPORTS
+        -DUSE_TBB
+        -DTBB_USE_CAPTURED_EXCEPTION=0
+        -DBOOST_ALL_NO_LIB
+    )
+
+    target_link_libraries(slic3r PRIVATE
+        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r.a
+        ${ORCASLICER_BUILD_DIR}/src/libslic3r/liblibslic3r_cgal.a
+        ${DEPS_DIR}/lib/libtbb.a
+        ${DEPS_DIR}/lib/libtbbmalloc.a
+        ${DEPS_DIR}/lib/libssl.a
+        ${DEPS_DIR}/lib/libcrypto.a
+        ${CMAKE_DL_LIBS}
+        ${DEPS_SRC_LIBS}
+        ${DEPS_DIR}/lib/libopencv_world.a
+        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibjpeg-turbo.a
+        ${DEPS_DIR}/lib/opencv4/3rdparty/liblibpng.a
+        ${OCCT_LIBS}
+        ${BOOST_LIBS}
+        ${MATH_LIBS}
+        ${OTHER_DEPS_LIBS}
         pthread rt m fontconfig expat z tiff lzma
     )
 
