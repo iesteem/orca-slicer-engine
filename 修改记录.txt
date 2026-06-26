@@ -1,7 +1,37 @@
-orca-slice-engine v02.01.16 修改记录
+orca-slice-engine v02.01.18 修改记录
 ======================================
 
-v02.01.16 (2026-06-25)
+v02.01.18 (2026-06-26)
+  [重构] SliceEngine 上帝类拆分为 PresetManager + PlateProcessor + StatisticsBuilder
+  [重构] EngineContext 共享状态包（15 个引用），子组件通过 context 通信
+  [重构] Types.hpp 拆分为 ExitCodes/Issue/SliceStats/TempFileGuard 4 个头文件
+  [重构] main.cpp 提取 EngineCLI 共享 CLI 逻辑，消除双入口点重复
+  [重构] CMakeLists.txt 库列表变量去重（-150 行）
+  [新增] Catch2 测试框架 + 20 个初始测试用例
+  [新增] run() 全部委托到子组件，仅保留 load_3mf/sanitize/validate_config/validate_input
+  [规范] 18 处 K&R 大括号 → Allman 风格
+  [规范] 4 处 fprintf → cerr/BOOST_LOG
+  [规范] 7 处裸 char[] → std::array
+  [规范] 12 个魔法数字 → constexpr 命名常量
+  [规范] 6 个文件 include 顺序修正
+  [规范] 5 个头文件补充 Doxygen
+  [规范] 1 处 const 正确性修正
+  [规范] M_PI 跨平台兼容（_USE_MATH_DEFINES）
+  [规范] CMakeLists.txt 添加 -Wall -Wextra
+  [规范] slic3r_c_api.h include guard → #pragma once
+  [清理] 删除死代码 validate_printer_official() (85行)
+  [清理] 删除重复 find_preset 调用
+  [清理] 删除 m_emergency_msg 伪 OOM 安全缓冲区
+  [清理] identify_ids → plate_instance_ids 重命名
+  [修复] C API temp dir 泄漏：TempFileGuard 提前创建
+  [修复] Utils.cpp JSON 转义补全 \b \f / \u00XX
+  [修复] GeometryCheck make_issue() tip 级别处理
+  [修复] compute_column_count 零/负值防护
+  [修复] apply_printer_official_preset + apply_printer_preset_config 重复检查合并为命名常量
+  [修复] main.cpp 紧急 JSON 模板提取为 write_emergency_json()
+  [修复] package_consumer.sh 硬编码路径参数化
+
+v02.01.17 (2026-06-25)
   [修复] 服务器默认模式下 std::bad_alloc 崩溃（32.2%→0%）
   [修复] 空层模型 G-code 导出 SIGSEGV
   [修复] Filament 数量不匹配时 WipeTower 连环 SIGSEGV

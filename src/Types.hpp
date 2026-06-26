@@ -24,5 +24,5 @@
 // as a macro for signal-safe string concatenation), the constexpr is skipped to
 // avoid collision.
 #ifndef CLOUD_SLICER_ENGINE_VERSION
-constexpr const char* CLOUD_SLICER_ENGINE_VERSION = "02.01.17";
+constexpr const char* CLOUD_SLICER_ENGINE_VERSION = "02.01.18";
 #endif
