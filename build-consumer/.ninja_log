@@ -1,0 +1,27 @@
+# ninja log v5
+59181	60136	1782458125773775171	CMakeFiles/orca-slice-engine.dir/src/nanosvg.cpp.o	989524664dbdbb9b
+12679	30752	1782455861920348926	CMakeFiles/slic3r.dir/src/SliceEngine.cpp.o	b54b9528accd9c58
+0	23	1782458163533837959	build.ninja	5e8f45c5aa4ca515
+6	48451	1782455681641257329	CMakeFiles/slic3r.dir/src/JsonReport.cpp.o	3ad0aa70ddb9935e
+29726	39660	1782458105295169409	CMakeFiles/orca-slice-engine.dir/src/JsonReport.cpp.o	83be541929c62aba
+38210	38215	1782455869352270251	libslic3r.so.2	83ca61474f90f8b6
+49575	59181	1782458124815747306	CMakeFiles/orca-slice-engine.dir/src/Utils.cpp.o	a7ecff67fd9aeac0
+1	11905	1782458077538313451	CMakeFiles/orca-slice-engine.dir/src/main.cpp.o	62592eeeb4d61603
+38215	38498	1782455869668266904	orca-slice-engine	9a19663b3d85c191
+6	47805	1782455680986264263	CMakeFiles/slic3r.dir/src/GeometryCheck.cpp.o	1988b15724bdbcc3
+38210	38215	1782455869352270251	libslic3r.so	83ca61474f90f8b6
+30752	38209	1782455869352270251	libslic3r.so.02.01.17	f382a0f75e521659
+39661	49575	1782458115209465342	CMakeFiles/orca-slice-engine.dir/src/GeometryCheck.cpp.o	48f11e77192261ef
+18194	27702	1782455716933883672	CMakeFiles/slic3r.dir/src/Utils.cpp.o	143110b736377758
+11905	29725	1782458095358867699	CMakeFiles/orca-slice-engine.dir/src/SliceEngine.cpp.o	e088b8c1c7efcebb
+140	1206	1782444729310583327	CMakeFiles/slic3r.dir/src/nanosvg.cpp.o	a7c2e1a3746eaa3
+4	12678	1782455843847540241	CMakeFiles/slic3r.dir/src/slic3r_c_api.cpp.o	e790054333082156
+1206	1327	1782444729434582154	CMakeFiles/orca-slice-engine.dir/src/main.c.o	c36e4661de480829
+6	11700	1782458175237153743	CMakeFiles/orca-slice-engine.dir/src/EngineCLI.cpp.o	e301e455c63fb1d7
+5	10563	1782458233092626418	CMakeFiles/orca-slice-engine.dir/src/PresetManager.cpp.o	326073ccc26fbed5
+5	14345	1782458299392148479	CMakeFiles/orca-slice-engine.dir/src/PlateProcessor.cpp.o	f712c9587397c185
+5	16733	1782458366913538202	CMakeFiles/orca-slice-engine.dir/src/SliceEngine.cpp.o	e088b8c1c7efcebb
+6	10571	1782458400832181592	CMakeFiles/orca-slice-engine.dir/src/StatisticsBuilder.cpp.o	9c5f807a4c9c19fd
+10572	17031	1782458407275299943	orca-slice-engine	c7ebe0caa7a62b0a
+7	16840	1782458734966029413	CMakeFiles/orca-slice-engine.dir/src/SliceEngine.cpp.o	e088b8c1c7efcebb
+16840	23474	1782458741584104032	orca-slice-engine	c7ebe0caa7a62b0a
