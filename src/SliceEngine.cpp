@@ -215,6 +215,25 @@ SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp
     : m_cfg(cfg)
     , m_temp_files(temp_files)
 {
+    // Build the shared context AFTER all members are initialized so
+    // references remain stable for the engine's lifetime.
+    m_ctx = std::make_unique<EngineContext>(EngineContext{
+        m_cfg,
+        m_temp_files,
+        m_model,
+        m_config,
+        m_stats,
+        m_plate_data,
+        m_project_presets,
+        m_plate_results,
+        m_output_path,
+        m_any_error,
+        m_any_postprocess_warning,
+        m_error_type,
+        m_baked_instance_z,
+        m_has_timeout,
+        m_timeout_deadline,
+    });
 }
 
 bool SliceEngine::run() {

@@ -14,6 +14,7 @@
 #include <tbb/global_control.h>
 
 #include "Types.hpp"
+#include "EngineContext.hpp"
 
 // Forward declarations for types used by pointer/reference only
 namespace Slic3r {
@@ -162,18 +163,11 @@ private:
     std::unique_ptr<Slic3r::PresetBundle> m_preset_bundle;
     bool m_presets_available = false;
 
-    // Transient storage for model transforms baked during apply_model().
-    // Instance Z translation is moved into volume Z offset (divided by
-    // Z_scale to account for Print::apply() preserving Z_scale but dropping
-    // Z translation).  Restored after slicing so model state is clean for
-    // the next plate.
-    struct BakedInstanceZ {
-        BakedInstanceZ() : inst(nullptr) {}
-        Slic3r::ModelInstance* inst;
-        Slic3r::Vec3d          inst_offset;
-        std::vector<std::pair<Slic3r::ModelVolume*, Slic3r::Vec3d>> volume_offsets;
-    };
     std::vector<BakedInstanceZ> m_baked_instance_z;
+
+    // Shared context for sub-components (PresetManager, PlateProcessor,
+    // StatisticsBuilder).  Created after all members are initialized.
+    std::unique_ptr<EngineContext> m_ctx;
 
     static constexpr double DEFAULT_PLATE_WIDTH  = 200.0;
     static constexpr double DEFAULT_PLATE_DEPTH  = 200.0;
