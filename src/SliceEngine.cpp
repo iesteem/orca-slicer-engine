@@ -2079,8 +2079,21 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin) {
         if (std::abs(inst_offset.z()) < 1e-9) continue;
         // Get Z_scale from the instance transformation matrix.
         // The 4x4 matrix (Transform3d) is stored column-major in Eigen.
-        // Element (2,2) is the Z scaling factor.
+        // Element (2,2) is the Z scaling factor for the volume's unit-Z offset.
+        //
+        // When the object is rotated ~90 degrees, element (2,2) can be near-zero
+        // (e.g. -2e-06) while the Z-column norm is large (~6.05). Dividing by a
+        // near-zero value produces a massive z_adjustment (~-7.8 million mm) that
+        // corrupts the volume offset and cascades into extreme G-code coordinates
+        // and absurd print time estimates.
+        //
+        // Detect this by comparing element (2,2) against the Z-column norm.
+        // If the contribution of Z to world Z is negligible, skip Z-baking.
+        Eigen::Vector3d z_col = inst->get_transformation().get_matrix().matrix().block<3,1>(0, 2);
+        double z_col_norm = z_col.norm();
         double z_scale = inst->get_transformation().get_matrix()(2, 2);
+        if (std::abs(z_col_norm) < 1e-9) continue;
+        if (std::abs(z_scale) / z_col_norm < 1e-6) continue;
         if (std::abs(z_scale) < 1e-9) continue;
         double z_adjustment = inst_offset.z() / z_scale;
         BakedInstanceZ baked;
