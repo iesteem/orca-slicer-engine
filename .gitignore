@@ -1,4 +1,6 @@
 build/
+build-consumer/
+build-dll/
 slic3r_sdk/
 slic3r_sdk_*.zip
 package_consumer_windows/
