@@ -2,6 +2,10 @@
 #include "GeometryCheck.hpp"
 #include "Utils.hpp"
 
+#include "PresetManager.hpp"
+#include "PlateProcessor.hpp"
+#include "StatisticsBuilder.hpp"
+
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
 #endif
@@ -234,6 +238,12 @@ SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp
         m_has_timeout,
         m_timeout_deadline,
     });
+
+    // Create sub-components (transitional: methods still live in SliceEngine
+    // but the classes exist for future delegation).
+    m_presets       = std::make_unique<PresetManager>(*m_ctx);
+    m_plate_proc    = std::make_unique<PlateProcessor>(*m_ctx);
+    m_stats_builder = std::make_unique<StatisticsBuilder>(*m_ctx);
 }
 
 bool SliceEngine::run() {

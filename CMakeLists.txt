@@ -147,7 +147,11 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
     # ---- Source files ----
     add_executable(orca-slice-engine
         src/main.cpp
+        src/EngineCLI.cpp
         src/SliceEngine.cpp
+        src/PresetManager.cpp
+        src/PlateProcessor.cpp
+        src/StatisticsBuilder.cpp
         src/JsonReport.cpp
         src/GeometryCheck.cpp
         src/Utils.cpp
@@ -449,9 +453,13 @@ if(UNIX AND NOT APPLE)
     add_library(slic3r SHARED
         src/slic3r_c_api.h src/slic3r_c_api.cpp
         src/SliceEngine.cpp src/SliceEngine.hpp
+        src/PresetManager.cpp src/PresetManager.hpp
+        src/PlateProcessor.cpp src/PlateProcessor.hpp
+        src/StatisticsBuilder.cpp src/StatisticsBuilder.hpp
         src/JsonReport.cpp src/JsonReport.hpp
         src/GeometryCheck.cpp src/GeometryCheck.hpp
         src/Utils.cpp src/Utils.hpp
+        src/EngineContext.hpp src/EngineCLI.hpp src/EngineCLI.cpp
         src/ExitCodes.hpp src/Issue.hpp src/SliceStats.hpp
         src/TempFileGuard.hpp src/Types.hpp
         src/nanosvg.cpp
