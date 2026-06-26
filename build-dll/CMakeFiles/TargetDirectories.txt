@@ -1,4 +1,0 @@
-/home/joyx/Desktop/code/orca-slicer-engine/build-dll/CMakeFiles/slic3r.dir
-/home/joyx/Desktop/code/orca-slicer-engine/build-dll/CMakeFiles/orca-slice-engine.dir
-/home/joyx/Desktop/code/orca-slicer-engine/build-dll/CMakeFiles/edit_cache.dir
-/home/joyx/Desktop/code/orca-slicer-engine/build-dll/CMakeFiles/rebuild_cache.dir
