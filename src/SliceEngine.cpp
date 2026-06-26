@@ -239,8 +239,7 @@ SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp
         m_timeout_deadline,
     });
 
-    // Create sub-components (transitional: methods still live in SliceEngine
-    // but the classes exist for future delegation).
+    // Create sub-components
     m_presets       = std::make_unique<PresetManager>(*m_ctx);
     m_plate_proc    = std::make_unique<PlateProcessor>(*m_ctx);
     m_stats_builder = std::make_unique<StatisticsBuilder>(*m_ctx);
@@ -257,73 +256,54 @@ bool SliceEngine::run() {
     try {
 
     // --- Config layering & mutation order ---
-    // m_config is the shared project config from the 3MF. The following
-    // pipeline stages mutate it in order, each building on the previous:
-    //
     // 1. FullPrintConfig::defaults()    — baseline for all keys
     // 2. load_3mf()                     — overlay 3MF project + embedded presets
-    // 3. load_system_presets()          — (side-effect: populates m_preset_bundle)
+    // 3. PresetManager                  — system presets + validation
     // 4. validate_printer_model()       — verify printer_model == "Snapmaker U1"
-    // 5. apply_printer_official_preset()— fill nil from official, overwrite G-code keys
-    // 6. validate_filament_official()   — MAY replace filament_settings_id + fill nil from official
-    //
-    // After these stages, m_config is a fully-resolved config ready for slicing.
-    // Per-plate overrides are applied separately in apply_model().
+    // 5. apply_printer_official_preset()— fill nil from official, overwrite G-code
+    // 6. validate_filament_official()   — MAY replace filament_settings_id
     m_config.apply(FullPrintConfig::defaults());
 
     bool load_ok = load_3mf();
     if (!load_ok) {
-        build_statistics();
+        m_stats_builder->build_statistics();
         return false;
     }
 
-    // Sanitize Bambu sentinel values (-1, 0-based filament IDs) before validation
     sanitize_config();
-
-    // Config & preset validation (desktop parity)
     validate_config();
 
-    // Suppress libslic3r log spam during system preset loading and validation
     {
         ScopedLogLevel quiet(boost::log::trivial::warning);
-        load_system_presets();
-        validate_presets();
+        m_presets->load_system_presets();
+        m_presets->validate_presets();
     }
 
-    // Printer preset substitution: always use official Snapmaker U1 preset.
-    // Cloud slicing only supports U1; custom printer presets are rejected.
-    if (!validate_printer_model()) {
-        build_statistics();
+    if (!m_presets->validate_printer_model()) {
+        m_stats_builder->build_statistics();
         return false;
     }
-    apply_printer_official_preset();
+    m_presets->apply_printer_official_preset();
 
-    // Filament validation: always run to catch truly invalid presets.
-    // When substitute_filaments is true (default), enforce official-only policy.
-    // When false (--allow-custom-filament-presets), validate structural soundness but
-    // accept custom filaments with a warning.
-    if (!validate_filament_official(m_cfg.substitute_filaments)) {
-        build_statistics();
+    if (!m_presets->validate_filament_official(m_cfg.substitute_filaments)) {
+        m_stats_builder->build_statistics();
         return false;
     }
 
-    // Abort if earlier config validation detected unrecoverable invalid values
     if (m_any_error) {
-        build_statistics();
+        m_stats_builder->build_statistics();
         return false;
     }
 
     bool validate_ok = validate_input();
 
     if (load_ok && validate_ok) {
-        // --- Setup timeout deadline ---
         m_has_timeout = (m_cfg.timeout_seconds > 0);
         if (m_has_timeout) {
             m_timeout_deadline = std::chrono::steady_clock::now()
                                + std::chrono::seconds(m_cfg.timeout_seconds);
         }
 
-        // --- Geometry defect detection (once for entire model, before per-plate loop) ---
         {
             auto geom_issues = run_geometry_checks(m_model);
             bool has_geom_error = false;
@@ -334,66 +314,55 @@ bool SliceEngine::run() {
             }
             if (has_geom_error) {
                 m_any_error = true;
-                set_error_type(EXIT_VALIDATION_ERROR);
+                m_stats_builder->set_error_type(EXIT_VALIDATION_ERROR);
                 m_stats.error_message = "Geometry defects were detected in the model file "
                                         "(non-manifold, self-intersection, or zero volume). "
                                         "Please repair the model and upload it again.";
                 BOOST_LOG_TRIVIAL(error) << m_stats.error_message;
-                build_statistics();
+                m_stats_builder->build_statistics();
                 return false;
             }
         }
 
-        // --- Thread count control ---
-        // Limit TBB parallelism for the entire slicing + export pipeline.
-        // The control object must stay alive until run() returns.
         if (m_cfg.thread_count > 0) {
             m_tbb_control = std::make_unique<tbb::global_control>(
                 tbb::global_control::max_allowed_parallelism, m_cfg.thread_count);
             BOOST_LOG_TRIVIAL(info) << "TBB thread count limited to " << m_cfg.thread_count;
         }
 
-        // Collect plates to process (internal plate_index is 0-based)
         std::vector<int> plates_to_process;
         if (m_cfg.single_plate) {
-            plates_to_process.push_back(m_cfg.plate_id - 1);  // CLI 1-based → internal 0-based
+            plates_to_process.push_back(m_cfg.plate_id - 1);
         } else {
             for (const auto& pd : m_plate_data)
                 plates_to_process.push_back(pd->plate_index);
         }
 
-        // Process each plate
         if (plates_to_process.empty()) {
             BOOST_LOG_TRIVIAL(error) << "No plates to process";
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats_builder->set_error_type(EXIT_VALIDATION_ERROR);
             m_stats.error_message = "No plates found in the 3MF file to slice";
             m_stats.issues.push_back(make_error(-1, "NO_PLATES",
                 "No plates found in the 3MF file to slice. "
                 "Please add objects to at least one plate and try again."));
         } else {
             for (int plate_id : plates_to_process) {
-                process_plate(plate_id);
+                m_plate_proc->process_plate(plate_id);
             }
         }
 
-        // Package output — only if no errors occurred
         bool has_output = !m_plate_results.empty();
         if (has_output && !m_any_error && (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
-            package_output();
+            m_stats_builder->package_output();
 
-        // For single-plate GCODE mode, the file is written directly to m_output_path
-        // during export_gcode. Remove it if errors occurred.
         if (m_any_error && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE) {
             boost::filesystem::remove(m_output_path);
             BOOST_LOG_TRIVIAL(info) << "Removed output file due to errors: " << m_output_path;
         }
-
     }
 
-    // Always build JSON statistics (even on early failure) so
-    // success=false and error_message are reflected in JSON output.
-    build_statistics();
+    m_stats_builder->build_statistics();
 
     return !m_plate_results.empty();
 
@@ -401,19 +370,19 @@ bool SliceEngine::run() {
         BOOST_LOG_TRIVIAL(error) << "Fatal exception in slicing pipeline: " << e.what();
         std::cerr << "[ERROR] An unexpected internal error occurred during slicing." << std::endl;
         m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
+        m_stats_builder->set_error_type(EXIT_SLICING_ERROR);
         m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
             std::string("An unexpected internal error occurred: ") + e.what()));
-        build_statistics();
+        m_stats_builder->build_statistics();
         return false;
     } catch (...) {
         BOOST_LOG_TRIVIAL(error) << "Fatal non-standard exception in slicing pipeline";
         std::cerr << "[ERROR] An unexpected internal error occurred." << std::endl;
         m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
+        m_stats_builder->set_error_type(EXIT_SLICING_ERROR);
         m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
             "Unhandled unknown exception in slicing pipeline"));
-        build_statistics();
+        m_stats_builder->build_statistics();
         return false;
     }
 }
@@ -2594,26 +2563,15 @@ void SliceEngine::package_output() {
 
 void SliceEngine::report_error(int plate_id, int exit_code, const std::string& code,
                                const std::string& message, bool set_main_message) {
-    m_any_error = true;
-    set_error_type(exit_code);
-    m_stats.issues.push_back(make_error(plate_id, code, message));
-    if (set_main_message && m_stats.error_message.empty())
-        m_stats.error_message = message;
+    m_stats_builder->report_error(plate_id, exit_code, code, message, set_main_message);
 }
 
 void SliceEngine::set_error_type(int code) {
-    if (code > m_error_type)
-        m_error_type = code;
+    m_stats_builder->set_error_type(code);
 }
 
 int SliceEngine::exit_code() const {
-    if (m_error_type > EXIT_OK)
-        return m_error_type;
-    if (m_any_error)
-        return EXIT_VALIDATION_ERROR;
-    if (m_any_postprocess_warning)
-        return EXIT_POSTPROCESS_WARNING;
-    return EXIT_OK;
+    return m_stats_builder->exit_code();
 }
 
 // ============================================================================
