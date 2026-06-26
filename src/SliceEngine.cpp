@@ -2,9 +2,13 @@
 #include "GeometryCheck.hpp"
 #include "Utils.hpp"
 
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+#include <cmath>
+
 #include <cctype>
 #include <climits>
-#include <cmath>
 #include <cstdio>
 #include <iostream>
 #include <memory>
@@ -108,7 +112,8 @@ static const char* const ORCA_FILAMENT_DIR() { // ORCA_FILAMENT_LIBRARY is a run
 }
 
 // Check whether a machine name matches an official Snapmaker printer preset on disk.
-inline bool is_official_machine_file(const std::string& preset_name) {
+inline bool is_official_machine_file(const std::string& preset_name)
+{
     const std::string& res = Slic3r::resources_dir();
     if (res.empty()) return false;
     return boost::filesystem::exists(res + SNAPMK_MACHINE_DIR + preset_name + ".json");
@@ -116,7 +121,8 @@ inline bool is_official_machine_file(const std::string& preset_name) {
 
 // Check whether a filament name matches an official preset on disk
 // (Snapmaker or OrcaFilamentLibrary, including @System suffix for Generic filaments).
-inline bool is_official_filament_file(const std::string& preset_name) {
+inline bool is_official_filament_file(const std::string& preset_name)
+{
     const std::string& res = Slic3r::resources_dir();
     if (res.empty()) return false;
     const std::string snap_path = res + SNAPMK_FILAMENT_DIR + preset_name + ".json";
@@ -129,7 +135,8 @@ inline bool is_official_filament_file(const std::string& preset_name) {
 // Check if a plate result indicates a wipe tower tool change mismatch.
 // CGAL/float differences on some platforms cause non-consecutive extruder
 // ID handling to fail during G-code export.
-bool is_wipe_tower_error(const PlateSliceResult& result) {
+bool is_wipe_tower_error(const PlateSliceResult& result)
+{
     for (const auto& iss : result.issues) {
         if (iss.message.find("append_tcr") != std::string::npos)
             return true;
@@ -137,7 +144,8 @@ bool is_wipe_tower_error(const PlateSliceResult& result) {
     return false;
 }
 
-bool has_no_layers_on_plate(const std::vector<Issue>& issues, int plate_id) {
+bool has_no_layers_on_plate(const std::vector<Issue>& issues, int plate_id)
+{
     for (const auto& iss : issues) {
         if (iss.plate_id == plate_id &&
             iss.code == "SLICING_ERROR" &&
@@ -151,7 +159,8 @@ bool has_no_layers_on_plate(const std::vector<Issue>& issues, int plate_id) {
 // Unlike "no layers" (which is model placement), SlicingError/SlicingErrors
 // from print.process() are deterministic — retrying with the same input
 // will always produce the same failure.  Skip retry to save CPU.
-bool has_fatal_slicing_error_on_plate(const std::vector<Issue>& issues, int plate_id) {
+bool has_fatal_slicing_error_on_plate(const std::vector<Issue>& issues, int plate_id)
+{
     for (const auto& iss : issues) {
         if (iss.plate_id == plate_id &&
             iss.code == "SLICING_ERROR" &&
@@ -159,6 +168,43 @@ bool has_fatal_slicing_error_on_plate(const std::vector<Issue>& issues, int plat
             return true;
     }
     return false;
+}
+
+// Named constants for magic numbers
+constexpr double NOZZLE_FORMAT_EPSILON    = 0.05;
+constexpr double Z_COMPARISON_EPSILON     = 1e-9;
+constexpr double Z_RATIO_EPSILON          = 1e-6;
+constexpr const char* BED_TEMP_WARNING_CODE = "1000C001";
+
+// Shared G-code keys that must be overwritten from the official printer preset
+// during printer substitution.  Both substitute_printer_params() and
+// apply_printer_official_preset() use this list.
+constexpr const char* GCODE_KEYS[] = {
+    "machine_start_gcode", "machine_end_gcode",
+    "before_layer_change_gcode", "layer_change_gcode",
+    "change_filament_gcode", "machine_pause_gcode",
+    "template_custom_gcode", "printing_by_object_gcode",
+    "time_lapse_gcode",
+};
+
+/**
+ * Overwrite G-code config keys in `dst` from `src`.
+ *
+ * Unlike fill_nil_from, this always overwrites existing values because
+ * Bambu-specific G-code variables are not recognized by Snapmaker's
+ * PlaceholderParser.  Cloud slicing must always use official G-code.
+ *
+ * @param dst Destination config to write into.
+ * @param src Source config to copy G-code values from.
+ */
+inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
+                                       const DynamicPrintConfig& src)
+{
+    for (const auto& key : GCODE_KEYS) {
+        const auto* s = src.option(key, false);
+        if (s && dst.has(key))
+            dst.set_key_value(key, s->clone());
+    }
 }
 
 } // namespace
@@ -188,8 +234,8 @@ bool SliceEngine::run() {
     // 1. FullPrintConfig::defaults()    — baseline for all keys
     // 2. load_3mf()                     — overlay 3MF project + embedded presets
     // 3. load_system_presets()          — (side-effect: populates m_preset_bundle)
-    // 4. validate_printer_official()    — MAY replace printer_settings_id + fill nil from official
-    // 5. apply_printer_preset_config()  — fill remaining nil printer keys from system preset
+    // 4. validate_printer_model()       — verify printer_model == "Snapmaker U1"
+    // 5. apply_printer_official_preset()— fill nil from official, overwrite G-code keys
     // 6. validate_filament_official()   — MAY replace filament_settings_id + fill nil from official
     //
     // After these stages, m_config is a fully-resolved config ready for slicing.
@@ -397,7 +443,7 @@ bool SliceEngine::load_3mf() {
             strategy,
             &m_plate_data,
             &m_project_presets,
-            &m_is_bbl_3mf,
+            &m_is_BBL_3mf,
             &m_file_version,
             nullptr,
             nullptr,
@@ -743,20 +789,23 @@ void SliceEngine::apply_printer_preset_config()
         } else {
             bool is_default =
                 (pa->values[0].x() == 0.0 && pa->values[0].y() == 0.0) &&
-                (pa->values[1].x() == 200.0 && pa->values[1].y() == 0.0) &&
-                (pa->values[2].x() == 200.0 && pa->values[2].y() == 200.0) &&
-                (pa->values[3].x() == 0.0 && pa->values[3].y() == 200.0);
-            if (is_default) fail("printable_area is still the 200x200 default");
+                (pa->values[1].x() == DEFAULT_PLATE_WIDTH &&
+                 pa->values[1].y() == 0.0) &&
+                (pa->values[2].x() == DEFAULT_PLATE_WIDTH &&
+                 pa->values[2].y() == DEFAULT_PLATE_DEPTH) &&
+                (pa->values[3].x() == 0.0 &&
+                 pa->values[3].y() == DEFAULT_PLATE_DEPTH);
+            if (is_default) fail("printable_area is still the default");
         }
 
-        // printable_height: default is 100.0
+        // printable_height: default is DEFAULT_PRINTABLE_HEIGHT
         auto ph = m_config.option<ConfigOptionFloat>("printable_height");
-        if (!ph || ph->value == 100.0)
-            fail("printable_height is still the 100.0 default");
+        if (!ph || ph->value == DEFAULT_PRINTABLE_HEIGHT)
+            fail("printable_height is still the default");
     }
 }
 
-bool SliceEngine::has_inline_filament_config(int ext_idx)
+bool SliceEngine::has_inline_filament_config(int ext_idx) const
 {
     // Check whether the config has per-extruder filament parameters for
     // the given extruder index, even when no named filament preset exists.
@@ -1075,93 +1124,6 @@ bool SliceEngine::validate_printer_model()
     return true;
 }
 
-bool SliceEngine::validate_printer_official(bool enforce)
-{
-    auto printer_id = m_config.option<ConfigOptionString>("printer_settings_id");
-    if (!printer_id || printer_id->value.empty())
-        return true;
-
-    const std::string& name = printer_id->value;
-
-    // Case 1: Direct official match — no substitution needed.
-    if (is_official_machine_file(name)) {
-        return true;
-    }
-
-    // enforce mode: actual preset replacement is handled by
-    // apply_printer_official_preset() which loads the U1
-    // preset by nozzle diameter.
-    if (enforce)
-        return true;
-
-    // Non-enforce mode: warn about custom presets but accept them.
-    const Preset* current = nullptr;
-    if (m_presets_available && m_preset_bundle) {
-        current = m_preset_bundle->printers.find_preset(name, false);
-    }
-    if (!current) {
-        for (auto pp : m_project_presets) {
-            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINTER) {
-                current = pp;
-                break;
-            }
-        }
-    }
-
-    if (!current) {
-        BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
-            << "\" not found in system presets; accepted in allow-custom mode";
-        m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM_NOT_FOUND",
-            std::string("Printer preset \"") + name + "\" not found in system presets"));
-        return true;
-    }
-
-    // Walk the inherits chain to check for official ancestry
-    std::set<std::string> visited;
-    const Preset* walk = current;
-    while (walk) {
-        std::string inherits_name = walk->inherits();
-        if (inherits_name.empty()) break;
-        if (!visited.insert(inherits_name).second) {
-            std::string msg = "Circular inheritance in printer preset \"" + name + "\"";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
-            m_stats.issues.push_back(make_error(-1, "PRINTER_CIRCULAR_INHERITS", msg));
-            return false;
-        }
-
-        if (is_official_machine_file(inherits_name)) {
-            BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
-                << "\" is a custom preset (not official)";
-            m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
-                std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
-            return true;
-        }
-
-        const Preset* parent = nullptr;
-        if (m_presets_available && m_preset_bundle) {
-            parent = m_preset_bundle->printers.find_preset(inherits_name, false);
-        }
-        if (!parent) {
-            for (auto pp : m_project_presets) {
-                if (pp && pp->name == inherits_name && pp->type == Preset::TYPE_PRINTER) {
-                    parent = pp;
-                    break;
-                }
-            }
-        }
-        if (!parent) break;
-        walk = parent;
-    }
-
-    BOOST_LOG_TRIVIAL(warning) << "Printer preset \"" << name
-        << "\" is a custom preset (not official)";
-    m_stats.issues.push_back(make_warning(-1, "PRINTER_CUSTOM",
-        std::string("Printer preset \"") + name + "\" is a custom preset (not official)"));
-    return true;
-}
-
 void SliceEngine::substitute_printer_params(const std::string& original_name,
                                              const std::string& parent_name)
 {
@@ -1185,23 +1147,7 @@ void SliceEngine::substitute_printer_params(const std::string& original_name,
 
     fill_nil_from(m_config, parent_cfg);
 
-    // Force-overwrite G-code keys from the official printer preset.
-    // fill_nil_from preserves existing (non-nil) values, but Bambu-
-    // specific variables like min_vitrification_temperature are not
-    // recognized by Snapmaker's PlaceholderParser.  Cloud slicing
-    // must always use official G-code.
-    static const std::vector<std::string> gcode_keys = {
-        "machine_start_gcode", "machine_end_gcode",
-        "before_layer_change_gcode", "layer_change_gcode",
-        "change_filament_gcode", "machine_pause_gcode",
-        "template_custom_gcode", "printing_by_object_gcode",
-        "time_lapse_gcode",
-    };
-    for (const auto& key : gcode_keys) {
-        auto* src = parent_cfg.option(key, false);
-        if (src && m_config.has(key))
-            m_config.set_key_value(key, src->clone());
-    }
+    overwrite_gcode_keys_from(m_config, parent_cfg);
 
     // Only now update the printer name — all heavy operations succeeded.
     m_config.set_key_value("printer_settings_id",
@@ -1237,10 +1183,10 @@ void SliceEngine::apply_printer_official_preset()
 
     // Format nozzle string (0.2, 0.4, 0.6, 0.8)
     auto fmt_nozzle = [](double d) {
-        char buf[8];
-        int precision = (std::abs(d - std::round(d)) < 0.05) ? 0 : 1;
-        snprintf(buf, sizeof(buf), "%.*f", precision, d);
-        return std::string(buf);
+        std::array<char, 8> buf;
+        const int precision = (std::abs(d - std::round(d)) < NOZZLE_FORMAT_EPSILON) ? 0 : 1;
+        snprintf(buf.data(), buf.size(), "%.*f", precision, d);
+        return std::string(buf.data());
     };
 
     std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
@@ -1274,19 +1220,7 @@ void SliceEngine::apply_printer_official_preset()
         // Fill nil values from official preset
         fill_nil_from(m_config, official_cfg);
 
-        // Force-overwrite G-code keys from official printer preset
-        static const std::vector<std::string> gcode_keys = {
-            "machine_start_gcode", "machine_end_gcode",
-            "before_layer_change_gcode", "layer_change_gcode",
-            "change_filament_gcode", "machine_pause_gcode",
-            "template_custom_gcode", "printing_by_object_gcode",
-            "time_lapse_gcode",
-        };
-        for (const auto& key : gcode_keys) {
-            auto* src = official_cfg.option(key, false);
-            if (src && m_config.has(key))
-                m_config.set_key_value(key, src->clone());
-        }
+        overwrite_gcode_keys_from(m_config, official_cfg);
 
         // Update printer identity
         m_config.set_key_value("printer_settings_id",
@@ -1325,11 +1259,15 @@ void SliceEngine::apply_printer_official_preset()
         }
         bool is_default =
             (pa->values[0].x() == 0.0 && pa->values[0].y() == 0.0) &&
-            (pa->values[1].x() == 200.0 && pa->values[1].y() == 0.0) &&
-            (pa->values[2].x() == 200.0 && pa->values[2].y() == 200.0) &&
-            (pa->values[3].x() == 0.0 && pa->values[3].y() == 200.0);
+            (pa->values[1].x() == DEFAULT_PLATE_WIDTH &&
+             pa->values[1].y() == 0.0) &&
+            (pa->values[2].x() == DEFAULT_PLATE_WIDTH &&
+             pa->values[2].y() == DEFAULT_PLATE_DEPTH) &&
+            (pa->values[3].x() == 0.0 &&
+             pa->values[3].y() == DEFAULT_PLATE_DEPTH);
         if (is_default) {
-            std::string msg = "Printer configuration incomplete: printable_area is still the 200x200 default. "
+            std::string msg = "Printer configuration incomplete: "
+                "printable_area is still the default. "
                 "The U1 printer preset was not applied correctly.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_any_error = true;
@@ -1339,8 +1277,9 @@ void SliceEngine::apply_printer_official_preset()
             return;
         }
         auto ph = m_config.option<ConfigOptionFloat>("printable_height");
-        if (!ph || ph->value == 100.0) {
-            std::string msg = "Printer configuration incomplete: printable_height is still the 100.0 default. "
+        if (!ph || ph->value == DEFAULT_PRINTABLE_HEIGHT) {
+            std::string msg = "Printer configuration incomplete: "
+                "printable_height is still the default. "
                 "The U1 printer preset was not applied correctly.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_any_error = true;
@@ -1376,10 +1315,8 @@ DynamicPrintConfig SliceEngine::build_full_print_config()
         // project config.
         auto print_id_opt = m_config.option<ConfigOptionString>("print_settings_id");
         if (print_id_opt && !print_id_opt->value.empty()) {
-            const Preset* process_preset = bundle.prints.find_preset(print_id_opt->value, true);
-            if (!process_preset) {
-                process_preset = bundle.prints.find_preset(print_id_opt->value, true);
-            }
+            const Preset* process_preset = bundle.prints.find_preset(
+                print_id_opt->value, true);
             if (process_preset)
                 out.apply(process_preset->config);
         }
@@ -1565,8 +1502,8 @@ bool SliceEngine::validate_input() {
 void SliceEngine::process_plate(int plate_id) {
     try {
     // --- Filter instances for this plate ---
-    std::set<int> identify_ids;
-    int instances_on_plate = filter_instances(plate_id, identify_ids);
+    std::set<int> plate_instance_ids;
+    int instances_on_plate = filter_instances(plate_id, plate_instance_ids);
 
     BOOST_LOG_TRIVIAL(info) << "Filtered model: " << instances_on_plate
         << " instances on plate " << (plate_id + 1);
@@ -1603,7 +1540,7 @@ void SliceEngine::process_plate(int plate_id) {
     Vec3d origin = setup_print_origin(plate_id, plate_width, plate_depth);
 
     // --- Build volume check (uses plate-local coordinates) ---
-    if (!run_build_volume_check(plate_id, identify_ids, origin))
+    if (!run_build_volume_check(plate_id, plate_instance_ids, origin))
         return;
 
     // Get BBL vendor flag once
@@ -1763,28 +1700,26 @@ void SliceEngine::process_plate(int plate_id) {
         set_error_type(EXIT_EXPORT_ERROR);
     } catch (const std::exception& e) {
         restore_baked_z_offsets();
-        // Use raw stderr for OOM safety — no Boost.Log allocation
-        std::fprintf(stderr, "[FATAL] Plate %d exception: %s\n", plate_id + 1, e.what());
-        BOOST_LOG_TRIVIAL(error) << "Unhandled exception processing plate " << (plate_id + 1)
-            << ": " << e.what();
+        BOOST_LOG_TRIVIAL(error) << "Unhandled exception processing plate "
+            << (plate_id + 1) << ": " << e.what();
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
-        std::snprintf(m_emergency_msg, EMERGENCY_MSG_SIZE,
-            "Slicing failed for plate %d: %s", plate_id + 1, e.what());
         m_stats.issues.emplace_back(
             Issue{"error", plate_id, "", -1.0, "INTERNAL_ERROR",
-                  std::string(m_emergency_msg), ""});
+                  std::string("Slicing failed for plate ")
+                      + std::to_string(plate_id + 1)
+                      + ": " + e.what(), ""});
     } catch (...) {
         restore_baked_z_offsets();
-        std::fprintf(stderr, "[FATAL] Plate %d unknown exception\n", plate_id + 1);
-        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception processing plate " << (plate_id + 1);
+        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception "
+            "processing plate " << (plate_id + 1);
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
-        std::snprintf(m_emergency_msg, EMERGENCY_MSG_SIZE,
-            "Slicing failed for plate %d with unknown error", plate_id + 1);
         m_stats.issues.emplace_back(
             Issue{"error", plate_id, "", -1.0, "INTERNAL_ERROR",
-                  std::string(m_emergency_msg), ""});
+                  std::string("Slicing failed for plate ")
+                      + std::to_string(plate_id + 1)
+                      + " with unknown error", ""});
     }
 }
 
@@ -1792,11 +1727,11 @@ void SliceEngine::process_plate(int plate_id) {
 // Per-plate sub-stages
 // ============================================================================
 
-int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
+int SliceEngine::filter_instances(int plate_id, std::set<int>& plate_instance_ids) {
     for (const auto& pd : m_plate_data) {
         if (pd->plate_index == plate_id) {
             for (const auto& [object_id, inst_info] : pd->obj_inst_map) {
-                identify_ids.insert(inst_info.second);
+                plate_instance_ids.insert(inst_info.second);
             }
             break;
         }
@@ -1805,7 +1740,7 @@ int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
     int count = 0;
     for (ModelObject* obj : m_model.objects) {
         for (ModelInstance* inst : obj->instances) {
-            bool on_plate = (identify_ids.find(static_cast<int>(inst->loaded_id)) != identify_ids.end());
+            bool on_plate = (plate_instance_ids.find(static_cast<int>(inst->loaded_id)) != plate_instance_ids.end());
             inst->printable = on_plate;
             inst->print_volume_state = on_plate ? ModelInstancePVS_Inside : ModelInstancePVS_Fully_Outside;
             if (on_plate) ++count;
@@ -1814,7 +1749,7 @@ int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
     return count;
 }
 
-bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin) {
+bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& plate_instance_ids, const Vec3d& origin) {
     if (!(m_config.has("printable_area") && m_config.has("printable_height")))
         return true;
 
@@ -1835,7 +1770,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         for (ModelInstance* inst : obj->instances) {
             if (!inst->printable) continue;
             int lid = static_cast<int>(inst->loaded_id);
-            if (identify_ids.find(lid) != identify_ids.end()) {
+            if (plate_instance_ids.find(lid) != plate_instance_ids.end()) {
                 Vec3d global_offset = inst->get_offset();
                 Vec3d local_offset = global_offset - origin;
                 shifted.emplace_back(inst, global_offset);
@@ -1851,7 +1786,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         for (ModelInstance* inst : obj->instances) {
             if (!inst->printable) continue;
             int lid = static_cast<int>(inst->loaded_id);
-            if (identify_ids.find(lid) == identify_ids.end()) continue;
+            if (plate_instance_ids.find(lid) == plate_instance_ids.end()) continue;
 
             if (inst->print_volume_state == ModelInstancePVS_Partly_Outside) {
                 log_plate_message("[Pre-processing]", "ERROR", plate_id,
@@ -1893,7 +1828,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
                     ModelInstance* inst = obj->instances[idx];
                     if (!inst->printable) continue;
                     int lid = static_cast<int>(inst->loaded_id);
-                    if (identify_ids.find(lid) == identify_ids.end()) continue;
+                    if (plate_instance_ids.find(lid) == plate_instance_ids.end()) continue;
                     if (inst->print_volume_state != ModelInstancePVS_Inside) continue;
                     BoundingBoxf3 bb = obj->instance_bounding_box(idx);
                     double dist_left   = std::abs(bb.min.x() - bed_bb.min.x());
@@ -1923,7 +1858,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     for (ModelObject* obj : m_model.objects) {
         for (ModelInstance* inst : obj->instances) {
             int lid = static_cast<int>(inst->loaded_id);
-            bool on_plate = (identify_ids.find(lid) != identify_ids.end());
+            bool on_plate = (plate_instance_ids.find(lid) != plate_instance_ids.end());
             inst->printable = on_plate;
             if (on_plate)
                 inst->print_volume_state = ModelInstancePVS_Inside;
@@ -2439,7 +2374,7 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result) {
 
     // Slice warnings
     for (const auto& w : result.gcode_result.warnings) {
-        if (w.error_code == "1000C001") continue; // bed temp warning irrelevant for cloud slicing
+        if (w.error_code == BED_TEMP_WARNING_CODE) continue;
         // Level 2 = "severe warning" in GUI — still produces gcode.
         // Only level 3+ is a true error that blocks export.
         if (w.level >= 3) {
@@ -2542,16 +2477,16 @@ void SliceEngine::package_output() {
         }
 
         // Rebuild objects_and_instances using model.objects array indices
-        std::set<int> plate_identify_ids;
+        std::set<int> plate_plate_instance_ids;
         for (const auto& entry : pd->obj_inst_map)
-            plate_identify_ids.insert(entry.second.second);
+            plate_plate_instance_ids.insert(entry.second.second);
 
         pd->objects_and_instances.clear();
         for (size_t obj_idx = 0; obj_idx < m_model.objects.size(); ++obj_idx) {
             const ModelObject* obj = m_model.objects[obj_idx];
             for (size_t inst_idx = 0; inst_idx < obj->instances.size(); ++inst_idx) {
                 const ModelInstance* inst = obj->instances[inst_idx];
-                if (plate_identify_ids.count(static_cast<int>(inst->loaded_id)))
+                if (plate_plate_instance_ids.count(static_cast<int>(inst->loaded_id)))
                     pd->objects_and_instances.emplace_back(
                         static_cast<int>(obj_idx),
                         static_cast<int>(inst_idx));

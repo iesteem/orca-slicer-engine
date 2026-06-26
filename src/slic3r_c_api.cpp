@@ -50,13 +50,16 @@ struct slic3r_ctx_s {
 // Helpers
 // ====================================================================
 
-static void set_error(slic3r_ctx_t* ctx, const std::string& msg) {
-    if (ctx) ctx->last_error = msg;
-    fprintf(stderr, "[slic3r] ERROR: %s\n", msg.c_str());
+static void set_error(slic3r_ctx_t* ctx, const std::string& msg)
+{
+    if (ctx)
+        ctx->last_error = msg;
+    std::cerr << "[slic3r] ERROR: " << msg << std::endl;
 }
 
 // Parse CLI params JSON into EngineConfig
-static bool parse_params(const char* json_str, EngineConfig& cfg) {
+static bool parse_params(const char* json_str, EngineConfig& cfg)
+{
     if (!json_str || !json_str[0]) return true; // empty = defaults
 
     try {
@@ -75,7 +78,7 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
         if (j.contains("thread_count"))  cfg.thread_count  = j["thread_count"].get<int>();
         return true;
     } catch (const std::exception& e) {
-        fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
+        std::cerr << "[slic3r] params parse error: " << e.what() << std::endl;
         return false;
     }
 }
@@ -149,11 +152,18 @@ SLIC3R_API int slic3r_slice(
         cfg.output_base = output_base;
 
         // Auto-generate temp directory (same as original main.cpp)
-        auto unique_dir = boost::filesystem::temp_directory_path()
-            / boost::filesystem::unique_path("orca_slice_%%%%-%%%%-%%%%-%%%%");
+        boost::filesystem::path unique_dir =
+            boost::filesystem::temp_directory_path()
+            / boost::filesystem::unique_path(
+                "orca_slice_%%%%-%%%%-%%%%-%%%%");
         boost::filesystem::create_directories(unique_dir);
         cfg.temp_dir = unique_dir.string();
         Slic3r::set_temporary_dir(cfg.temp_dir);
+
+        // Create guard BEFORE parse_params so temp dir is cleaned up
+        // on early return from parse failure.
+        std::vector<std::string> temp_files;
+        TempFileGuard temp_guard(temp_files);
 
         if (!parse_params(params_json, cfg)) {
             set_error(ctx, "Failed to parse params JSON");
@@ -161,8 +171,6 @@ SLIC3R_API int slic3r_slice(
         }
 
         // Run the full pipeline
-        std::vector<std::string> temp_files;
-        TempFileGuard temp_guard(temp_files);
 
         SliceEngine engine(cfg, temp_files);
         bool ran = engine.run();
@@ -212,8 +220,11 @@ SLIC3R_API const char* slic3r_version(void) {
     return CLOUD_SLICER_ENGINE_VERSION;
 }
 
-SLIC3R_API char* slic3r_get_config_schema(void) {
+SLIC3R_API char* slic3r_get_config_schema(void)
+{
     std::string schema = dump_config_schema(Slic3r::print_config_def);
+    // malloc/free required here: the C ABI boundary cannot use new/delete
+    // because the caller (possibly pure C) has no access to C++ deallocation.
     char* result = static_cast<char*>(malloc(schema.size() + 1));
     if (result) {
         memcpy(result, schema.c_str(), schema.size() + 1);
@@ -221,7 +232,9 @@ SLIC3R_API char* slic3r_get_config_schema(void) {
     return result;
 }
 
-SLIC3R_API void slic3r_free_string(char* str) {
+SLIC3R_API void slic3r_free_string(char* str)
+{
+    // Matches slic3r_get_config_schema: C ABI boundary requires malloc/free.
     free(str);
 }
 

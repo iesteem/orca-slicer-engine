@@ -52,13 +52,61 @@ static char                    g_emergency_json_path[EMERGENCY_PATH_SIZE] = {};
 static volatile sig_atomic_t   g_crash_occurred = 0;
 static char                    g_alt_stack[ALT_STACK_SIZE] = {};
 
+/**
+ * Write an emergency JSON crash report to stderr and the expected output file.
+ *
+ * This function MUST remain async-signal-safe: no heap allocation, no mutexes,
+ * no STL containers.  Uses only POSIX signal-safe functions (write, open, close,
+ * snprintf).  Called from both crash_signal_handler and terminate_handler.
+ *
+ * @param error_message  One-line error description for the JSON body.
+ * @param issue_message  Detailed issue message for the issues array.
+ */
+static void write_emergency_json(const char* error_message,
+                                  const char* issue_message)
+{
+    char buf[EMERGENCY_JSON_SIZE];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"success\":false,"
+        "\"engine_version\":\"" CLOUD_SLICER_ENGINE_VERSION "\","
+        "\"error_message\":\"%s\","
+        "\"issues\":[{"
+            "\"level\":\"error\","
+            "\"plate_id\":-1,"
+            "\"object_name\":\"\","
+            "\"z_height\":-1.0,"
+            "\"code\":\"ENGINE_CRASH\","
+            "\"message\":\"%s\""
+        "}],"
+        "\"plates\":[]}\n",
+        error_message, issue_message);
+    if (n < 0) n = 0;
+    if (static_cast<size_t>(n) >= sizeof(buf))
+        n = static_cast<int>(sizeof(buf)) - 1;
+    buf[n] = '\0';
+
+    ::write(STDERR_FILENO, "\n=== SLICE STATISTICS (JSON) ===\n", 33);
+    ::write(STDERR_FILENO, buf, static_cast<size_t>(n));
+    ::write(STDERR_FILENO, "\n=== END STATISTICS ===\n", 24);
+
+    if (g_emergency_json_path[0] != '\0') {
+        int fd = ::open(g_emergency_json_path,
+                        O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            ::write(fd, buf, static_cast<size_t>(n));
+            ::close(fd);
+        }
+    }
+}
+
 // Signal handler for fatal signals.
 // MUST be async-signal-safe: no heap allocation, no mutexes, no STL containers.
 // Uses only: open / write / close / signal / raise (all POSIX signal-safe).
-extern "C" void crash_signal_handler(int sig) {
+extern "C" void crash_signal_handler(int sig)
+{
     g_crash_occurred = 1;
 
-    // Map signal number to name (no switch with strings in signal context)
+    // Map signal number to name
     const char* sig_name = "UNKNOWN";
     if      (sig == SIGSEGV) sig_name = "SIGSEGV";
     else if (sig == SIGABRT) sig_name = "SIGABRT";
@@ -66,40 +114,15 @@ extern "C" void crash_signal_handler(int sig) {
     else if (sig == SIGBUS)  sig_name = "SIGBUS";
     else if (sig == SIGILL)  sig_name = "SIGILL";
 
-    // Build emergency JSON via snprintf (async-signal-safe on Linux/glibc)
-    char buf[EMERGENCY_JSON_SIZE];
-    int n = snprintf(buf, sizeof(buf),
-        "{\"success\":false,"
-        "\"engine_version\":\"" CLOUD_SLICER_ENGINE_VERSION "\","
-        "\"error_message\":\"C++ engine crashed with signal %s (%d)\","
-        "\"issues\":[{"
-            "\"level\":\"error\","
-            "\"plate_id\":-1,"
-            "\"object_name\":\"\","
-            "\"z_height\":-1.0,"
-            "\"code\":\"ENGINE_CRASH\","
-            "\"message\":\"C++ engine crashed with signal %s (%d). "
-                         "Please try again or contact support.\""
-        "}],"
-        "\"plates\":[]}\n",
-        sig_name, sig, sig_name, sig);
-    if (n < 0) n = 0;
-    if (static_cast<size_t>(n) >= sizeof(buf)) n = static_cast<int>(sizeof(buf)) - 1;
-    buf[n] = '\0';
+    char error_msg[256];
+    char issue_msg[384];
+    snprintf(error_msg, sizeof(error_msg),
+             "C++ engine crashed with signal %s (%d)", sig_name, sig);
+    snprintf(issue_msg, sizeof(issue_msg),
+             "C++ engine crashed with signal %s (%d). "
+             "Please try again or contact support.", sig_name, sig);
 
-    // Write to stderr (always safe)
-    ::write(STDERR_FILENO, "\n=== SLICE STATISTICS (JSON) ===\n", 33);
-    ::write(STDERR_FILENO, buf, static_cast<size_t>(n));
-    ::write(STDERR_FILENO, "\n=== END STATISTICS ===\n", 24);
-
-    // Write to the expected JSON output file so the cloud service sees it
-    if (g_emergency_json_path[0] != '\0') {
-        int fd = ::open(g_emergency_json_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            ::write(fd, buf, static_cast<size_t>(n));
-            ::close(fd);
-        }
-    }
+    write_emergency_json(error_msg, issue_msg);
 
     // Re-raise with default handler for core dump
     ::signal(sig, SIG_DFL);
@@ -108,32 +131,11 @@ extern "C" void crash_signal_handler(int sig) {
 
 // std::terminate handler -- called when a C++ exception escapes all catch blocks
 // or when a noexcept function throws.
-[[noreturn]] void terminate_handler() {
-    static const char msg[] =
-        "{\"success\":false,"
-        "\"engine_version\":\"" CLOUD_SLICER_ENGINE_VERSION "\","
-        "\"error_message\":\"C++ engine crashed: unhandled exception (std::terminate called)\","
-        "\"issues\":[{"
-            "\"level\":\"error\","
-            "\"plate_id\":-1,"
-            "\"object_name\":\"\","
-            "\"z_height\":-1.0,"
-            "\"code\":\"ENGINE_CRASH\","
-            "\"message\":\"C++ engine crashed due to an unhandled exception.\""
-        "}],"
-        "\"plates\":[]}\n";
-
-    ::write(STDERR_FILENO, "\n=== SLICE STATISTICS (JSON) ===\n", 33);
-    ::write(STDERR_FILENO, msg, sizeof(msg) - 1);
-    ::write(STDERR_FILENO, "\n=== END STATISTICS ===\n", 24);
-
-    if (g_emergency_json_path[0] != '\0') {
-        int fd = ::open(g_emergency_json_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            ::write(fd, msg, sizeof(msg) - 1);
-            ::close(fd);
-        }
-    }
+[[noreturn]] void terminate_handler()
+{
+    write_emergency_json(
+        "C++ engine crashed: unhandled exception (std::terminate called)",
+        "C++ engine crashed due to an unhandled exception.");
 
     std::abort();
 }
@@ -290,7 +292,8 @@ CliArgs parse_args(int argc, char* argv[]) {
 
 } // namespace
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
     using namespace Slic3r;
 
     boost::nowide::args a(argc, argv);
@@ -396,9 +399,11 @@ int main(int argc, char* argv[]) {
 
     // --- Setup temporary directory (process-isolated to avoid multi-process collisions) ---
     {
-        auto pid = get_current_pid();
-        auto ts  = std::chrono::system_clock::now().time_since_epoch().count();
-        auto unique_dir = boost::filesystem::temp_directory_path()
+        int pid = get_current_pid();
+        long long ts = std::chrono::system_clock::now()
+            .time_since_epoch().count();
+        boost::filesystem::path unique_dir =
+            boost::filesystem::temp_directory_path()
             / (std::string("orca_slice_") + std::to_string(pid) + "_" + std::to_string(ts));
         boost::filesystem::create_directories(unique_dir);
         cfg.temp_dir = unique_dir.string();

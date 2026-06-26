@@ -106,10 +106,9 @@ private:
     void validate_config();
     void load_system_presets();
     void validate_presets();
-    bool validate_printer_official(bool enforce = true);
     Slic3r::DynamicPrintConfig build_full_print_config();
     bool validate_filament_official(bool enforce = true);
-    bool has_inline_filament_config(int ext_idx);
+    bool has_inline_filament_config(int ext_idx) const;
     void apply_printer_official_preset();
     void apply_printer_preset_config();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
@@ -124,8 +123,9 @@ private:
     void build_statistics();
 
     // --- Per-plate sub-stages ---
-    int  filter_instances(int plate_id, std::set<int>& identify_ids);
-    bool run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Slic3r::Vec3d& origin);
+    int  filter_instances(int plate_id, std::set<int>& plate_instance_ids);
+    bool run_build_volume_check(int plate_id, const std::set<int>& plate_instance_ids,
+                                const Slic3r::Vec3d& origin);
     Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);
     bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
     bool run_validation(int plate_id, Slic3r::Print& print);
@@ -145,11 +145,6 @@ private:
     bool m_any_postprocess_warning = false;
     int m_error_type = EXIT_OK;  // most severe exit code encountered
 
-    // Fixed-size buffer for OOM-safe error message formatting in catch blocks.
-    // Avoids heap allocation when memory is exhausted.
-    static constexpr size_t EMERGENCY_MSG_SIZE = 256;
-    char m_emergency_msg[EMERGENCY_MSG_SIZE] = {};
-
     // TBB thread count control (kept alive for entire slicing duration)
     std::unique_ptr<tbb::global_control> m_tbb_control;
 
@@ -160,7 +155,7 @@ private:
         Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
     PlateDataPtrs m_plate_data;
     std::vector<Slic3r::Preset*> m_project_presets;
-    bool m_is_bbl_3mf = false;
+    bool m_is_BBL_3mf = false;
     Slic3r::Semver m_file_version;
 
     // Preset validation (requires system profiles at resources_dir/profiles/)
@@ -180,6 +175,7 @@ private:
     };
     std::vector<BakedInstanceZ> m_baked_instance_z;
 
-    static constexpr double DEFAULT_PLATE_WIDTH = 200.0;
-    static constexpr double DEFAULT_PLATE_DEPTH = 200.0;
+    static constexpr double DEFAULT_PLATE_WIDTH  = 200.0;
+    static constexpr double DEFAULT_PLATE_DEPTH  = 200.0;
+    static constexpr double DEFAULT_PRINTABLE_HEIGHT = 100.0;
 };

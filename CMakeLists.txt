@@ -8,6 +8,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Compiler warning flags (coding-standards §2.3)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra)
+endif()
+
 # ==================================================================
 # Linux standalone mode: build orca-slice-engine against a pre-built
 # OrcaSlicer build tree (liblibslic3r.a + deps).

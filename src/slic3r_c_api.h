@@ -7,8 +7,7 @@
  * SPIKE 001: Minimum Viable C API — "Slice This File"
  */
 
-#ifndef SLIC3R_C_API_H
-#define SLIC3R_C_API_H
+#pragma once
 
 #include <stddef.h>   /* size_t */
 
@@ -74,10 +73,9 @@ SLIC3R_API void slic3r_enable_file_log(const char* path);
  *   "timeout_seconds": 0,   // 0 = no timeout
  *   "max_size_mb": 200,     // max input file size, 0 = no limit
  *   "cancel_file": "",      // watchdog file for external cancellation
- *   "thread_count": 0,       // TBB thread count limit (0 = use all cores)
- *   "allow_custom_presets": false,
- *   "no_filament_substitution": false,
- *   "keep_custom_gcode": false
+ *   "thread_count": 0,        // TBB thread count limit (0 = use all cores)
+ *   "substitute_printer": true,   // substitute custom printer preset with official
+ *   "substitute_filaments": true  // substitute custom filament presets with official
  * }
  *
  * stats_json format (on success):
@@ -136,4 +134,3 @@ SLIC3R_API int slic3r_is_cancelled(slic3r_ctx_t* ctx);
 }
 #endif
 
-#endif /* SLIC3R_C_API_H */

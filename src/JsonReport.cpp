@@ -1,22 +1,23 @@
 ﻿#include "JsonReport.hpp"
 #include "Utils.hpp"
+#include "Types.hpp"
 
-#include <cmath>
-#include <fstream>
-#include <iostream>
+#include "libslic3r/libslic3r.h"
 
 #include <boost/log/trivial.hpp>
 #include <nlohmann/json.hpp>
 
-#include "libslic3r/libslic3r.h"
-#include "Types.hpp"
+#include <cmath>
+#include <fstream>
+#include <iostream>
 
 using ordered_json = nlohmann::ordered_json;
 
 // Keep base64_encode — nlohmann doesn't provide base64
 static constexpr char BASE64_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static std::string base64_encode(const unsigned char* input, size_t input_len) {
+static std::string base64_encode(const unsigned char* input, size_t input_len)
+{
     std::string result;
     result.reserve((input_len + 2) / 3 * 4);
 
@@ -38,7 +39,8 @@ static std::string base64_encode(const unsigned char* input, size_t input_len) {
 }
 
 // Round to 2 decimal places — matches the original std::setprecision(2) output
-static double round2(double v) {
+static double round2(double v)
+{
     if (!std::isfinite(v)) return 0.0;
     return std::round(v * 100.0) / 100.0;
 }

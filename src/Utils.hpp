@@ -44,8 +44,17 @@ std::string generate_output_path(
     OutputFormat format,
     bool single_plate);
 
-// Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic)
-inline int compute_column_count(int count) {
+/**
+ * Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic).
+ *
+ * @param count Number of items to arrange in the grid.
+ * @return Optimal column count (minimum 1).
+ */
+inline int compute_column_count(int count)
+{
+    if (count <= 0)
+        return 1;
+
     const float value = std::sqrt(static_cast<float>(count));
     const float round_value = std::round(value);
     return static_cast<int>((value > round_value) ? (round_value + 1.0f) : round_value);

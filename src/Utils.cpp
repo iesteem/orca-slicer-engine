@@ -1,16 +1,17 @@
 ﻿#include "Utils.hpp"
 
+#include "libslic3r/libslic3r.h"
+
+#include <boost/log/trivial.hpp>
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
 
-#include <boost/log/trivial.hpp>
-
-#include "libslic3r/libslic3r.h"
-
 // Map ConfigOptionType enum to JSON-friendly string
-static const char* config_type_name(int type) {
+static const char* config_type_name(int type)
+{
     bool is_vector = (type & int(Slic3r::coVectorType)) != 0;
     int base = is_vector ? (type & ~int(Slic3r::coVectorType)) : type;
     switch (base) {
@@ -27,23 +28,35 @@ static const char* config_type_name(int type) {
     }
 }
 
-static std::string json_escape(const std::string& s) {
+static std::string json_escape(const std::string& s)
+{
     std::string out;
     out.reserve(s.size() + 8);
-    for (char c : s) {
+    for (const char c : s) {
         switch (c) {
             case '"':  out += "\\\""; break;
             case '\\': out += "\\\\"; break;
             case '\n': out += "\\n";  break;
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
-            default:   out += c;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char hex[8];
+                    snprintf(hex, sizeof(hex), "\\u%04x",
+                             static_cast<unsigned char>(c));
+                    out += hex;
+                } else {
+                    out += c;
+                }
         }
     }
     return out;
 }
 
-std::string dump_config_schema(const Slic3r::ConfigDef& config_def) {
+std::string dump_config_schema(const Slic3r::ConfigDef& config_def)
+{
     std::string json = "{";
     bool first_key = true;
 
@@ -122,7 +135,8 @@ std::string dump_config_schema(const Slic3r::ConfigDef& config_def) {
     return json;
 }
 
-void log_plate_message(const char* stage, const char* level, int plate, const std::string& msg)
+void log_plate_message(const char* stage, const char* level,
+                       int plate, const std::string& msg)
 {
     std::string full = std::string(stage) + " " + level + ": Plate " + std::to_string(plate) + ": " + msg;
     if (std::strcmp(level, "ERROR") == 0)
@@ -151,7 +165,8 @@ std::pair<std::string, std::string> format_exception_context(const Slic3r::Strin
     return {obj_name, opt_hint};
 }
 
-void print_usage(const char* program_name) {
+void print_usage(const char* program_name)
+{
     std::cout << "OrcaSlicer Cloud Slicing Engine v" << SLIC3R_VERSION << std::endl;
     std::cout << std::endl;
     std::cout << "Usage: " << program_name << " input.3mf [OPTIONS]" << std::endl;
@@ -231,15 +246,22 @@ void default_status_callback(
     }
 }
 
-std::string format_time_hhmmss(float seconds) {
-    if (!std::isfinite(seconds) || seconds < 0) return "00:00:00";
-    int total_secs = static_cast<int>(seconds);
-    int hours = total_secs / 3600;
-    int mins = (total_secs % 3600) / 60;
-    int secs = total_secs % 60;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%02d:%02d:%02d", hours, mins, secs);
-    return std::string(buf);
+std::string format_time_hhmmss(float seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0)
+        return "00:00:00";
+
+    constexpr int SECONDS_PER_HOUR   = 3600;
+    constexpr int SECONDS_PER_MINUTE = 60;
+
+    const int total_secs = static_cast<int>(seconds);
+    const int hours = total_secs / SECONDS_PER_HOUR;
+    const int mins  = (total_secs % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
+    const int secs  = total_secs % SECONDS_PER_MINUTE;
+
+    std::array<char, 32> buf;
+    snprintf(buf.data(), buf.size(), "%02d:%02d:%02d", hours, mins, secs);
+    return std::string(buf.data());
 }
 
 std::string generate_output_path(

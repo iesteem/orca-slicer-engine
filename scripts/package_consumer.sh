@@ -2,12 +2,12 @@
 set -eo pipefail
 
 # orca-slice-engine consumer 模式打包脚本
-# 用法: ./package_consumer.sh
+# 用法: ./package_consumer.sh [OrcaSlicer_dir]
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${PROJECT_DIR}/build-dll"
-ORCASLICER_DIR="/home/joyx/Desktop/code/OrcaSlicer"
+ORCASLICER_DIR="${1:-/home/joyx/Desktop/code/OrcaSlicer}"
 PKG_DIR="${PROJECT_DIR}/package"
 
 echo "=== Packaging orca-slice-engine (consumer mode) ==="
