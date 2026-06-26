@@ -108,7 +108,7 @@ private:
     void validate_presets();
     Slic3r::DynamicPrintConfig build_full_print_config();
     bool validate_filament_official(bool enforce = true);
-    bool has_inline_filament_config(int ext_idx) const;
+    bool has_inline_filament_config(int ext_idx);
     void apply_printer_official_preset();
     void apply_printer_preset_config();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,

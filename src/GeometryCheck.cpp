@@ -55,7 +55,7 @@ Issue make_issue(const std::string& level, int plate_id,
     if (level == "error")
         return make_error(plate_id, code, message, object_name, suggestion);
     else if (level == "tip")
-        return make_tip(plate_id, code, message, object_name, suggestion);
+        return make_tip(plate_id, code, message);
     else
         return make_warning(plate_id, code, message, object_name, suggestion);
 }

@@ -198,7 +198,7 @@ constexpr const char* GCODE_KEYS[] = {
  * @param src Source config to copy G-code values from.
  */
 inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
-                                       const DynamicPrintConfig& src)
+                                       DynamicPrintConfig& src)
 {
     for (const auto& key : GCODE_KEYS) {
         const auto* s = src.option(key, false);
@@ -805,7 +805,7 @@ void SliceEngine::apply_printer_preset_config()
     }
 }
 
-bool SliceEngine::has_inline_filament_config(int ext_idx) const
+bool SliceEngine::has_inline_filament_config(int ext_idx)
 {
     // Check whether the config has per-extruder filament parameters for
     // the given extruder index, even when no named filament preset exists.
