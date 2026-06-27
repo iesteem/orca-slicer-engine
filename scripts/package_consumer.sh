@@ -17,14 +17,14 @@ rm -rf "${PKG_DIR}"
 mkdir -p "${PKG_DIR}"/{bin,lib,resources/{profiles,printers,info}}
 
 # 1. 拷贝二进制
-echo "[1/4] Copying binary..."
+echo "[1/3] Copying binary..."
 cp -f "${BUILD_DIR}/orca-slice-engine" "${PKG_DIR}/bin/"
 echo "  bin/orca-slice-engine"
 
 # 2. 拷贝共享库
-echo "[2/4] Copying shared library..."
+echo "[2/3] Copying shared library..."
 # Detect actual .so version file (matches current CMake VERSION)
-SO_FILE=$(ls "${BUILD_DIR}/libslic3r.so."*.*.* 2>/dev/null | head -1)
+SO_FILE=$(ls "${BUILD_DIR}/libslic3r.so."*.*.* 2>/dev/null | sort -V | tail -1)
 cp -f "${SO_FILE}" "${PKG_DIR}/lib/"
 SO_BASENAME=$(basename "${SO_FILE}")
 ln -sf "${SO_BASENAME}" "${PKG_DIR}/lib/libslic3r.so.2"
@@ -32,7 +32,7 @@ ln -sf libslic3r.so.2      "${PKG_DIR}/lib/libslic3r.so"
 echo "  lib/${SO_BASENAME}"
 
 # 3. 拷贝资源（仅引擎必需的 vendor）
-echo "[3/4] Copying resources (Snapmaker + OrcaFilamentLibrary)..."
+echo "[3/3] Copying resources (Snapmaker + OrcaFilamentLibrary)..."
 for vendor in Snapmaker OrcaFilamentLibrary; do
     cp "${ORCASLICER_DIR}/resources/profiles/${vendor}.json" "${PKG_DIR}/resources/profiles/"
     cp -r "${ORCASLICER_DIR}/resources/profiles/${vendor}" "${PKG_DIR}/resources/profiles/"
@@ -47,19 +47,6 @@ echo "  printers/"
 cp -r "${ORCASLICER_DIR}/resources/info/"* "${PKG_DIR}/resources/info/"
 echo "  info/"
 
-# 4. 生成运行脚本
-echo "[4/4] Generating run script..."
-cat > "${PKG_DIR}/run.sh" << 'RUNEOF'
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-export LD_LIBRARY_PATH="${SCRIPT_DIR}/lib:${LD_LIBRARY_PATH}"
-exec "${SCRIPT_DIR}/bin/orca-slice-engine" \
-    -r "${SCRIPT_DIR}/resources" \
-    "$@"
-RUNEOF
-chmod +x "${PKG_DIR}/run.sh"
-echo "  run.sh"
-
 # 统计
 EXE_SIZE=$(du -h "${PKG_DIR}/bin/orca-slice-engine" | cut -f1)
 SO_SIZE=$(du -h "${PKG_DIR}/lib/${SO_BASENAME}" | cut -f1)
@@ -73,5 +60,5 @@ echo "    bin/orca-slice-engine  ${EXE_SIZE}"
 echo "    lib/libslic3r.so       ${SO_SIZE}"
 echo "    total                  ${TOTAL_SIZE}"
 echo ""
-echo "  Usage: ${PKG_DIR}/run.sh <input.3mf>"
+echo "  Usage: LD_LIBRARY_PATH=${PKG_DIR}/lib ${PKG_DIR}/bin/orca-slice-engine -r ${PKG_DIR}/resources <input.3mf>"
 echo "====================================================="

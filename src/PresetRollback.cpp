@@ -180,39 +180,23 @@ bool PresetRollback::rollback(DynamicPrintConfig& config,
         << " from type=\"" << filament_type << "\" to base preset \""
         << base->name << "\"";
 
-    // 3. 将基础大类预设的 per-extruder 关键参数写入 config
-    const char* per_filament_keys[] = {
-        "filament_diameter",
-        "filament_density",
-        "filament_cost",
-        "filament_type",
-        "filament_colour",
-        "filament_vendor",
-        "nozzle_temperature",
-        "nozzle_temperature_initial_layer",
-        nullptr
-    };
+    // 3. Full overwrite: all per-extruder values from the base-category preset.
+    //    Same strategy as substitute_filament_params() — no user values preserved.
+    const size_t dst_idx = static_cast<size_t>(extruder_idx);
+    for (auto it = base->config.cbegin(); it != base->config.cend(); ++it) {
+        const auto& key     = it->first;
+        const auto& src_opt = it->second;
 
-    for (int k = 0; per_filament_keys[k]; ++k) {
-        const char* key = per_filament_keys[k];
+        ConfigOption* dst_opt = config.option(key, true);
+        if (!dst_opt) continue;
 
-        // 源：基础大类预设的 config
-        const ConfigOption* src = base->config.option(key);
-        if (!src) continue;
-
-        auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src);
-        if (!src_vec || src_vec->size() == 0) continue;
-
-        // 目标：m_config 中对应 key 的 per-extruder 数组
-        ConfigOption* dst = config.option(key, true);
-        if (!dst) continue;
-
-        auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst);
+        auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
         if (!dst_vec) continue;
-        if (extruder_idx >= static_cast<int>(dst_vec->size())) continue;
+        if (dst_vec->size() <= dst_idx) continue;
 
-        // 从源的第 0 个元素复制到目标的 extruder_idx 位置
-        dst_vec->set_at(src_vec, extruder_idx, 0);
+        auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
+        if (src_vec && src_vec->size() > 0)
+            dst_vec->set_at(src_vec, dst_idx, 0);
     }
 
     // 4. 更新 filament_settings_id 为基础大类名称

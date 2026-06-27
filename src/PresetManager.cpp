@@ -30,10 +30,31 @@ namespace {
 
 // --- Config helpers ---
 
-// Fill nil/missing values in dst from src. Scalar options use set();
-// vector options use set_at() per index for nil slots only.
+// Full overwrite: copy all values from src into dst unconditionally.
+// Scalar options use set(); vector options use set_at() per index.
 // Non-existent keys in dst are skipped.  Used by preset substitution
-// and printer config layering to fill gaps while preserving user values.
+// to completely replace user values with official preset values.
+inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
+{
+    for (auto it = src.cbegin(); it != src.cend(); ++it) {
+        const auto& key   = it->first;
+        auto       dst_opt = dst.option(key, false);
+        if (!dst_opt) continue;
+
+        if (dst_opt->is_scalar()) {
+            dst_opt->set(it->second.get());
+        } else {
+            auto dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+            auto src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
+            if (!dst_vec || !src_vec) continue;
+            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
+                dst_vec->set_at(src_vec, i, i);
+        }
+    }
+}
+
+// Fill nil/missing values in dst from src.  Retained for use in
+// build_full_print_config() where we only want to fill gaps.
 inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
 {
     for (auto it = src.cbegin(); it != src.cend(); ++it) {
@@ -73,37 +94,6 @@ constexpr double NOZZLE_FORMAT_EPSILON    = 0.05;
 constexpr double Z_COMPARISON_EPSILON     = 1e-9;
 constexpr double Z_RATIO_EPSILON          = 1e-6;
 constexpr const char* BED_TEMP_WARNING_CODE = "1000C001";
-
-// Shared G-code keys that must be overwritten from the official printer preset
-// during printer substitution.  Both substitute_printer_params() and
-// apply_printer_official_preset() use this list.
-constexpr const char* GCODE_KEYS[] = {
-    "machine_start_gcode", "machine_end_gcode",
-    "before_layer_change_gcode", "layer_change_gcode",
-    "change_filament_gcode", "machine_pause_gcode",
-    "template_custom_gcode", "printing_by_object_gcode",
-    "time_lapse_gcode",
-};
-
-/**
- * Overwrite G-code config keys in `dst` from `src`.
- *
- * Unlike fill_nil_from, this always overwrites existing values because
- * Bambu-specific G-code variables are not recognized by Snapmaker's
- * PlaceholderParser.  Cloud slicing must always use official G-code.
- *
- * @param dst Destination config to write into.
- * @param src Source config to copy G-code values from.
- */
-inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
-                                       DynamicPrintConfig& src)
-{
-    for (const auto& key : GCODE_KEYS) {
-        const auto* s = src.option(key, false);
-        if (s && dst.has(key))
-            dst.set_key_value(key, s->clone());
-    }
-}
 
 constexpr double DEFAULT_PLATE_WIDTH       = 200.0;
 constexpr double DEFAULT_PLATE_DEPTH       = 200.0;
@@ -569,8 +559,7 @@ void PresetManager::substitute_filament_params(ConfigOptionStrings* filament_ids
         if (!dst_vec) continue;
         if (dst_vec->size() <= dst_idx) continue;
 
-        if (!dst_vec->is_nil(dst_idx)) continue;
-
+        // Full overwrite: all filament values come from the official preset.
         auto src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
         if (src_vec && src_vec->size() > 0)
             dst_vec->set_at(src_vec, dst_idx, 0);
@@ -631,9 +620,7 @@ void PresetManager::substitute_printer_params(const std::string& original_name,
         ForwardCompatibilitySubstitutionRule::EnableSilent,
         key_values, reason);
 
-    fill_nil_from(m_ctx.config, parent_cfg);
-
-    overwrite_gcode_keys_from(m_ctx.config, parent_cfg);
+    overwrite_all_keys_from(m_ctx.config, parent_cfg);
 
     m_ctx.config.set_key_value("printer_settings_id",
         new ConfigOptionString(parent_name));
@@ -697,9 +684,7 @@ void PresetManager::apply_printer_official_preset()
             ForwardCompatibilitySubstitutionRule::EnableSilent,
             key_values, reason);
 
-        fill_nil_from(m_ctx.config, official_cfg);
-
-        overwrite_gcode_keys_from(m_ctx.config, official_cfg);
+        overwrite_all_keys_from(m_ctx.config, official_cfg);
 
         m_ctx.config.set_key_value("printer_settings_id",
             new ConfigOptionString(preset_name));
