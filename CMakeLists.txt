@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
-project(orca-slice-engine VERSION 02.01.18 LANGUAGES C CXX)
+project(orca-slice-engine VERSION 02.02.01 LANGUAGES C CXX)
 option(BUILD_SLIC3R_DLL "Build slic3r shared library from engine source (DLL on Windows, SO on Linux). Requires libslic3r SDK." OFF)
+option(ORCA_STANDALONE "Linux standalone mode: statically link against OrcaSlicer build tree" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
@@ -15,15 +16,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ==================================================================
-# Linux standalone mode: build orca-slice-engine against a pre-built
-# OrcaSlicer build tree (liblibslic3r.a + deps).
+# Linux standalone mode (opt-in): statically link against OrcaSlicer
+# build tree (liblibslic3r.a + deps).
 #
-#   cmake -S . -B build-linux \
+#   cmake -S . -B build -DORCA_STANDALONE=ON \
 #       -DORCASLICER_BUILD_DIR=<OrcaSlicer build-engine dir> \
 #       -DORCASLICER_SOURCE_DIR=<OrcaSlicer source dir>
 # ==================================================================
 
-if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE AND NOT DEFINED ORCA_CONSUMER_MODE)
+if(ORCA_STANDALONE)
     set(ORCASLICER_BUILD_DIR "" CACHE PATH "OrcaSlicer build-engine directory")
     set(ORCASLICER_SOURCE_DIR "" CACHE PATH "OrcaSlicer source directory")
 
@@ -32,7 +33,7 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE AND NOT DEFINED ORCA_CONSUMER_MOD
             "Linux build requires:\n"
             "  -DORCASLICER_BUILD_DIR=<path/to/OrcaSlicer/build-engine>\n"
             "  -DORCASLICER_SOURCE_DIR=<path/to/OrcaSlicer>\n"
-            "  or -DORCA_CONSUMER_MODE=ON to link against prebuilt libslic3r.so")
+            "  Omit -DORCA_STANDALONE for default consumer mode (dynamic linking).")
     endif()
 
     set(DEPS_DIR "${ORCASLICER_SOURCE_DIR}/deps/build/destdir/usr/local")
@@ -170,7 +171,7 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE AND NOT DEFINED ORCA_CONSUMER_MOD
         -DUSE_TBB
         -DTBB_USE_CAPTURED_EXCEPTION=0
         -DBOOST_ALL_NO_LIB
-        "CLOUD_SLICER_ENGINE_VERSION=\"v02.01.18\""
+        "CLOUD_SLICER_ENGINE_VERSION=\"v02.02.01\""
     )
 
     # ---- Link all static libraries ----
@@ -502,7 +503,7 @@ if(UNIX AND NOT APPLE)
         C_VISIBILITY_PRESET hidden
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
-        VERSION 02.01.18
+        VERSION 02.02.01
         SOVERSION 2
     )
 
@@ -524,9 +525,11 @@ endif()
 endif()
 
 # ==================================================================
-# Consumer mode: pure C exe against prebuilt slic3r (Windows / macOS)
+# Consumer mode (default): pure C exe against prebuilt slic3r library.
+# On Linux, point CMAKE_PREFIX_PATH to the directory containing
+# libslic3r.so (e.g. the build-dll output or a prebuilt SDK).
 # ==================================================================
-if(NOT BUILD_SLIC3R_DLL AND (NOT UNIX OR APPLE OR DEFINED ORCA_CONSUMER_MODE))
+if(NOT BUILD_SLIC3R_DLL AND NOT ORCA_STANDALONE)
     find_library(SLIC3R_LIBRARY slic3r
         HINTS "${CMAKE_PREFIX_PATH}/lib" "${CMAKE_PREFIX_PATH}/bin" "${CMAKE_PREFIX_PATH}"
         REQUIRED)
