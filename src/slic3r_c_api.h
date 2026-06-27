@@ -28,14 +28,27 @@ extern "C" {
 /* ---- Opaque handle ---- */
 typedef struct slic3r_ctx_s slic3r_ctx_t;
 
-/* ---- Status codes ---- */
+/* ---- Status codes ----
+ * Values 0-7 match the C++ EXIT_* constants in ExitCodes.hpp exactly;
+ * slic3r_slice() returns engine.exit_code() directly without translation.
+ *
+ *   0  SLIC3R_OK              成功
+ *   1  SLIC3R_ERR_ARGS        命令行参数无效
+ *   2  SLIC3R_ERR_FILE_NOT_FOUND  输入文件未找到
+ *   3  SLIC3R_ERR_LOAD        3MF 加载/解析失败
+ *   4  SLIC3R_ERR_SLICING     切片引擎异常（std::exception / 超时 / 致命SlicingError）
+ *   5  SLIC3R_ERR_EXPORT      GCode 导出失败（I/O错误 / 配置异常 / 取消）
+ *   6  SLIC3R_ERR_PREPROCESS  切片前校验错误（配置/输入/预设不合法）
+ *   7  SLIC3R_ERR_POSTPROCESS 切片后致命错误（GCode已生成但内容不可用，如空层/刀路超出打印范围）
+ *  99  SLIC3R_ERR_INTERNAL    C++ 异常穿透边界（非预期内部错误）
+ */
 #define SLIC3R_OK                  0
 #define SLIC3R_ERR_ARGS            1
 #define SLIC3R_ERR_FILE_NOT_FOUND  2
 #define SLIC3R_ERR_LOAD            3
 #define SLIC3R_ERR_SLICING         4
 #define SLIC3R_ERR_EXPORT          5
-#define SLIC3R_ERR_VALIDATION      6
+#define SLIC3R_ERR_PREPROCESS      6
 #define SLIC3R_ERR_POSTPROCESS     7
 #define SLIC3R_ERR_INTERNAL        99
 

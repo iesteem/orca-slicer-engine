@@ -304,6 +304,34 @@ void PlateProcessor::process_plate(int plate_id) {
         }
 
         // Success
+        // Check for EmptyGcodeLayers before post-processing.
+        // EmptyGcodeLayers means the plate has no valid layers; the G-code file
+        // exists but is effectively empty.  Skip post-processing and flag as failed.
+        {
+            bool has_empty_gcode_layers = false;
+            for (const auto& iss : slice_result.issues) {
+                if (iss.code == "PRINT_EMPTY_GCODE_LAYERS") {
+                    has_empty_gcode_layers = true;
+                    break;
+                }
+            }
+            if (has_empty_gcode_layers) {
+                boost::filesystem::remove(slice_result.gcode_path);
+                BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                    << ": empty G-code layers, G-code file discarded";
+                for (auto& iss : slice_result.issues)
+                    m_ctx.stats.issues.push_back(std::move(iss));
+                slice_result.issues.clear();
+                // Free visualization memory.
+                slice_result.gcode_result.moves.clear();
+                slice_result.gcode_result.moves.shrink_to_fit();
+                slice_result.gcode_result.lines_ends.clear();
+                slice_result.gcode_result.lines_ends.shrink_to_fit();
+                m_ctx.plate_results[plate_id] = slice_result;
+                return;  // Skip normal post-processing
+            }
+        }
+
         run_postprocessing(plate_id, slice_result);
 
         // Free G-code visualization data that the cloud engine never uses.
@@ -502,7 +530,7 @@ bool PlateProcessor::run_build_volume_check(int plate_id, const std::set<int>& p
     if (has_partly_outside) {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects outside build volume, skipping";
         m_ctx.any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         return false;
     }
     return true;
@@ -770,7 +798,7 @@ bool PlateProcessor::run_validation(int plate_id, Print& print) {
             m_ctx.stats.issues.push_back(make_error(plate_id, ecode,
                 err.string + opt_hint, obj_name));
             m_ctx.any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
             return false;
         }
     }
@@ -892,20 +920,35 @@ bool PlateProcessor::export_gcode(int plate_id, Print& print, PlateSliceResult& 
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
         // Collect PrintBase warnings (EmptyGcodeLayers, G-code overlap, etc.)
-        // CRITICAL warnings (e.g. EmptyGcodeLayers) are mapped to "warning" level
-        // (not "error") because G-code was generated successfully.  The desktop GUI
-        // shows them as modal dialogs for UX prominence, not as blocking failures.
-        // Using a distinct code preserves severity for API consumers while keeping
-        // the exit code, success flags, and statistics collection correct.
+        // For message_id-aware warnings (SlicingNotificationType), map to
+        // specific error codes so downstream consumers can route them
+        // appropriately.  Desktop CLI treats EmptyGcodeLayers and GcodeOverlap
+        // as CLI_SLICING_ERROR (hard exit).  Cloud engine flags the plate but
+        // continues processing remaining plates.
         for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step) {
             auto wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
             for (const auto& w : wstate.warnings) {
                 if (!w.current) continue;
-                bool is_critical = (w.level == PrintStateBase::WarningLevel::CRITICAL);
-                if (is_critical)
+                auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
+                if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers) {
+                    // EmptyGcodeLayers: the plate has ranges with no layers.
+                    // Desktop CLI: CLI_SLICING_ERROR (hard exit).
+                    // Cloud engine: flag the plate as failed but continue other plates.
+                    result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
+                        "Empty G-code layers detected: " + w.message));
+                    m_ctx.any_error = true;
+                    set_error_type(EXIT_POSTPROCESS_ERROR);
+                } else if (msg_type == PrintStateBase::SlicingGcodeOverlap) {
+                    // GcodeOverlap: reserved for future G-code overlap detection.
+                    // Desktop CLI: CLI_SLICING_ERROR.
+                    result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
+                        "G-code overlap detected: " + w.message));
+                    m_ctx.any_postprocess_warning = true;
+                } else if (w.level == PrintStateBase::WarningLevel::CRITICAL) {
                     result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
-                else
+                } else {
                     result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+                }
             }
         }
 
@@ -969,15 +1012,15 @@ void PlateProcessor::run_postprocessing(int plate_id, PlateSliceResult& result) 
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
 
-    // Toolpaths outside print volume. Desktop uses this only for
-    // GCode preview visualization, not to block gcode output.
+    // Toolpaths outside print volume. Desktop blocks printing via
+    // is_slice_result_ready_for_print() when toolpath_outside is true.
     if (result.gcode_result.toolpath_outside) {
-        log_plate_message("[Post-processing]", "WARNING", plate_id,
-            "Some toolpaths are outside the printable area.");
-        has_postprocess_warning = true;
-        result.issues.push_back(make_warning(plate_id, "TOOLPATH_OUTSIDE",
-            "Some toolpaths are outside the printable area. "
-            "The object may not print correctly."));
+        log_plate_message("[Post-processing]", "ERROR", plate_id,
+            "Toolpaths extend outside the printable area.");
+        has_postprocess_error = true;
+        result.issues.push_back(make_error(plate_id, "TOOLPATH_OUTSIDE",
+            "Toolpaths extend outside the printable area. "
+            "The object exceeds the printer's build volume and cannot be printed safely."));
     }
 
     // Tool height outside check.
@@ -1051,6 +1094,6 @@ void PlateProcessor::run_postprocessing(int plate_id, PlateSliceResult& result) 
         m_ctx.any_postprocess_warning = true;
     if (has_postprocess_error) {
         m_ctx.any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_POSTPROCESS_ERROR);  // 切片后致命错误
     }
 }

@@ -239,7 +239,7 @@ int StatisticsBuilder::exit_code() const {
     if (m_ctx.error_type > EXIT_OK)
         return m_ctx.error_type;
     if (m_ctx.any_error)
-        return EXIT_VALIDATION_ERROR;
+        return EXIT_PREPROCESS_ERROR;
     // Post-processing warnings are non-fatal and gcode has been generated.
     // Treat as success (exit 0) per alignment with desktop behavior.
     if (m_ctx.any_postprocess_warning)
@@ -267,7 +267,7 @@ void StatisticsBuilder::build_statistics() {
         plate_stats.success = !plate_has_error;
         if (plate_has_error) {
             m_ctx.any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
         }
         if (plate_has_warning || result.has_postprocess_warning)
             m_ctx.any_postprocess_warning = true;

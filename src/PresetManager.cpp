@@ -53,6 +53,27 @@ inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintC
     }
 }
 
+// G-code keys that must always be overwritten from the official printer preset.
+// Bambu-specific G-code variables are not recognized by Snapmaker's
+// PlaceholderParser.  Cloud slicing must always use official G-code.
+constexpr const char* GCODE_KEYS[] = {
+    "machine_start_gcode", "machine_end_gcode",
+    "before_layer_change_gcode", "layer_change_gcode",
+    "change_filament_gcode", "machine_pause_gcode",
+    "template_custom_gcode", "printing_by_object_gcode",
+    "time_lapse_gcode",
+};
+
+inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
+                                      const DynamicPrintConfig& src)
+{
+    for (const auto& key : GCODE_KEYS) {
+        const auto* s = src.option(key, false);
+        if (s && dst.has(key))
+            dst.set_key_value(key, s->clone());
+    }
+}
+
 // Fill nil/missing values in dst from src.  Retained for use in
 // build_full_print_config() where we only want to fill gaps.
 inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
@@ -263,7 +284,7 @@ void PresetManager::apply_printer_preset_config()
         std::string msg = "System presets not available; cannot verify printer configuration.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_ctx.any_error = true;
-        if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+        if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
         m_ctx.stats.error_message = msg;
         m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
         return;
@@ -281,7 +302,7 @@ void PresetManager::apply_printer_preset_config()
                 "Verify the resources directory contains Snapmaker U1 machine profiles.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_ctx.any_error = true;
-            if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+            if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
             m_ctx.stats.error_message = msg;
             m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
         };
@@ -420,8 +441,8 @@ bool PresetManager::validate_filament_official(bool enforce)
             BOOST_LOG_TRIVIAL(error) << msg;
             m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
             m_ctx.any_error = true;
-            if (EXIT_VALIDATION_ERROR > m_ctx.error_type)
-                m_ctx.error_type = EXIT_VALIDATION_ERROR;
+            if (EXIT_PREPROCESS_ERROR > m_ctx.error_type)
+                m_ctx.error_type = EXIT_PREPROCESS_ERROR;
             return false;
         }
 
@@ -525,8 +546,8 @@ bool PresetManager::validate_filament_official(bool enforce)
                 m_ctx.stats.issues.push_back(
                     make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
                 m_ctx.any_error = true;
-                if (EXIT_VALIDATION_ERROR > m_ctx.error_type)
-                    m_ctx.error_type = EXIT_VALIDATION_ERROR;
+                if (EXIT_PREPROCESS_ERROR > m_ctx.error_type)
+                    m_ctx.error_type = EXIT_PREPROCESS_ERROR;
                 return false;
             }
         }
@@ -534,7 +555,7 @@ bool PresetManager::validate_filament_official(bool enforce)
 
     if (any_error) {
         m_ctx.any_error = true;
-        if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+        if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
     }
 
     return !any_error;
@@ -582,7 +603,7 @@ bool PresetManager::validate_printer_model()
         std::string msg = "Printer model is missing. Only Snapmaker U1 is supported.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_ctx.any_error = true;
-        if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+        if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
         m_ctx.stats.error_message = msg;
         m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_MODEL_MISSING", msg));
         return false;
@@ -594,7 +615,7 @@ bool PresetManager::validate_printer_model()
                         + "\". Only Snapmaker U1 is supported.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_ctx.any_error = true;
-        if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+        if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
         m_ctx.stats.error_message = msg;
         m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_MODEL_UNSUPPORTED", msg));
         return false;
@@ -621,6 +642,8 @@ void PresetManager::substitute_printer_params(const std::string& original_name,
         key_values, reason);
 
     overwrite_all_keys_from(m_ctx.config, parent_cfg);
+
+    overwrite_gcode_keys_from(m_ctx.config, parent_cfg);
 
     m_ctx.config.set_key_value("printer_settings_id",
         new ConfigOptionString(parent_name));
@@ -686,6 +709,8 @@ void PresetManager::apply_printer_official_preset()
 
         overwrite_all_keys_from(m_ctx.config, official_cfg);
 
+        overwrite_gcode_keys_from(m_ctx.config, official_cfg);
+
         m_ctx.config.set_key_value("printer_settings_id",
             new ConfigOptionString(preset_name));
         auto pm = official_cfg.option<ConfigOptionString>("printer_model");
@@ -702,7 +727,7 @@ void PresetManager::apply_printer_official_preset()
             + preset_name + "\": " + e.what();
         BOOST_LOG_TRIVIAL(error) << msg;
         m_ctx.any_error = true;
-        if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+        if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
         m_ctx.stats.error_message = msg;
         m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
         return;
@@ -714,7 +739,7 @@ void PresetManager::apply_printer_official_preset()
             std::string msg = "Printer configuration incomplete: printable_area missing";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_ctx.any_error = true;
-            if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+            if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
             m_ctx.stats.error_message = msg;
             m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
             return;
@@ -733,7 +758,7 @@ void PresetManager::apply_printer_official_preset()
                 "The U1 printer preset was not applied correctly.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_ctx.any_error = true;
-            if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+            if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
             m_ctx.stats.error_message = msg;
             m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
             return;
@@ -745,7 +770,7 @@ void PresetManager::apply_printer_official_preset()
                 "The U1 printer preset was not applied correctly.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_ctx.any_error = true;
-            if (EXIT_VALIDATION_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_VALIDATION_ERROR;
+            if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
             m_ctx.stats.error_message = msg;
             m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
             return;

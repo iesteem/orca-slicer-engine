@@ -78,49 +78,13 @@ public:
 
 int ScopedLogLevel::s_depth = 0;
 
-// --- Config helpers ---
-
-// Fill nil/missing values in dst from src. Scalar options use set();
-// vector options use set_at() per index for nil slots only.
-// Non-existent keys in dst are skipped.  Used by preset substitution
-// and printer config layering to fill gaps while preserving user values.
-inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
-{
-    for (auto it = src.cbegin(); it != src.cend(); ++it) {
-        const auto& key   = it->first;
-        auto       dst_opt = dst.option(key, false);
-        if (!dst_opt) continue;
-
-        if (dst_opt->is_scalar()) {
-            if (dst_opt->is_nil())
-                dst_opt->set(it->second.get());
-        } else {
-            auto dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
-            auto src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
-            if (!dst_vec || !src_vec) continue;
-            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
-                if (dst_vec->is_nil(i))
-                    dst_vec->set_at(src_vec, i, i);
-        }
-    }
-}
-
 // --- Official preset file helpers ---
 
 // Directory constants for system preset files under resources/profiles/
-static const char* const SNAPMK_MACHINE_DIR  = "/profiles/Snapmaker/machine/";
 static const char* const SNAPMK_FILAMENT_DIR = "/profiles/Snapmaker/filament/";
 static const char* const ORCA_FILAMENT_DIR() { // ORCA_FILAMENT_LIBRARY is a runtime string
     static const std::string s = std::string("/profiles/") + PresetBundle::ORCA_FILAMENT_LIBRARY + "/filament/";
     return s.c_str();
-}
-
-// Check whether a machine name matches an official Snapmaker printer preset on disk.
-inline bool is_official_machine_file(const std::string& preset_name)
-{
-    const std::string& res = Slic3r::resources_dir();
-    if (res.empty()) return false;
-    return boost::filesystem::exists(res + SNAPMK_MACHINE_DIR + preset_name + ".json");
 }
 
 // Check whether a filament name matches an official preset on disk
@@ -175,41 +139,7 @@ bool has_fatal_slicing_error_on_plate(const std::vector<Issue>& issues, int plat
 }
 
 // Named constants for magic numbers
-constexpr double NOZZLE_FORMAT_EPSILON    = 0.05;
-constexpr double Z_COMPARISON_EPSILON     = 1e-9;
-constexpr double Z_RATIO_EPSILON          = 1e-6;
 constexpr const char* BED_TEMP_WARNING_CODE = "1000C001";
-
-// Shared G-code keys that must be overwritten from the official printer preset
-// during printer substitution.  Both substitute_printer_params() and
-// apply_printer_official_preset() use this list.
-constexpr const char* GCODE_KEYS[] = {
-    "machine_start_gcode", "machine_end_gcode",
-    "before_layer_change_gcode", "layer_change_gcode",
-    "change_filament_gcode", "machine_pause_gcode",
-    "template_custom_gcode", "printing_by_object_gcode",
-    "time_lapse_gcode",
-};
-
-/**
- * Overwrite G-code config keys in `dst` from `src`.
- *
- * Unlike fill_nil_from, this always overwrites existing values because
- * Bambu-specific G-code variables are not recognized by Snapmaker's
- * PlaceholderParser.  Cloud slicing must always use official G-code.
- *
- * @param dst Destination config to write into.
- * @param src Source config to copy G-code values from.
- */
-inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
-                                       DynamicPrintConfig& src)
-{
-    for (const auto& key : GCODE_KEYS) {
-        const auto* s = src.option(key, false);
-        if (s && dst.has(key))
-            dst.set_key_value(key, s->clone());
-    }
-}
 
 } // namespace
 
@@ -260,7 +190,7 @@ bool SliceEngine::run() {
     // 2. load_3mf()                     — overlay 3MF project + embedded presets
     // 3. PresetManager                  — system presets + validation
     // 4. validate_printer_model()       — verify printer_model == "Snapmaker U1"
-    // 5. apply_printer_official_preset()— fill nil from official, overwrite G-code
+    // 5. PresetManager::apply_printer_official_preset() — overwrite from official
     // 6. validate_filament_official()   — MAY replace filament_settings_id
     m_config.apply(FullPrintConfig::defaults());
 
@@ -304,24 +234,9 @@ bool SliceEngine::run() {
                                + std::chrono::seconds(m_cfg.timeout_seconds);
         }
 
-        {
-            auto geom_issues = run_geometry_checks(m_model);
-            bool has_geom_error = false;
-            for (auto& issue : geom_issues) {
-                if (issue.level == "error")
-                    has_geom_error = true;
-                m_stats.issues.push_back(std::move(issue));
-            }
-            if (has_geom_error) {
-                m_any_error = true;
-                m_stats_builder->set_error_type(EXIT_VALIDATION_ERROR);
-                m_stats.error_message = "Geometry defects were detected in the model file "
-                                        "(non-manifold, self-intersection, or zero volume). "
-                                        "Please repair the model and upload it again.";
-                BOOST_LOG_TRIVIAL(error) << m_stats.error_message;
-                m_stats_builder->build_statistics();
-                return false;
-            }
+        auto geom_issues = run_geometry_checks(m_model);
+        for (auto& issue : geom_issues) {
+            m_stats.issues.push_back(std::move(issue));
         }
 
         if (m_cfg.thread_count > 0) {
@@ -341,7 +256,7 @@ bool SliceEngine::run() {
         if (plates_to_process.empty()) {
             BOOST_LOG_TRIVIAL(error) << "No plates to process";
             m_any_error = true;
-            m_stats_builder->set_error_type(EXIT_VALIDATION_ERROR);
+            m_stats_builder->set_error_type(EXIT_PREPROCESS_ERROR);
             m_stats.error_message = "No plates found in the 3MF file to slice";
             m_stats.issues.push_back(make_error(-1, "NO_PLATES",
                 "No plates found in the 3MF file to slice. "
@@ -757,7 +672,7 @@ void SliceEngine::apply_printer_preset_config()
         std::string msg = "System presets not available; cannot verify printer configuration.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
         return;
@@ -775,7 +690,7 @@ void SliceEngine::apply_printer_preset_config()
                 "Verify the resources directory contains Snapmaker U1 machine profiles.";
             BOOST_LOG_TRIVIAL(error) << msg;
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
             m_stats.error_message = msg;
             m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
         };
@@ -1045,7 +960,7 @@ bool SliceEngine::validate_filament_official(bool enforce)
 
     if (any_error) {
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
     }
 
     return !any_error;
@@ -1101,7 +1016,7 @@ bool SliceEngine::validate_printer_model()
         std::string msg = "Printer model is missing. Only Snapmaker U1 is supported.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_MODEL_MISSING", msg));
         return false;
@@ -1113,180 +1028,13 @@ bool SliceEngine::validate_printer_model()
                         + "\". Only Snapmaker U1 is supported.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_MODEL_UNSUPPORTED", msg));
         return false;
     }
 
     return true;
-}
-
-void SliceEngine::substitute_printer_params(const std::string& original_name,
-                                             const std::string& parent_name)
-{
-    try {
-    BOOST_LOG_TRIVIAL(info) << "Substituting printer preset \"" << original_name
-        << "\" with official parent \"" << parent_name << "\"";
-
-    // Load the parent preset config from disk and merge.
-    // Defer m_config mutations until after fill_nil_from succeeds,
-    // so that a bad_alloc during the merge does not leave m_config
-    // in a corrupted state.
-    std::string parent_path = Slic3r::resources_dir()
-        + SNAPMK_MACHINE_DIR + parent_name + ".json";
-
-    DynamicPrintConfig parent_cfg;
-    std::map<std::string, std::string> key_values;
-    std::string reason;
-    parent_cfg.load_from_json(parent_path,
-        ForwardCompatibilitySubstitutionRule::EnableSilent,
-        key_values, reason);
-
-    fill_nil_from(m_config, parent_cfg);
-
-    overwrite_gcode_keys_from(m_config, parent_cfg);
-
-    // Only now update the printer name — all heavy operations succeeded.
-    m_config.set_key_value("printer_settings_id",
-        new ConfigOptionString(parent_name));
-
-    auto pm = parent_cfg.option<ConfigOptionString>("printer_model");
-    if (pm && m_config.has("printer_model"))
-        m_config.set_key_value("printer_model",
-            new ConfigOptionString(pm->value));
-
-    const std::string printer_msg = original_name == parent_name
-        ? std::string("Printer preset \"") + original_name
-            + "\" config values updated from official preset"
-        : std::string("Custom printer preset \"") + original_name
-            + "\" replaced with official preset \""
-            + parent_name + "\" for cloud safety";
-    m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", printer_msg));
-
-    } catch (const std::exception& e) {
-        BOOST_LOG_TRIVIAL(error)
-            << "Failed to substitute printer preset \"" << original_name
-            << "\": " << e.what() << ". Keeping original preset.";
-    }
-}
-
-void SliceEngine::apply_printer_official_preset()
-{
-    // Read nozzle diameter to determine which U1 preset file to load
-    double nozzle = 0.4;  // default fallback
-    auto nd_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
-    if (nd_opt && !nd_opt->values.empty() && nd_opt->values[0] > 0)
-        nozzle = nd_opt->values[0];
-
-    // Format nozzle string (0.2, 0.4, 0.6, 0.8)
-    auto fmt_nozzle = [](double d) {
-        std::array<char, 8> buf;
-        const int precision = (std::abs(d - std::round(d)) < NOZZLE_FORMAT_EPSILON) ? 0 : 1;
-        snprintf(buf.data(), buf.size(), "%.*f", precision, d);
-        return std::string(buf.data());
-    };
-
-    std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
-    std::string preset_path = Slic3r::resources_dir()
-        + SNAPMK_MACHINE_DIR + preset_name + ".json";
-
-    if (!boost::filesystem::exists(preset_path)) {
-        // Fallback: try with single decimal (0.4 not 0.40)
-        std::string alt_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
-        // If exact match fails, try the common nozzle sizes
-        static const char* known[] = {"0.2", "0.4", "0.6", "0.8", nullptr};
-        for (int i = 0; known[i]; ++i) {
-            std::string candidate = std::string(Slic3r::resources_dir())
-                + SNAPMK_MACHINE_DIR + "Snapmaker U1 (" + known[i] + " nozzle).json";
-            if (boost::filesystem::exists(candidate)) {
-                preset_path = candidate;
-                preset_name = "Snapmaker U1 (" + std::string(known[i]) + " nozzle)";
-                break;
-            }
-        }
-    }
-
-    try {
-        DynamicPrintConfig official_cfg;
-        std::map<std::string, std::string> key_values;
-        std::string reason;
-        official_cfg.load_from_json(preset_path,
-            ForwardCompatibilitySubstitutionRule::EnableSilent,
-            key_values, reason);
-
-        // Fill nil values from official preset
-        fill_nil_from(m_config, official_cfg);
-
-        overwrite_gcode_keys_from(m_config, official_cfg);
-
-        // Update printer identity
-        m_config.set_key_value("printer_settings_id",
-            new ConfigOptionString(preset_name));
-        auto pm = official_cfg.option<ConfigOptionString>("printer_model");
-        if (pm && m_config.has("printer_model"))
-            m_config.set_key_value("printer_model",
-                new ConfigOptionString(pm->value));
-
-        m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED",
-            "Printer preset substituted with official preset \""
-            + preset_name + "\" for cloud safety"));
-
-    } catch (const std::exception& e) {
-        std::string msg = "Failed to load official printer preset \""
-            + preset_name + "\": " + e.what();
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
-        return;
-    }
-
-    // Verify printer-specific parameters are not defaults
-    {
-        auto pa = m_config.option<ConfigOptionPoints>("printable_area");
-        if (!pa || pa->values.size() != 4) {
-            std::string msg = "Printer configuration incomplete: printable_area missing";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
-            m_stats.error_message = msg;
-            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
-            return;
-        }
-        bool is_default =
-            (pa->values[0].x() == 0.0 && pa->values[0].y() == 0.0) &&
-            (pa->values[1].x() == DEFAULT_PLATE_WIDTH &&
-             pa->values[1].y() == 0.0) &&
-            (pa->values[2].x() == DEFAULT_PLATE_WIDTH &&
-             pa->values[2].y() == DEFAULT_PLATE_DEPTH) &&
-            (pa->values[3].x() == 0.0 &&
-             pa->values[3].y() == DEFAULT_PLATE_DEPTH);
-        if (is_default) {
-            std::string msg = "Printer configuration incomplete: "
-                "printable_area is still the default. "
-                "The U1 printer preset was not applied correctly.";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
-            m_stats.error_message = msg;
-            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
-            return;
-        }
-        auto ph = m_config.option<ConfigOptionFloat>("printable_height");
-        if (!ph || ph->value == DEFAULT_PRINTABLE_HEIGHT) {
-            std::string msg = "Printer configuration incomplete: "
-                "printable_height is still the default. "
-                "The U1 printer preset was not applied correctly.";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
-            m_stats.error_message = msg;
-            m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
-            return;
-        }
-    }
 }
 
 // ============================================================================
@@ -1483,7 +1231,7 @@ bool SliceEngine::validate_input() {
             }
             std::cerr << std::endl;
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
             m_stats.error_message = "Requested plate " + std::to_string(m_cfg.plate_id) + " not found in 3MF file";
             m_stats.issues.push_back(make_error(-1, "PLATE_NOT_FOUND", m_stats.error_message));
             return false;
@@ -1668,6 +1416,34 @@ void SliceEngine::process_plate(int plate_id) {
         }
 
         // Success
+        // Check for EmptyGcodeLayers before post-processing.
+        // EmptyGcodeLayers means the plate has no valid layers; the G-code file
+        // exists but is effectively empty.  Skip post-processing and flag as failed.
+        {
+            bool has_empty_gcode_layers = false;
+            for (const auto& iss : slice_result.issues) {
+                if (iss.code == "PRINT_EMPTY_GCODE_LAYERS") {
+                    has_empty_gcode_layers = true;
+                    break;
+                }
+            }
+            if (has_empty_gcode_layers) {
+                boost::filesystem::remove(slice_result.gcode_path);
+                BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                    << ": empty G-code layers, G-code file discarded";
+                for (auto& iss : slice_result.issues)
+                    m_stats.issues.push_back(std::move(iss));
+                slice_result.issues.clear();
+                // Free visualization memory.
+                slice_result.gcode_result.moves.clear();
+                slice_result.gcode_result.moves.shrink_to_fit();
+                slice_result.gcode_result.lines_ends.clear();
+                slice_result.gcode_result.lines_ends.shrink_to_fit();
+                m_plate_results[plate_id] = slice_result;
+                return;  // Skip normal post-processing
+            }
+        }
+
         run_postprocessing(plate_id, slice_result);
 
         // Free G-code visualization data that the cloud engine never uses.
@@ -1866,7 +1642,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& plat
     if (has_partly_outside) {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects outside build volume, skipping";
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         return false;
     }
     return true;
@@ -2117,7 +1893,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print) {
             m_stats.issues.push_back(make_error(plate_id, ecode,
                 err.string + opt_hint, obj_name));
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
             return false;
         }
     }
@@ -2238,20 +2014,35 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
         // Collect PrintBase warnings (EmptyGcodeLayers, G-code overlap, etc.)
-        // CRITICAL warnings (e.g. EmptyGcodeLayers) are mapped to "warning" level
-        // (not "error") because G-code was generated successfully.  The desktop GUI
-        // shows them as modal dialogs for UX prominence, not as blocking failures.
-        // Using a distinct code preserves severity for API consumers while keeping
-        // the exit code, success flags, and statistics collection correct.
+        // For message_id-aware warnings (SlicingNotificationType), map to
+        // specific error codes so downstream consumers can route them
+        // appropriately.  Desktop CLI treats EmptyGcodeLayers and GcodeOverlap
+        // as CLI_SLICING_ERROR (hard exit).  Cloud engine flags the plate but
+        // continues processing remaining plates.
         for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step) {
             auto wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
             for (const auto& w : wstate.warnings) {
                 if (!w.current) continue;
-                bool is_critical = (w.level == PrintStateBase::WarningLevel::CRITICAL);
-                if (is_critical)
+                auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
+                if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers) {
+                    // EmptyGcodeLayers: the plate has ranges with no layers.
+                    // Desktop CLI: CLI_SLICING_ERROR (hard exit).
+                    // Cloud engine: flag the plate as failed but continue other plates.
+                    result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
+                        "Empty G-code layers detected: " + w.message));
+                    m_any_error = true;
+                    set_error_type(EXIT_POSTPROCESS_ERROR);
+                } else if (msg_type == PrintStateBase::SlicingGcodeOverlap) {
+                    // GcodeOverlap: reserved for future G-code overlap detection.
+                    // Desktop CLI: CLI_SLICING_ERROR.
+                    result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
+                        "G-code overlap detected: " + w.message));
+                    m_any_postprocess_warning = true;
+                } else if (w.level == PrintStateBase::WarningLevel::CRITICAL) {
                     result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
-                else
+                } else {
                     result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+                }
             }
         }
 
@@ -2315,15 +2106,15 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result) {
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
 
-    // Toolpaths outside print volume. Desktop uses this only for
-    // GCode preview visualization, not to block gcode output.
+    // Toolpaths outside print volume. Desktop blocks printing via
+    // is_slice_result_ready_for_print() when toolpath_outside is true.
     if (result.gcode_result.toolpath_outside) {
-        log_plate_message("[Post-processing]", "WARNING", plate_id,
-            "Some toolpaths are outside the printable area.");
-        has_postprocess_warning = true;
-        result.issues.push_back(make_warning(plate_id, "TOOLPATH_OUTSIDE",
-            "Some toolpaths are outside the printable area. "
-            "The object may not print correctly."));
+        log_plate_message("[Post-processing]", "ERROR", plate_id,
+            "Toolpaths extend outside the printable area.");
+        has_postprocess_error = true;
+        result.issues.push_back(make_error(plate_id, "TOOLPATH_OUTSIDE",
+            "Toolpaths extend outside the printable area. "
+            "The object exceeds the printer's build volume and cannot be printed safely."));
     }
 
     // Tool height outside check.
@@ -2395,7 +2186,7 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result) {
         m_any_postprocess_warning = true;
     if (has_postprocess_error) {
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_POSTPROCESS_ERROR);  // 切片后致命错误
     }
 }
 
@@ -2594,7 +2385,7 @@ void SliceEngine::build_statistics() {
         plate_stats.success = !plate_has_error;
         if (plate_has_error) {
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
         }
         if (plate_has_warning || result.has_postprocess_warning)
             m_any_postprocess_warning = true;
