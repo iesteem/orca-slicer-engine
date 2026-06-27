@@ -1031,14 +1031,16 @@ void PlateProcessor::run_postprocessing(int plate_id, PlateSliceResult& result) 
         // Only level 3+ is a true error that blocks export.
         if (w.level >= 3) {
             log_plate_message("[Post-processing]", "ERROR", plate_id,
-                w.msg + " (code: " + w.error_code + ")");
+                w.msg + " (internal_code: " + w.error_code + ")");
             has_postprocess_error = true;
-            result.issues.push_back(make_error(plate_id, w.error_code,
-                w.msg + " (code: " + w.error_code + ")"));
+            result.issues.push_back(make_error(plate_id, "SLICE_FATAL_WARNING",
+                w.msg + " [level=" + std::to_string(w.level)
+                + ", internal_code=" + w.error_code + "]"));
         } else if (w.level >= 1) {
             has_postprocess_warning = true;
-            result.issues.push_back(make_warning(plate_id, w.error_code,
-                w.msg + " (code: " + w.error_code + ")"));
+            result.issues.push_back(make_warning(plate_id, "SLICE_WARNING",
+                w.msg + " [level=" + std::to_string(w.level)
+                + ", internal_code=" + w.error_code + "]"));
         } else {
             result.issues.push_back(make_tip(plate_id, w.error_code, w.msg));
         }

@@ -240,8 +240,10 @@ int StatisticsBuilder::exit_code() const {
         return m_ctx.error_type;
     if (m_ctx.any_error)
         return EXIT_VALIDATION_ERROR;
+    // Post-processing warnings are non-fatal and gcode has been generated.
+    // Treat as success (exit 0) per alignment with desktop behavior.
     if (m_ctx.any_postprocess_warning)
-        return EXIT_POSTPROCESS_WARNING;
+        return EXIT_OK;
     return EXIT_OK;
 }
 

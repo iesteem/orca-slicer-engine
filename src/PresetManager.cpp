@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
 
@@ -21,6 +22,7 @@
 
 #include "Types.hpp"
 #include "Utils.hpp"
+#include "PresetRollback.h"
 
 using namespace Slic3r;
 
@@ -55,13 +57,8 @@ inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src
 
 // --- Official preset file helpers ---
 
-// Directory constants for system preset files under resources/profiles/
-static const char* const SNAPMK_MACHINE_DIR  = "/profiles/Snapmaker/machine/";
-static const char* const SNAPMK_FILAMENT_DIR = "/profiles/Snapmaker/filament/";
-static const char* const ORCA_FILAMENT_DIR() {
-    static const std::string s = std::string("/profiles/") + PresetBundle::ORCA_FILAMENT_LIBRARY + "/filament/";
-    return s.c_str();
-}
+// Directory constant for Snapmaker machine preset files under resources/profiles/
+static const char* const SNAPMK_MACHINE_DIR = "/profiles/Snapmaker/machine/";
 
 // Check whether a machine name matches an official Snapmaker printer preset on disk.
 inline bool is_official_machine_file(const std::string& preset_name)
@@ -69,19 +66,6 @@ inline bool is_official_machine_file(const std::string& preset_name)
     const std::string& res = resources_dir();
     if (res.empty()) return false;
     return boost::filesystem::exists(res + SNAPMK_MACHINE_DIR + preset_name + ".json");
-}
-
-// Check whether a filament name matches an official preset on disk
-// (Snapmaker or OrcaFilamentLibrary, including @System suffix for Generic filaments).
-inline bool is_official_filament_file(const std::string& preset_name)
-{
-    const std::string& res = resources_dir();
-    if (res.empty()) return false;
-    const std::string snap_path = res + SNAPMK_FILAMENT_DIR + preset_name + ".json";
-    const std::string orca_dir  = res + ORCA_FILAMENT_DIR();
-    return boost::filesystem::exists(snap_path)
-        || boost::filesystem::exists(orca_dir + preset_name + ".json")
-        || boost::filesystem::exists(orca_dir + preset_name + " @System.json");
 }
 
 // Named constants for magic numbers
@@ -410,23 +394,22 @@ bool PresetManager::validate_filament_official(bool enforce)
     };
 
     for (int i = 0; i < num_filaments; ++i) {
-        const std::string& name = filament_ids->values[i];
+        // Trim whitespace — upstream 3MF files sometimes carry trailing
+        // spaces in preset names (e.g. "Generic PLA " → "Generic PLA").
+        std::string name = filament_ids->values[i];
+        boost::trim(name);
+        filament_ids->values[i] = name;  // write back trimmed value
 
+        // Already an official preset in the system bundle — nothing to do.
         Preset* sys = find_in_system(name);
         if (sys && is_official_preset(*sys)) {
             continue;
         }
 
-        if (!sys && is_official_filament_file(name)) {
-            continue;
-        }
-
-        Preset* current = sys;
+        // Locate the preset (system or project-embedded).
+        Preset* current = sys ? sys : find_in_project(name);
         if (!current) {
-            current = find_in_project(name);
-        }
-
-        if (!current) {
+            // Non-enforce: accept inline filament config if present.
             if (!enforce && has_inline_filament_config(i)) {
                 std::string msg = "Filament \"" + name
                     + "\" is a custom filament without a preset definition"
@@ -436,103 +419,125 @@ bool PresetManager::validate_filament_official(bool enforce)
                 continue;
             }
 
-            std::string msg = "Filament \"" + name + "\" is not a recognized preset";
-            report(/*is_official_violation=*/false, "FILAMENT_UNKNOWN", msg);
-            continue;
+            // Enforce: preset not found in system or project — try PresetRollback
+            // to locate a base-category filament by filament_type from m_config.
+            if (PresetRollback::rollback(m_ctx.config, m_preset_bundle.get(), i))
+                continue;
+
+            // PresetRollback also failed — terminal.
+            std::string msg = "Filament \"" + name
+                + "\" is not a recognized preset and no base-category filament found";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
+            m_ctx.any_error = true;
+            if (EXIT_VALIDATION_ERROR > m_ctx.error_type)
+                m_ctx.error_type = EXIT_VALIDATION_ERROR;
+            return false;
         }
 
-        auto find_ancestor = [&](const std::string& inherits_name) -> Preset* {
-            if (Preset* p = find_in_system(inherits_name)) return p;
-            return find_in_project(inherits_name);
-        };
-
-        auto walk_chain = [&](Preset*& walk, std::set<std::string>& visited) -> bool {
+        // Non-enforce mode: walk the inherits chain purely for validation,
+        // warn but don't substitute.
+        if (!enforce) {
+            std::set<std::string> visited;
+            Preset* walk = current;
+            bool ok = true;
             while (walk) {
-                std::string inherits_name = walk->inherits();
-                if (inherits_name.empty()) return true;
-                if (!visited.insert(inherits_name).second) {
-                    std::string msg = "Circular inheritance detected in filament \"" + name + "\"";
-                    BOOST_LOG_TRIVIAL(error) << msg;
-                    m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_CIRCULAR_INHERITS", msg));
+                std::string ih = walk->inherits();
+                if (ih.empty()) break;
+                if (!visited.insert(ih).second) {
+                    m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_CIRCULAR_INHERITS",
+                        "Circular inheritance detected in filament \"" + name + "\""));
                     any_error = true;
-                    return false;
+                    ok = false;
+                    break;
                 }
-                Preset* next = find_ancestor(inherits_name);
+                Preset* next = find_in_system(ih);
+                if (!next) next = find_in_project(ih);
                 if (!next) {
-                    std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
-                                    + inherits_name + "\"";
-                    BOOST_LOG_TRIVIAL(warning) << msg;
-                    m_ctx.stats.issues.push_back(make_warning(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
-                    return false;
+                    BOOST_LOG_TRIVIAL(warning)
+                        << "Filament \"" << name << "\" inherits from unknown preset \"" << ih << "\"";
+                    m_ctx.stats.issues.push_back(make_warning(-1, "FILAMENT_UNKNOWN_ANCESTOR",
+                        "Filament \"" + name + "\" inherits from unknown preset \"" + ih + "\""));
+                    ok = false;
+                    break;
                 }
                 walk = next;
             }
-            return true;
-        };
-
-        if (!enforce) {
-            Preset* walk = current;
-            std::set<std::string> visited;
-            if (!walk_chain(walk, visited)) {
-                continue;
+            if (ok) {
+                std::string msg = "Filament \"" + name + "\" is a custom preset (not official)";
+                BOOST_LOG_TRIVIAL(warning) << msg;
+                m_ctx.stats.issues.push_back(make_warning(-1, "FILAMENT_CUSTOM", msg));
             }
-            std::string msg = "Filament \"" + name + "\" is a custom preset (not official)";
-            BOOST_LOG_TRIVIAL(warning) << msg;
-            m_ctx.stats.issues.push_back(make_warning(-1, "FILAMENT_CUSTOM", msg));
             continue;
         }
 
+        // ---- Enforce mode: two-path substitution ----
+
+        // Helper to look up an ancestor by name (system first, then project-embedded).
+        auto find_ancestor = [&](const std::string& ih) -> Preset* {
+            Preset* p = find_in_system(ih);
+            return p ? p : find_in_project(ih);
+        };
+
+        // Path 1 — walk the inherits chain looking for an official ancestor.
         bool resolved = false;
         std::set<std::string> visited;
         while (current && !resolved) {
             std::string inherits_name = current->inherits();
-            if (inherits_name.empty()) {
-                std::string msg = "Filament \"" + name
-                    + "\" is not derived from any Snapmaker or Generic filament";
-                BOOST_LOG_TRIVIAL(error) << msg;
-                m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
-                any_error = true;
-                break;
-            }
 
+            // inherits chain exhausted → not found via Path 1
+            if (inherits_name.empty()) break;
+
+            // Circular inheritance.
             if (!visited.insert(inherits_name).second) {
                 std::string msg = "Circular inheritance detected in filament \"" + name + "\"";
-                BOOST_LOG_TRIVIAL(error) << msg;
                 m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_CIRCULAR_INHERITS", msg));
                 any_error = true;
+                resolved = true;  // stop the loop, error already set
                 break;
             }
 
             Preset* parent = find_ancestor(inherits_name);
-            if (!parent) {
-                std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
-                                + inherits_name + "\"";
-                BOOST_LOG_TRIVIAL(error) << msg;
-                m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
-                any_error = true;
-                break;
-            }
+            // Unknown ancestor → not found via Path 1; fall through to Path 2.
+            if (!parent) break;
 
+            // Found an official ancestor — substitute and mark resolved.
             if (is_official_preset(*parent)) {
                 substitute_filament_params(filament_ids, i, *parent, name);
                 resolved = true;
-            } else if (parent->vendor) {
-                std::string vendor_name = parent->vendor->name;
-                std::string msg = "Filament \"" + name + "\" derives from unsupported vendor \""
-                                + vendor_name + "\" via \"" + inherits_name + "\"";
-                BOOST_LOG_TRIVIAL(error) << msg;
-                m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_UNSUPPORTED_VENDOR", msg));
-                any_error = true;
-                resolved = true;
-            } else if (parent->type == Preset::TYPE_FILAMENT) {
-                current = parent;
-            } else {
-                std::string msg = "Filament \"" + name + "\" inherits from non-filament preset \""
-                                + inherits_name + "\"";
-                BOOST_LOG_TRIVIAL(error) << msg;
+            }
+            // Non-filament type in the chain → error.
+            else if (parent->type != Preset::TYPE_FILAMENT) {
+                std::string msg = "Filament \"" + name
+                    + "\" inherits from non-filament preset \"" + inherits_name + "\"";
                 m_ctx.stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
                 any_error = true;
                 resolved = true;
+            }
+            // Intermediate filament preset — continue walking up.
+            else {
+                current = parent;
+            }
+        }
+
+        // Path 2 — inherits chain did not yield an official ancestor.
+        // Fall back to PresetRollback: find the base-category filament by type/vendor.
+        if (!resolved) {
+            if (PresetRollback::rollback(m_ctx.config, m_preset_bundle.get(), i)) {
+                resolved = true;
+            } else {
+                // Neither inherits nor PresetRollback found a valid filament —
+                // this is a terminal failure: the 3MF cannot be sliced.
+                std::string msg = "Filament \"" + name
+                    + "\": no official ancestor found via inherits, "
+                    + "and no base-category filament found for its filament_type";
+                BOOST_LOG_TRIVIAL(error) << msg;
+                m_ctx.stats.issues.push_back(
+                    make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
+                m_ctx.any_error = true;
+                if (EXIT_VALIDATION_ERROR > m_ctx.error_type)
+                    m_ctx.error_type = EXIT_VALIDATION_ERROR;
+                return false;
             }
         }
     }

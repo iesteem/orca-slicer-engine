@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
 project(orca-slice-engine VERSION 02.01.18 LANGUAGES C CXX)
-
 option(BUILD_SLIC3R_DLL "Build slic3r shared library from engine source (DLL on Windows, SO on Linux). Requires libslic3r SDK." OFF)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -22,7 +23,7 @@ endif()
 #       -DORCASLICER_SOURCE_DIR=<OrcaSlicer source dir>
 # ==================================================================
 
-if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
+if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE AND NOT DEFINED ORCA_CONSUMER_MODE)
     set(ORCASLICER_BUILD_DIR "" CACHE PATH "OrcaSlicer build-engine directory")
     set(ORCASLICER_SOURCE_DIR "" CACHE PATH "OrcaSlicer source directory")
 
@@ -30,7 +31,8 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         message(FATAL_ERROR
             "Linux build requires:\n"
             "  -DORCASLICER_BUILD_DIR=<path/to/OrcaSlicer/build-engine>\n"
-            "  -DORCASLICER_SOURCE_DIR=<path/to/OrcaSlicer>")
+            "  -DORCASLICER_SOURCE_DIR=<path/to/OrcaSlicer>\n"
+            "  or -DORCA_CONSUMER_MODE=ON to link against prebuilt libslic3r.so")
     endif()
 
     set(DEPS_DIR "${ORCASLICER_SOURCE_DIR}/deps/build/destdir/usr/local")
@@ -150,6 +152,7 @@ if(NOT BUILD_SLIC3R_DLL AND UNIX AND NOT APPLE)
         src/EngineCLI.cpp
         src/SliceEngine.cpp
         src/PresetManager.cpp
+        src/PresetRollback.cpp
         src/PlateProcessor.cpp
         src/StatisticsBuilder.cpp
         src/JsonReport.cpp
@@ -454,6 +457,7 @@ if(UNIX AND NOT APPLE)
         src/slic3r_c_api.h src/slic3r_c_api.cpp
         src/SliceEngine.cpp src/SliceEngine.hpp
         src/PresetManager.cpp src/PresetManager.hpp
+        src/PresetRollback.cpp src/PresetRollback.h
         src/PlateProcessor.cpp src/PlateProcessor.hpp
         src/StatisticsBuilder.cpp src/StatisticsBuilder.hpp
         src/JsonReport.cpp src/JsonReport.hpp
@@ -522,7 +526,7 @@ endif()
 # ==================================================================
 # Consumer mode: pure C exe against prebuilt slic3r (Windows / macOS)
 # ==================================================================
-if(NOT BUILD_SLIC3R_DLL AND (NOT UNIX OR APPLE))
+if(NOT BUILD_SLIC3R_DLL AND (NOT UNIX OR APPLE OR DEFINED ORCA_CONSUMER_MODE))
     find_library(SLIC3R_LIBRARY slic3r
         HINTS "${CMAKE_PREFIX_PATH}/lib" "${CMAKE_PREFIX_PATH}/bin" "${CMAKE_PREFIX_PATH}"
         REQUIRED)

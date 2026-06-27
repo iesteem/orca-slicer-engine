@@ -206,10 +206,9 @@ void check_empty(const Slic3r::ModelVolume& volume,
 {
     if (volume.mesh().its.indices.empty()) {
         out.push_back(make_issue(
-            "error", plate_id, obj_name, "GEOM_EMPTY",
+            "warning", plate_id, obj_name, "GEOM_EMPTY",
             "Empty mesh: no triangles in model volume. "
-            "The object has no geometry and cannot be sliced. "
-            "This is an unrecoverable geometry error.",
+            "The object has no geometry and cannot be sliced.",
             SUGGESTION_EMPTY_MESH));
     }
 }
@@ -222,12 +221,11 @@ void check_zero_volume(const Slic3r::ModelVolume& volume,
     // Threshold matching Model::removed_objects_with_zero_volume (1e-10)
     if (!volume.mesh().its.indices.empty() && std::abs(vol) < 1e-10) {
         out.push_back(make_issue(
-            "error", plate_id, obj_name, "GEOM_ZERO_VOLUME",
+            "warning", plate_id, obj_name, "GEOM_ZERO_VOLUME",
             "Zero-volume mesh: the computed volume (" +
                 std::to_string(vol) +
                 " mm³) is effectively zero. "
-                "This object cannot produce any extrusion. "
-                "This is an unrecoverable geometry error.",
+                "This object cannot produce any extrusion.",
             SUGGESTION_ZERO_VOLUME));
     }
 }
