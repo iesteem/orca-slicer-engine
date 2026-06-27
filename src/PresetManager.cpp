@@ -68,7 +68,7 @@ inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
                                       const DynamicPrintConfig& src)
 {
     for (const auto& key : GCODE_KEYS) {
-        const auto* s = src.option(key, false);
+        const auto* s = src.option(key);
         if (s && dst.has(key))
             dst.set_key_value(key, s->clone());
     }
@@ -267,7 +267,7 @@ void PresetManager::validate_presets()
             for (const auto& name : modified_gcodes)
                 details += (details.empty() ? "" : ", ") + name;
             std::string msg = "Custom G-code detected in presets (" + details
-                + ") — retained as-is (desktop parity)";
+                + ") — will be replaced with official G-code for cloud safety";
             m_ctx.stats.issues.push_back(make_warning(-1, "PRESET_MODIFIED_GCODES", msg));
             break;
         }
