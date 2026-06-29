@@ -15,7 +15,6 @@
 #include "libslic3r/PrintConfig.hpp"
 
 #include "EngineContext.hpp"
-#include "SliceEngine.hpp"
 #include "Types.hpp"
 
 using namespace Slic3r;
@@ -256,8 +255,6 @@ int StatisticsBuilder::exit_code() const {
         return EXIT_PREPROCESS_ERROR;
     // Post-processing warnings are non-fatal and gcode has been generated.
     // Treat as success (exit 0) per alignment with desktop behavior.
-    if (m_ctx.any_postprocess_warning)
-        return EXIT_OK;
     return EXIT_OK;
 }
 

@@ -15,7 +15,7 @@ import json
 import os
 import sys
 import zipfile
-from xml.etree.ElementTree import ParseError, iterparse
+from xml.etree.ElementTree import iterparse
 
 # 同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,11 +37,10 @@ def _tag_local(elem):
 
 def _parse_config(zf: zipfile.ZipFile) -> dict:
     """从 Metadata/project_settings.config 提取切片配置。"""
-    import json as _json
     try:
         raw = zf.read("Metadata/project_settings.config").decode("utf-8", errors="replace")
-        config = _json.loads(raw)
-    except (KeyError, _json.JSONDecodeError):
+        config = json.loads(raw)
+    except (KeyError, json.JSONDecodeError):
         return {}
 
     result = {}

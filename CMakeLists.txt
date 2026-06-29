@@ -150,7 +150,6 @@ if(ORCA_STANDALONE)
     # ---- Source files ----
     add_executable(orca-slice-engine
         src/main.cpp
-        src/EngineCLI.cpp
         src/SliceEngine.cpp
         src/PresetManager.cpp
         src/PresetRollback.cpp
@@ -464,7 +463,7 @@ if(UNIX AND NOT APPLE)
         src/JsonReport.cpp src/JsonReport.hpp
         src/GeometryCheck.cpp src/GeometryCheck.hpp
         src/Utils.cpp src/Utils.hpp
-        src/EngineContext.hpp src/EngineCLI.hpp src/EngineCLI.cpp
+        src/EngineContext.hpp
         src/ExitCodes.hpp src/Issue.hpp src/SliceStats.hpp
         src/TempFileGuard.hpp src/Types.hpp
         src/nanosvg.cpp

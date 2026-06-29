@@ -7,7 +7,6 @@
 #include <map>
 #include <memory>
 #include <set>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -74,47 +73,15 @@ inline void overwrite_gcode_keys_from(DynamicPrintConfig& dst,
     }
 }
 
-// Fill nil/missing values in dst from src.  Retained for use in
-// build_full_print_config() where we only want to fill gaps.
-inline void fill_nil_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
-{
-    for (auto it = src.cbegin(); it != src.cend(); ++it) {
-        const auto& key   = it->first;
-        auto       dst_opt = dst.option(key, false);
-        if (!dst_opt) continue;
-
-        if (dst_opt->is_scalar()) {
-            if (dst_opt->is_nil())
-                dst_opt->set(it->second.get());
-        } else {
-            auto dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
-            auto src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
-            if (!dst_vec || !src_vec) continue;
-            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
-                if (dst_vec->is_nil(i))
-                    dst_vec->set_at(src_vec, i, i);
-        }
-    }
-}
 
 // --- Official preset file helpers ---
 
 // Directory constant for Snapmaker machine preset files under resources/profiles/
 static const char* const SNAPMK_MACHINE_DIR = "/profiles/Snapmaker/machine/";
 
-// Check whether a machine name matches an official Snapmaker printer preset on disk.
-inline bool is_official_machine_file(const std::string& preset_name)
-{
-    const std::string& res = resources_dir();
-    if (res.empty()) return false;
-    return boost::filesystem::exists(res + SNAPMK_MACHINE_DIR + preset_name + ".json");
-}
 
 // Named constants for magic numbers
 constexpr double NOZZLE_FORMAT_EPSILON    = 0.05;
-constexpr double Z_COMPARISON_EPSILON     = 1e-9;
-constexpr double Z_RATIO_EPSILON          = 1e-6;
-constexpr const char* BED_TEMP_WARNING_CODE = "1000C001";
 
 constexpr double DEFAULT_PLATE_WIDTH       = 200.0;
 constexpr double DEFAULT_PLATE_DEPTH       = 200.0;
@@ -278,57 +245,6 @@ void PresetManager::validate_presets()
     }
 }
 
-void PresetManager::apply_printer_preset_config()
-{
-    if (!m_presets_available || !m_preset_bundle) {
-        std::string msg = "System presets not available; cannot verify printer configuration.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_ctx.any_error = true;
-        if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
-        m_ctx.stats.error_message = msg;
-        m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
-        return;
-    }
-
-    // Verify printer-specific parameters have been overridden by the U1
-    // preset and are NOT still at FullPrintConfig defaults.
-    // FullPrintConfig sets printable_area = [(0,0),(200,0),(200,200),(0,200)]
-    // and printable_height = 100.0 as generic placeholders. If these survive
-    // the preset merge, the U1 preset did not take effect.
-    {
-        auto fail = [&](const std::string& detail) {
-            std::string msg = "Printer configuration incomplete: " + detail
-                + ". The U1 printer preset was not applied correctly. "
-                "Verify the resources directory contains Snapmaker U1 machine profiles.";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_ctx.any_error = true;
-            if (EXIT_PREPROCESS_ERROR > m_ctx.error_type) m_ctx.error_type = EXIT_PREPROCESS_ERROR;
-            m_ctx.stats.error_message = msg;
-            m_ctx.stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
-        };
-
-        // printable_area: default is 4-point 200x200 rect
-        auto pa = m_ctx.config.option<ConfigOptionPoints>("printable_area");
-        if (!pa || pa->values.size() != 4) {
-            fail("printable_area missing or wrong format");
-        } else {
-            bool is_default =
-                (pa->values[0].x() == 0.0 && pa->values[0].y() == 0.0) &&
-                (pa->values[1].x() == DEFAULT_PLATE_WIDTH &&
-                 pa->values[1].y() == 0.0) &&
-                (pa->values[2].x() == DEFAULT_PLATE_WIDTH &&
-                 pa->values[2].y() == DEFAULT_PLATE_DEPTH) &&
-                (pa->values[3].x() == 0.0 &&
-                 pa->values[3].y() == DEFAULT_PLATE_DEPTH);
-            if (is_default) fail("printable_area is still the default");
-        }
-
-        // printable_height: default is DEFAULT_PRINTABLE_HEIGHT
-        auto ph = m_ctx.config.option<ConfigOptionFloat>("printable_height");
-        if (!ph || ph->value == DEFAULT_PRINTABLE_HEIGHT)
-            fail("printable_height is still the default");
-    }
-}
 
 bool PresetManager::has_inline_filament_config(int ext_idx)
 {
@@ -624,49 +540,6 @@ bool PresetManager::validate_printer_model()
     return true;
 }
 
-void PresetManager::substitute_printer_params(const std::string& original_name,
-                                               const std::string& parent_name)
-{
-    try {
-    BOOST_LOG_TRIVIAL(info) << "Substituting printer preset \"" << original_name
-        << "\" with official parent \"" << parent_name << "\"";
-
-    std::string parent_path = resources_dir()
-        + SNAPMK_MACHINE_DIR + parent_name + ".json";
-
-    DynamicPrintConfig parent_cfg;
-    std::map<std::string, std::string> key_values;
-    std::string reason;
-    parent_cfg.load_from_json(parent_path,
-        ForwardCompatibilitySubstitutionRule::EnableSilent,
-        key_values, reason);
-
-    overwrite_all_keys_from(m_ctx.config, parent_cfg);
-
-    overwrite_gcode_keys_from(m_ctx.config, parent_cfg);
-
-    m_ctx.config.set_key_value("printer_settings_id",
-        new ConfigOptionString(parent_name));
-
-    auto pm = parent_cfg.option<ConfigOptionString>("printer_model");
-    if (pm && m_ctx.config.has("printer_model"))
-        m_ctx.config.set_key_value("printer_model",
-            new ConfigOptionString(pm->value));
-
-    const std::string printer_msg = original_name == parent_name
-        ? std::string("Printer preset \"") + original_name
-            + "\" config values updated from official preset"
-        : std::string("Custom printer preset \"") + original_name
-            + "\" replaced with official preset \""
-            + parent_name + "\" for cloud safety";
-    m_ctx.stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", printer_msg));
-
-    } catch (const std::exception& e) {
-        BOOST_LOG_TRIVIAL(error)
-            << "Failed to substitute printer preset \"" << original_name
-            << "\": " << e.what() << ". Keeping original preset.";
-    }
-}
 
 void PresetManager::apply_printer_official_preset()
 {
@@ -778,133 +651,3 @@ void PresetManager::apply_printer_official_preset()
     }
 }
 
-DynamicPrintConfig PresetManager::build_full_print_config()
-{
-    DynamicPrintConfig out;
-    out.apply(FullPrintConfig::defaults());
-
-    if (m_presets_available && m_preset_bundle) {
-        auto& bundle = *m_preset_bundle;
-
-        // Layer 1: System print (process) preset config
-        auto print_id_opt = m_ctx.config.option<ConfigOptionString>("print_settings_id");
-        if (print_id_opt && !print_id_opt->value.empty()) {
-            const Preset* process_preset = bundle.prints.find_preset(
-                print_id_opt->value, true);
-            if (process_preset)
-                out.apply(process_preset->config);
-        }
-
-        // Layer 2: System printer config
-        auto printer_id_opt = m_ctx.config.option<ConfigOptionString>("printer_settings_id");
-        if (printer_id_opt && !printer_id_opt->value.empty()) {
-            const Preset* printer_preset = bundle.printers.find_preset(printer_id_opt->value, true);
-            if (printer_preset)
-                out.apply(printer_preset->config);
-        }
-
-        // Layer 3: System filament config (per-extruder)
-        auto filament_ids = m_ctx.config.option<ConfigOptionStrings>("filament_settings_id");
-        if (filament_ids && !filament_ids->values.empty()) {
-            if (out.has("nozzle_diameter")) {
-                auto* nd = out.option<ConfigOptionFloats>("nozzle_diameter");
-                if (nd && nd->values.size() < filament_ids->values.size()) {
-                    const size_t original_count = filament_ids->values.size();
-                    size_t target = nd->values.size();
-
-                    if (target <= 1) {
-                        std::string printer_model = m_ctx.config.opt_string("printer_model");
-                        if (!printer_model.empty()) {
-                            std::string printer_variant = m_ctx.config.opt_string("printer_variant");
-                            const Preset* sys_preset =
-                                bundle.printers.find_system_preset_by_model_and_variant(
-                                    printer_model, printer_variant);
-                            if (sys_preset && sys_preset->config.has("nozzle_diameter")) {
-                                auto* sys_nd = sys_preset->config.option<ConfigOptionFloats>("nozzle_diameter");
-                                if (sys_nd && sys_nd->values.size() > 1)
-                                    target = sys_nd->values.size();
-                            }
-                        }
-                    }
-
-                    if (target <= 1) {
-                        BOOST_LOG_TRIVIAL(warning)
-                            << "Cannot determine printer extruder count (nozzle_diameter size="
-                            << nd->values.size() << "); keeping " << original_count << " filaments";
-                    } else if (target < original_count) {
-                        BOOST_LOG_TRIVIAL(warning) << "Trimming filament count from "
-                            << original_count << " to " << target
-                            << " to match printer extruder count";
-                        filament_ids->values.resize(target);
-                        const char* per_filament_keys[] = {
-                            "filament_diameter", "filament_density", "filament_cost",
-                            "nozzle_temperature", "nozzle_temperature_initial_layer",
-                            "filament_type", "filament_colour", "filament_vendor", nullptr
-                        };
-                        for (int k = 0; per_filament_keys[k]; ++k) {
-                            if (m_ctx.config.has(per_filament_keys[k])) {
-                                auto* opt = m_ctx.config.option(per_filament_keys[k]);
-                                if (opt && opt->is_vector()) {
-                                    auto* vec = dynamic_cast<ConfigOptionStrings*>(opt);
-                                    if (vec && vec->values.size() > target) vec->values.resize(target);
-                                    auto* vecf = dynamic_cast<ConfigOptionFloats*>(opt);
-                                    if (vecf && vecf->values.size() > target) vecf->values.resize(target);
-                                    auto* vecs = dynamic_cast<ConfigOptionFloatsNullable*>(opt);
-                                    if (vecs && vecs->values.size() > target) vecs->values.resize(target);
-                                }
-                            }
-                        }
-
-                        m_ctx.stats.issues.push_back(make_warning(-1, "FILAMENT_COUNT_MISMATCH",
-                            "Filament count trimmed from "
-                            + std::to_string(original_count) + " to "
-                            + std::to_string(target)
-                            + ": the model references " + std::to_string(original_count)
-                            + " filaments but the printer supports only "
-                            + std::to_string(target) + " extruders. "
-                            + "The excess filaments have been dropped, which may affect "
-                            + "multi-color/material output."));
-                        m_ctx.any_postprocess_warning = true;
-                    }
-                }
-            }
-
-            const size_t num_filaments = filament_ids->values.size();
-
-            std::vector<const DynamicPrintConfig*> filament_configs;
-            for (size_t i = 0; i < num_filaments; ++i) {
-                const Preset* preset = bundle.filaments.find_preset(filament_ids->values[i], true);
-                if (preset)
-                    filament_configs.push_back(&preset->config);
-            }
-
-            if (!filament_configs.empty()) {
-                for (const auto& key : filament_configs.front()->keys()) {
-                    if (key == "compatible_prints" || key == "compatible_printers")
-                        continue;
-
-                    ConfigOption* dst_opt = out.option(key, false);
-                    if (!dst_opt) continue;
-
-                    if (dst_opt->is_scalar()) {
-                        const ConfigOption* src = filament_configs.front()->option(key);
-                        if (src) dst_opt->set(src);
-                    } else {
-                        auto dst_vec = static_cast<ConfigOptionVectorBase*>(dst_opt);
-                        std::vector<const ConfigOption*> opts(num_filaments, nullptr);
-                        for (size_t i = 0; i < num_filaments; ++i)
-                            opts[i] = (i < filament_configs.size())
-                                          ? filament_configs[i]->option(key)
-                                          : nullptr;
-                        dst_vec->set(opts);
-                    }
-                }
-            }
-        }
-    }
-
-    // Layer 4: Project config from 3MF (highest priority)
-    out.apply(m_ctx.config);
-
-    return out;
-}

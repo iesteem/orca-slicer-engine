@@ -8,7 +8,6 @@
 #include <cmath>
 #include <iostream>
 #include <set>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -957,8 +956,6 @@ bool PlateProcessor::export_gcode(int plate_id, Print& print, PlateSliceResult& 
 
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
-        // run_post_process_scripts(result.gcode_path, print.full_print_config());
-
         // Collect PrintBase warnings (EmptyGcodeLayers, G-code overlap, etc.)
         // For message_id-aware warnings (SlicingNotificationType), map to
         // specific error codes so downstream consumers can route them

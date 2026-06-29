@@ -33,18 +33,6 @@ except ImportError:
 #  Helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _12x(v):
-    return [v] * 12
-
-def _6x(v):
-    return [v] * 6
-
-def _norm(v):
-    """Normalize Bambu-style nested arrays to scalar or simple list."""
-    if isinstance(v, list) and len(v) == 1 and isinstance(v[0], list):
-        return v[0]
-    return v
-
 def _to_float(value):
     """Parse an Orca setting string-or-number into float; None if unparseable."""
     if value is None or isinstance(value, bool):
@@ -238,7 +226,7 @@ def _apply_rules(settings, rules):
         return
     applied = []
     for rule in rules:
-        ok, evidence = _rule_matches_filament(rule, settings)
+        ok, _ = _rule_matches_filament(rule, settings)
         if not ok:
             continue
         overrides = rule.get("overrides", {})
@@ -412,15 +400,6 @@ def _get_nozzle_suffix(proj):
         if nozzle_val:
             return f"{nozzle_val} nozzle"
     return None
-
-
-def _append_nozzle_suffix(name, suffix):
-    """Append nozzle suffix to a filament preset name if not already present."""
-    if not isinstance(name, str) or not name.strip():
-        return name
-    if suffix in name:
-        return name
-    return f"{name} {suffix}"
 
 
 def _append_nozzle_suffix_if_exists(name, suffix, profiles_dir=None):

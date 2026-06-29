@@ -13,31 +13,6 @@
 
 using ordered_json = nlohmann::ordered_json;
 
-// Keep base64_encode — nlohmann doesn't provide base64
-static constexpr char BASE64_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string base64_encode(const unsigned char* input, size_t input_len)
-{
-    std::string result;
-    result.reserve((input_len + 2) / 3 * 4);
-
-    int val = 0;
-    int valb = 0;
-    for (size_t i = 0; i < input_len; ++i) {
-        val = (val << 8) + input[i];
-        valb += 8;
-        while (valb >= 6) {
-            valb -= 6;
-            result.push_back(BASE64_CHARS[(val >> valb) & 0x3F]);
-        }
-    }
-    if (valb > 0)
-        result.push_back(BASE64_CHARS[((val << (6 - valb)) & 0x3F)]);
-    while (result.size() % 4)
-        result.push_back('=');
-    return result;
-}
-
 // Round to 2 decimal places — matches the original std::setprecision(2) output
 static double round2(double v)
 {

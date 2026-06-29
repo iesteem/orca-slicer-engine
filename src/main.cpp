@@ -13,8 +13,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <vector>
 
@@ -49,7 +47,6 @@ constexpr size_t EMERGENCY_JSON_SIZE  = 4096;
 constexpr size_t ALT_STACK_SIZE       = 65536;  // typical SIGSTKSZ value; large enough for nested signals
 
 static char                    g_emergency_json_path[EMERGENCY_PATH_SIZE] = {};
-static volatile sig_atomic_t   g_crash_occurred = 0;
 static char                    g_alt_stack[ALT_STACK_SIZE] = {};
 
 /**
@@ -104,8 +101,6 @@ static void write_emergency_json(const char* error_message,
 // Uses only: open / write / close / signal / raise (all POSIX signal-safe).
 extern "C" void crash_signal_handler(int sig)
 {
-    g_crash_occurred = 1;
-
     // Map signal number to name
     const char* sig_name = "UNKNOWN";
     if      (sig == SIGSEGV) sig_name = "SIGSEGV";
@@ -308,7 +303,6 @@ int main(int argc, char* argv[])
     EngineConfig& cfg = cli.engine_cfg;
     std::string& resources_dir = cli.resources_dir;
     std::string& json_output_path = cli.json_output_path;
-    bool json_enabled = cli.json_enabled;
     bool log_enabled   = cli.log_enabled;
     std::string& log_file_path = cli.log_file_path;
     bool verbose       = cli.verbose;
