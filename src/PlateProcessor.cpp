@@ -701,15 +701,29 @@ bool PlateProcessor::apply_model(int plate_id, Print& print, const Vec3d& origin
         // corrupts the volume offset and cascades into extreme G-code coordinates
         // and absurd print time estimates.
         //
-        // Detect this by comparing element (2,2) against the Z-column norm.
-        // If the contribution of Z to world Z is negligible, skip Z-baking.
+        // Calculate the world-space displacement that Z-baking would produce.
+        // When the object is rotated, the local-Z adjustment gets mapped to
+        // world X/Y through the instance transform's Z column, potentially
+        // producing massive off-bed coordinates.
+        //
+        // Guard: skip Z-baking if the resulting world displacement exceeds
+        // 150 mm (≈55% of the U1 bed depth). This catches two failure modes:
+        //
+        //   1. Near-90° rotation (White Eagle): m22 ≈ -3.3e-3, z_adj ≈ 21,085 mm
+        //      → world displacement ≈ 210,853 mm
+        //   2. Moderate rotation (Duck): m22 ≈ -0.208, z_adj ≈ -172 mm
+        //      → world displacement ≈ 1,724 mm
+        //
+        // For legitimate Z-baking (upright or small tilt), the displacement
+        // is on the order of |inst_offset.z| × |scale|, typically < 80 mm.
         Eigen::Vector3d z_col = inst->get_transformation().get_matrix().matrix().block<3,1>(0, 2);
         double z_col_norm = z_col.norm();
         double z_scale = inst->get_transformation().get_matrix()(2, 2);
         if (std::abs(z_col_norm) < 1e-9) continue;
-        if (std::abs(z_scale) / z_col_norm < 1e-6) continue;
         if (std::abs(z_scale) < 1e-9) continue;
         double z_adjustment = inst_offset.z() / z_scale;
+        Eigen::Vector3d z_adjustment_world = z_col * z_adjustment;
+        if (z_adjustment_world.norm() > 150.0) continue;
         BakedInstanceZ baked;
         baked.inst = inst;
         baked.inst_offset = inst_offset;
