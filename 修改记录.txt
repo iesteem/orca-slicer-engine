@@ -1,5 +1,69 @@
-orca-slice-engine v02.01.18 修改记录
+orca-slice-engine v02.02.01 修改记录
 ======================================
+
+v02.02.01+ (2026-06-29)
+  [修复] PlateProcessor.cpp Z-baking 门卫阈值 1e-6 → 1e-2，修复多挤出机旋转模型 Y 坐标越界
+  [新增] GCode 缩略图穿透：从输入 .3mf 复用 plate 缩略图嵌入输出 gcode 和 .3mf 包
+
+      根因（缩略图）：
+        云引擎 export_gcode 第三参数传 nullptr 跳过缩略图生成，package_output 传空
+        thumbnail vectors 导致输出 .3mf 无 Metadata/plate_*.png。U1 固件解析 gcode
+        时依赖 ; thumbnail begin WxH SIZE 标记显示预览图。
+
+      修复（4 步骤，+105/-0 行）：
+        Step 1 — SliceEngine.cpp:431-462 decode_plate_thumbnails()
+          PNG→RGBA 解码 input .3mf 中 Metadata/plate_*.png，修正 plate_thumbnail.width/height
+        Step 2 — PlateProcessor.cpp:922-945
+          export_gcode 的 nullptr → 缩略图回调 lambda（按 plate_id 查找 + resize_thumbnail 缩放）
+        Step 3 — StatisticsBuilder.cpp:180-203 + SliceEngine.cpp:1400-1421
+          package_output 空 thumbnail vectors → 从 plate data 填充（no_light/top/pick/calibration 暂填 nullptr）
+        Step 4 — Utils.cpp:309-362 + Utils.hpp:49-52
+          新增 resize_thumbnail() 双线性插值 RGBA 缩放函数
+
+      影响范围（缩略图）：
+        - 输入为 .3mf 且含缩略图时，输出 gcode 和 .3mf 中自动嵌入缩略图
+        - 输入为 STL/OBJ（无缩略图源）时无影响，保持原行为
+        - RGB→RGBA 自动补 Alpha=255，解码失败则跳过该 plate 不影响切片
+
+      编译：2026-06-29 通过，无新增 warning。待功能测试 + U1 机器验证。
+
+
+  根因：
+    PlateProcessor.cpp:710 的 Z-baking 跳过条件使用 1e-6 阈值。对于 ~90° 旋转的模型
+    （如 White Eagle），变换矩阵元素 m22 (z_scale) 接近零（-3.3×10⁻³），但比值
+    |z_scale|/z_col_norm = 3.3×10⁻⁴ 仍大于 1e-6，未触发跳过逻辑。
+
+    z_adjustment = inst_offset.z() / z_scale = 69.89 / 3.3×10⁻³ ≈ 21,085 mm
+    由于旋转将物体局部 Z 映射到世界 Y（m12 ≈ 10），该偏移经变换后产生
+    ΔY = 10 × 21,085 ≈ 210,853 mm 的世界 Y 偏移（~211 米）。
+
+    每次工具切换的旅行移动覆盖 ~211 米，在 824 次换料的 4 色打印中，预估打印时间
+    膨胀至 ~274 小时（正常应为 ~4.5 小时）。
+
+  影响范围：
+    - 仅影响含 ~90° 旋转 + 非零 Z 偏移的多挤出机（多色）模型
+    - 已知受影响：White Eagle（1000x Y 偏移）、Duck（10x Y 偏移）
+    - 单挤出机及无旋转模型不受影响
+
+  修复：
+    src/PlateProcessor.cpp:710
+      - if (std::abs(z_scale) / z_col_norm < 1e-6) continue;
+      + if (std::abs(z_scale) / z_col_norm < 1e-2) continue;
+
+    同步 SliceEngine.cpp:1814 的注释（余弦角度原理 + White Eagle 案例说明）。
+
+    注：SliceEngine.cpp 中的同段代码已于 0ec93d4 修复，但因重构（1fe9058）中活跃路径
+    迁移至 PlateProcessor.cpp 时未移植修复，成为死代码。本次一并删除
+    SliceEngine.cpp 中 9 个死方法（-958 行）：process_plate, filter_instances,
+    run_build_volume_check, setup_print_origin, apply_model, run_validation,
+    run_slicing, export_gcode, run_postprocessing, restore_baked_z_offsets
+    及其在 SliceEngine.hpp 中的声明。
+
+  验证：
+    White Eagle 模型修复前后对比：
+      挤出 Y 范围：  [0, 211,017] → [95.80, 248.85]  （床范围 1–271）
+      预估打印时间：  11d 9h 44m   → 4h 32m 16s
+      G1 总行数：     1,956,003    → 974,696
 
 v02.01.18 (2026-06-26)
   [重构] SliceEngine 上帝类拆分为 PresetManager + PlateProcessor + StatisticsBuilder

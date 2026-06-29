@@ -916,7 +916,33 @@ bool PlateProcessor::export_gcode(int plate_id, Print& print, PlateSliceResult& 
         std::string exported;
         {
             ScopedLogLevel quiet_export(boost::log::trivial::warning);
-            exported = print.export_gcode(gcode_output, &result.gcode_result, nullptr);
+
+            // Build thumbnail callback: reuses decoded input .3mf plate thumbnails.
+            // Resizes the source RGBA data to each requested gcode thumbnail size.
+            auto thumbnail_cb = [this](const Slic3r::ThumbnailsParams& params)
+                -> std::vector<Slic3r::ThumbnailData>
+            {
+                std::vector<Slic3r::ThumbnailData> result;
+                const Slic3r::ThumbnailData* source = nullptr;
+
+                for (const auto& pd : m_ctx.plate_data) {
+                    if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid()) {
+                        source = &pd->plate_thumbnail;
+                        break;
+                    }
+                }
+                if (!source) return result;
+
+                for (const auto& size : params.sizes) {
+                    result.push_back(resize_thumbnail(
+                        *source,
+                        static_cast<unsigned int>(size.x()),
+                        static_cast<unsigned int>(size.y())));
+                }
+                return result;
+            };
+
+            exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         }
         result.gcode_path = exported;
 

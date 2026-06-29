@@ -8,6 +8,7 @@
 
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Print.hpp"
 
 #include "Types.hpp"
@@ -43,6 +44,12 @@ std::string generate_output_path(
     int plate_id,
     OutputFormat format,
     bool single_plate);
+
+/// Bilinear-interpolation resize of an RGBA thumbnail to target dimensions.
+Slic3r::ThumbnailData resize_thumbnail(
+    const Slic3r::ThumbnailData& src,
+    unsigned int target_width,
+    unsigned int target_height);
 
 /**
  * Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic).

@@ -68,12 +68,11 @@ struct PlateSliceResult {
 // ============================================================================
 //
 // Pipeline stages (delegated to sub-components):
-//   PresetManager:   load_system_presets → validate_presets →
-//                    validate_printer_model → apply_printer_official_preset →
-//                    validate_filament_official → build_full_print_config
-//   PlateProcessor:  per-plate: filter_instances → build_volume_check →
-//                    apply_model → validation → slicing → export_gcode →
-//                    postprocessing
+//   PresetManager:    load_system_presets → validate_presets →
+//                     validate_printer_model → apply_printer_official_preset →
+//                     validate_filament_official → build_full_print_config
+//   PlateProcessor:   per-plate full pipeline (filter → validate → slice → export →
+//                     postprocess), including Z-baking and build-volume checks
 //   StatisticsBuilder: package_output → build_statistics
 //
 // Config flow (four layers, applied in order):
@@ -113,6 +112,7 @@ private:
     // --- Pipeline stages (some extracted to sub-components; kept here for
     //     transitional compatibility — will delegate in follow-up) ---
     bool load_3mf();
+    void decode_plate_thumbnails();
     void sanitize_config();
     void validate_config();
     bool validate_input();
@@ -126,21 +126,9 @@ private:
                                     const Slic3r::Preset& official_parent,
                                     const std::string& original_name);
     Slic3r::DynamicPrintConfig build_full_print_config();
-    void process_plate(int plate_id);
     void package_output();
     void build_statistics();
 
-    // --- Per-plate sub-stages ---
-    int  filter_instances(int plate_id, std::set<int>& plate_instance_ids);
-    bool run_build_volume_check(int plate_id, const std::set<int>& plate_instance_ids,
-                                const Slic3r::Vec3d& origin);
-    Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);
-    bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
-    bool run_validation(int plate_id, Slic3r::Print& print);
-    bool run_slicing(int plate_id, Slic3r::Print& print);
-    bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
-    void run_postprocessing(int plate_id, PlateSliceResult& result);
-    void restore_baked_z_offsets();
 
     // --- State ---
     EngineConfig m_cfg;

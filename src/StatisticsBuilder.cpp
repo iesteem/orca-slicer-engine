@@ -174,6 +174,20 @@ void StatisticsBuilder::package_output() {
     std::vector<ThumbnailData*> top_thumbnail_data;
     std::vector<ThumbnailData*> pick_thumbnail_data;
     std::vector<ThumbnailData*> calibration_thumbnail_data;
+
+    // Populate thumbnail vectors from decoded plate data so they are
+    // embedded into the output .3mf package (Metadata/plate_*.png).
+    for (const auto& pd : m_ctx.plate_data) {
+        thumbnail_data.push_back(
+            pd->plate_thumbnail.is_valid() ? &pd->plate_thumbnail : nullptr);
+        // no_light / top / pick / calibration thumbnails are not available
+        // from input .3mf — pass nullptr to skip those variants.
+        no_light_thumbnail_data.push_back(nullptr);
+        top_thumbnail_data.push_back(nullptr);
+        pick_thumbnail_data.push_back(nullptr);
+        calibration_thumbnail_data.push_back(nullptr);
+    }
+
     std::vector<PlateBBoxData*> id_bboxes;
     std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
     id_bboxes_owned.reserve(m_ctx.plate_data.size());
