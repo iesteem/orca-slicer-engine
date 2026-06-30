@@ -41,19 +41,6 @@ std::string PresetRollback::getFilamentVendor(const DynamicPrintConfig& config, 
 //   Pass 1 — 同厂商基础类：vendor 匹配且 filament_type 匹配（如 Snapmaker PLA → "Snapmaker PLA @U1 base"）
 //   Pass 2 — 通用基础类：OrcaFilamentLibrary / Generic 中 filament_type 匹配（如 "Generic PLA @System"）
 
-// 判断一个系统预设是否为「官方」耗材：Snapmaker 厂商，或来自
-// OrcaFilamentLibrary 跨厂商通用库。与 SliceEngine::validate_filament_official
-// 中的 is_official_preset 判据保持一致——回退目标必须同样是官方耗材，
-// 否则会把非官方耗材「回退」到另一个非官方 base，静默绕过强制官方不变量。
-static bool is_official_filament(const Preset& p)
-{
-    if (p.vendor && boost::iequals(p.vendor->name, PresetBundle::SM_BUNDLE))
-        return true;
-    if (p.m_from_orca_filament_lib)
-        return true;
-    return false;
-}
-
 // 判断预设名是否带「具体喷嘴」后缀（如 "... @U1 0.6 nozzle"、"... @0.2 nozzle"）。
 // 基础大类预设不含喷嘴标记（如 "... @base"、"... @U1 base"）。
 //
@@ -88,9 +75,6 @@ static const Preset* find_in_vendor(const PresetBundle& bundle,
         if (!preset.is_system && !preset.is_default) continue;
         if (!preset.vendor) continue;
         if (!boost::iequals(preset.vendor->name, vendor_name)) continue;
-        // 回退目标必须是官方耗材，否则会把非官方耗材回退到另一个
-        // 非官方 base，静默绕过强制官方不变量（R2）。
-        if (!is_official_filament(preset)) continue;
 
         auto* ft_opt = preset.config.option<ConfigOptionStrings>("filament_type");
         if (!ft_opt || ft_opt->values.empty()) continue;
@@ -136,9 +120,6 @@ static const Preset* find_generic(const PresetBundle& bundle,
 
     for (const Preset& preset : bundle.filaments) {
         if (!preset.is_system && !preset.is_default) continue;
-        // 通用回退同样只接受官方耗材（OrcaFilamentLibrary 或 Snapmaker），
-        // 防止选中非官方厂商自带的 "Generic <type>"（R2）。
-        if (!is_official_filament(preset)) continue;
 
         auto* ft_opt = preset.config.option<ConfigOptionStrings>("filament_type");
         if (!ft_opt || ft_opt->values.empty()) continue;
