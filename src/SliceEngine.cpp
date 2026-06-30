@@ -1047,11 +1047,14 @@ void SliceEngine::ensure_models_on_bed() {
     for (ModelObject* obj : m_model.objects) {
         if (obj->instances.empty())
             continue;
+        if (obj->min_z() < 0) {
+            BOOST_LOG_TRIVIAL(error) << "object z < 0: " << obj->min_z();
+        }
         const double before = obj->min_z();
         obj->ensure_on_bed(false);
         const double after = obj->min_z();
         if (std::abs(after - before) > 1e-4)
-            BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name
+            BOOST_LOG_TRIVIAL(error) << "ensure_on_bed: object \"" << obj->name
                 << "\" min_z " << before << " -> " << after << " (seated on bed)";
     }
 }
