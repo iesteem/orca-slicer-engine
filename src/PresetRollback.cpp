@@ -7,6 +7,8 @@
 
 #include <boost/log/trivial.hpp>
 
+#include <cctype>
+
 namespace Slic3r {
 
 // ---- 读取 m_config ----
@@ -38,6 +40,29 @@ std::string PresetRollback::getFilamentVendor(const DynamicPrintConfig& config, 
 // 两级回退策略：
 //   Pass 1 — 同厂商基础类：vendor 匹配且 filament_type 匹配（如 Snapmaker PLA → "Snapmaker PLA @U1 base"）
 //   Pass 2 — 通用基础类：OrcaFilamentLibrary / Generic 中 filament_type 匹配（如 "Generic PLA @System"）
+
+// 判断预设名是否带「具体喷嘴」后缀（如 "... @U1 0.6 nozzle"、"... @0.2 nozzle"）。
+// 基础大类预设不含喷嘴标记（如 "... @base"、"... @U1 base"）。
+//
+// 用独立 token "nozzle" 作为判据，而非匹配直径数字子串——后者会误中
+// "0.25"（被 find("0.2") 命中）等命名，且需硬编码直径列表。OrcaSlicer
+// 资源中所有带喷嘴的 filament 预设均以 " <直径> nozzle" 结尾，故
+// "nozzle" 词的存在即充分信号；filament 预设本身不携带 nozzle_diameter 字段。
+static bool name_has_nozzle_suffix(const std::string& name)
+{
+    const std::string token = "nozzle";
+    size_t pos = name.find(token);
+    while (pos != std::string::npos) {
+        // 要求 "nozzle" 是独立单词：前后非字母数字（或位于串首/尾）
+        bool left_ok  = (pos == 0) || !std::isalnum(static_cast<unsigned char>(name[pos - 1]));
+        size_t after  = pos + token.size();
+        bool right_ok = (after >= name.size()) || !std::isalnum(static_cast<unsigned char>(name[after]));
+        if (left_ok && right_ok)
+            return true;
+        pos = name.find(token, pos + 1);
+    }
+    return false;
+}
 
 static const Preset* find_in_vendor(const PresetBundle& bundle,
                                      const std::string& filament_type,
@@ -74,10 +99,8 @@ static const Preset* find_in_vendor(const PresetBundle& bundle,
         else if (!inherits_to.empty())
             score += 30;
 
-        // 不含 nozzle 后缀 → 更像基础类
-        if (preset.name.find("nozzle") == std::string::npos
-            && preset.name.find("0.2") == std::string::npos
-            && preset.name.find("0.4") == std::string::npos)
+        // 不含具体喷嘴后缀 → 更像基础类
+        if (!name_has_nozzle_suffix(preset.name))
             score += 40;
 
         if (score > best_score) {
