@@ -227,8 +227,9 @@ bool SliceEngine::run() {
 bool SliceEngine::load_3mf() {
     // --- Pre-load validation: format & size ---
 
-    // Extension check
+    // Extension check (case-insensitive: .3mf, .3MF, .3Mf are all valid)
     std::string ext = boost::filesystem::path(m_cfg.input_file).extension().string();
+    boost::to_lower(ext);
     if (ext != ".3mf") {
         std::string msg = "仅支持上传 .3mf 格式的打印配置文件，请使用 Snapmaker Orca Slicer 导出";
         BOOST_LOG_TRIVIAL(error) << msg;
