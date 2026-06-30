@@ -1047,15 +1047,76 @@ void SliceEngine::ensure_models_on_bed() {
     for (ModelObject* obj : m_model.objects) {
         if (obj->instances.empty())
             continue;
-        if (obj->min_z() < 0) {
-            BOOST_LOG_TRIVIAL(error) << "object z < 0: " << obj->min_z();
+        // Force fresh bounding-box computation. The cache may be stale from
+        // 3MF import before instance transforms were finalized.
+        obj->invalidate_bounding_box();
+
+        // Print::apply zeroes the Z component of the instance transform
+        // matrix (PrintApply.cpp:155 — "Z offset is discarded to ensure
+        // first layer starts at Z=0").  Any Z in the instance offset is
+        // silently dropped, which clips objects that rely on it.
+        //
+        // Fix: bake the instance Z offset into mesh vertices, zero the
+        // instance Z offset, then apply ensure_on_bed to the corrected
+        // geometry.  The Z survives Print::apply because it lives in
+        // mesh-vertex space.
+        //
+        // translate() moves mesh vertices in LOCAL space, but the instance
+        // rotation may flip or reorient the local Z axis.  We must convert
+        // the world-space Z shift to local coordinates via the inverse of
+        // the instance rotation (matrix without offset).
+
+        // --- Step 1: bake existing instance Z offset into mesh vertices ---
+        double inst_z = 0.0;
+        for (ModelInstance* inst : obj->instances) {
+            inst_z = inst->get_offset().z();
+            if (std::abs(inst_z) > 1e-4) break;
         }
-        const double before = obj->min_z();
-        obj->ensure_on_bed(false);
-        const double after = obj->min_z();
-        if (std::abs(after - before) > 1e-4)
-            BOOST_LOG_TRIVIAL(error) << "ensure_on_bed: object \"" << obj->name
-                << "\" min_z " << before << " -> " << after << " (seated on bed)";
+
+        if (std::abs(inst_z) > 1e-4) {
+            // Convert world-space (0,0,inst_z) to local space using the
+            // inverse of the instance rotation (no offset).
+            auto rot_no_off = obj->instances.front()
+                ->get_transformation().get_matrix_no_offset();
+            Vec3d world_shift(0, 0, inst_z);
+            Vec3d local_shift = rot_no_off.inverse() * world_shift;
+            obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
+            // Zero all instance Z offsets.
+            for (ModelInstance* inst : obj->instances) {
+                Vec3d off = inst->get_offset();
+                inst->set_offset(Vec3d(off.x(), off.y(), 0.0));
+            }
+        }
+
+        // --- Step 2: correct any remaining sinking ---
+        {
+            obj->invalidate_bounding_box();
+            double before = obj->min_z();
+            obj->ensure_on_bed(false);
+            double after  = obj->min_z();
+            double z_shift = after - before;
+
+            if (std::abs(z_shift) > 1e-4) {
+                // Convert world-space z_shift to local (same as step 1).
+                auto rot_no_off = obj->instances.front()
+                    ->get_transformation().get_matrix_no_offset();
+                Vec3d world_shift(0, 0, z_shift);
+                Vec3d local_shift = rot_no_off.inverse() * world_shift;
+                obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
+                // Undo the instance-offset change ensure_on_bed just made.
+                for (ModelInstance* inst : obj->instances) {
+                    Vec3d off = inst->get_offset();
+                    inst->set_offset(Vec3d(off.x(), off.y(), off.z() - z_shift));
+                }
+            }
+
+            obj->invalidate_bounding_box();
+            double verify = obj->min_z();
+            BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name
+                << "\" inst_z=" << inst_z << " before=" << before
+                << " after=" << after << " z_shift=" << z_shift
+                << " verify=" << verify;
+        }
     }
 }
 
