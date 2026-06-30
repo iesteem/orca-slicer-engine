@@ -81,6 +81,10 @@ inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintC
             auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
             auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
             if (!dst_vec || !src_vec) continue;
+            // set_at() throws ConfigurationError on incompatible element types.
+            // Skip type-mismatched keys so a single bad key cannot abort the
+            // whole overwrite mid-way (symmetric with the scalar branch above).
+            if (dst_opt->type() != it->second->type()) continue;
             for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
                 dst_vec->set_at(src_vec, i, i);
         }
@@ -561,12 +565,20 @@ bool SliceEngine::validate_filament_official()
     // 解析单个 filament：官方 → true；非官方 → 继承链找官方祖先（全面替换）；
     // 失败则回退；回退也失败 → 报 error 返回 false。
     auto resolve_filament = [&](int i) -> bool {
-        const std::string& name = filament_ids->values[i];
+        // 按值拷贝，不取引用：rollback/substitute 会就地覆盖
+        // filament_ids->values[i]，引用会在覆盖后读到新名字，导致
+        // FILAMENT_ROLLED_BACK / FILAMENT_SUBSTITUTED 告警丢失原始耗材名（R1）。
+        const std::string name = filament_ids->values[i];
 
         // Case 1: Direct system preset match
         if (Preset* sys = find_in_system(name)) {
-            if (is_official_preset(*sys))
+            if (is_official_preset(*sys)) {
+                // 即便按名命中官方预设，3MF 仍可能内联了改过的 per-extruder
+                // 值（different_settings_to_system）。整体回灌官方参数，使最终
+                // 参数严格等于官方，与打印机侧整体覆盖语义对齐（R3）。
+                PresetRollback::overwriteExtruderFrom(m_config, *sys, i, filament_ids);
                 return true; // OK
+            }
             return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
                 "Filament \"" + name + "\" belongs to unsupported vendor");
         }
