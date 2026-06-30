@@ -1,3 +1,5 @@
 build/
+build-static/
+cmake/StaticConfig.cmake
 slic3r_sdk/
 slic3r_sdk_*.zip

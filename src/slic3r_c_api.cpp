@@ -22,6 +22,7 @@
 
 #include "Types.hpp"
 #include "SliceEngine.hpp"
+#include "JsonReport.hpp"
 
 using json = nlohmann::json;
 
@@ -70,79 +71,6 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
         fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
         return false;
     }
-}
-
-// Serialize SliceOutputStats to JSON
-static std::string stats_to_json(const SliceOutputStats& s) {
-    json j;
-    j["success"] = s.success;
-
-    if (!s.error_message.empty())
-        j["error_message"] = s.error_message;
-
-    j["plates"] = json::array();
-    for (const auto& p : s.plates) {
-        json pj;
-        pj["index"]        = p.plate_id;
-        pj["success"]      = p.success;
-        pj["gcode_file"]   = p.gcode_file;
-        pj["time"] = {
-            {"total",   p.total_time},
-            {"prepare", p.prepare_time},
-            {"print",   p.print_time}
-        };
-        pj["filament"] = {
-            {"total_m",      p.total_filament_m},
-            {"total_g",      p.total_filament_g},
-            {"model_m",      p.model_filament_m},
-            {"model_g",      p.model_filament_g},
-            {"total_cost",   p.total_cost}
-        };
-        pj["support_used"]       = p.support_used;
-        pj["toolpath_outside"]   = p.toolpath_outside;
-        pj["plate_count"]        = p.plate_count;
-        pj["model_thumbnail"]    = p.model_thumbnail;
-
-        // Issues per plate
-        pj["issues"] = json::array();
-        for (const auto& iss : p.issues) {
-            pj["issues"].push_back({
-                {"level",       iss.level},
-                {"plate_id",    iss.plate_id},
-                {"object_name", iss.object_name},
-                {"z_height",    iss.z_height},
-                {"code",        iss.code},
-                {"message",     iss.message},
-                {"suggestion",  iss.suggestion}
-            });
-        }
-
-        // Filament details
-        pj["filament_details"] = json::array();
-        for (const auto& fd : p.filament_details) {
-            pj["filament_details"].push_back({
-                {"id",    fd.filament_id},
-                {"type",  fd.type},
-                {"color", fd.color},
-                {"used_g", fd.used_g},
-                {"used_m", fd.used_m}
-            });
-        }
-
-        j["plates"].push_back(pj);
-    }
-
-    // Global issues
-    j["global_issues"] = json::array();
-    for (const auto& iss : s.issues) {
-        j["global_issues"].push_back({
-            {"level", iss.level}, {"plate_id", iss.plate_id},
-            {"object_name", iss.object_name}, {"code", iss.code},
-            {"message", iss.message}, {"suggestion", iss.suggestion}
-        });
-    }
-
-    return j.dump();
 }
 
 // ====================================================================
@@ -211,9 +139,9 @@ SLIC3R_API int slic3r_slice(
         SliceEngine engine(cfg, temp_files);
         bool ran = engine.run();
 
-        // Serialize stats
+        // Serialize stats (unified JsonReport schema: base-1 plate/filament ids)
         const auto& stats = engine.stats();
-        std::string json_str = stats_to_json(stats);
+        std::string json_str = build_statistics_json(stats, output_base);
 
         if (stats_out && stats_size > 0) {
             size_t n = (json_str.size() < stats_size - 1)

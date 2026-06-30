@@ -1604,7 +1604,7 @@ void SliceEngine::package_output() {
             if (filament_colors && idx < filament_colors->values.size())
                 info.color = filament_colors->values[idx];
             if (filament_ids && idx < filament_ids->values.size())
-                info.id = filament_ids->values[idx];
+                info.filament_id = filament_ids->values[idx];
         }
 
         // Rebuild objects_and_instances using model.objects array indices

@@ -12,14 +12,72 @@ project(orca-slice-engine VERSION 1.0.0 LANGUAGES C CXX)
 # ==================================================================
 
 option(BUILD_SLIC3R_DLL "Build slic3r.dll from engine source (requires libslic3r SDK)" OFF)
+option(ORCA_STATIC "Build a single static executable linking libslic3r.a + all deps (Linux)" OFF)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ==================================================================
+# Static single-binary mode (Linux):
+#   Compile the engine C++ sources + main.c straight into ONE executable
+#   that statically links libslic3r.a and every dependency .a — no .so at all.
+#
+#   The authoritative library list / include dirs / defines are extracted from
+#   an existing OrcaSlicer build by scripts/gen_static_libs.sh into
+#   cmake/StaticConfig.cmake. Regenerate that file whenever OrcaSlicer is rebuilt.
+#
+#   Usage:
+#     ORCA_ROOT=/path/to/OrcaSlicer scripts/gen_static_libs.sh
+#     cmake -S . -B build-static -DORCA_STATIC=ON
+#     cmake --build build-static -j 2
+# ==================================================================
+if(ORCA_STATIC)
+    set(_static_cfg "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StaticConfig.cmake")
+    if(NOT EXISTS "${_static_cfg}")
+        message(FATAL_ERROR
+            "ORCA_STATIC=ON but ${_static_cfg} is missing.\n"
+            "Run: ORCA_ROOT=<OrcaSlicer path> scripts/gen_static_libs.sh")
+    endif()
+    include("${_static_cfg}")  # defines ORCA_STATIC_LIBS / ORCA_STATIC_INCLUDES / ORCA_STATIC_DEFINES
+
+    add_executable(orca-slice-engine
+        src/main.c
+        src/slic3r_c_api.cpp
+        src/SliceEngine.cpp
+        src/JsonReport.cpp
+        src/GeometryCheck.cpp
+        src/Utils.cpp
+        src/nanosvg.cpp
+        src/PresetRollback.cpp
+    )
+
+    # Drop include dirs that no longer exist (e.g. build-time symlinks src/eigen)
+    set(_inc_dirs "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    foreach(_d IN LISTS ORCA_STATIC_INCLUDES)
+        if(EXISTS "${_d}")
+            list(APPEND _inc_dirs "${_d}")
+        endif()
+    endforeach()
+    target_include_directories(orca-slice-engine PRIVATE ${_inc_dirs})
+
+    target_compile_definitions(orca-slice-engine PRIVATE ${ORCA_STATIC_DEFINES})
+
+    # Match libslic3r's translation-unit flags so our sources agree with its headers.
+    target_compile_options(orca-slice-engine PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-fext-numeric-literals;-fsigned-char>)
+    set_target_properties(orca-slice-engine PROPERTIES
+        CXX_STANDARD 17 CXX_EXTENSIONS ON           # -std=gnu++17 (libslic3r uses GNU exts)
+        POSITION_INDEPENDENT_CODE ON)
+
+    target_link_libraries(orca-slice-engine PRIVATE ${ORCA_STATIC_LIBS})
+
+    message(STATUS "ORCA_STATIC enabled — single static executable")
+endif()
+
 # === Target 1: slic3r.dll (opt-in, needs OrcaSlicer SDK) ===
-if(BUILD_SLIC3R_DLL)
+if(NOT ORCA_STATIC AND BUILD_SLIC3R_DLL)
     find_package(libslic3r REQUIRED)
     find_package(CGAL REQUIRED)
     find_package(Boost REQUIRED COMPONENTS filesystem log log_setup nowide)
@@ -71,8 +129,9 @@ if(BUILD_SLIC3R_DLL)
     message(STATUS "slic3r.dll target enabled")
 endif()
 
-# === Target 2: orca-slice-engine.exe (consumer, always built) ===
+# === Target 2: orca-slice-engine.exe (consumer; skipped in ORCA_STATIC mode) ===
 
+if(NOT ORCA_STATIC)
 if(BUILD_SLIC3R_DLL)
     # DLL is being built locally — link against it
     add_executable(orca-slice-engine src/main.c)
@@ -88,6 +147,7 @@ else()
     add_executable(orca-slice-engine src/main.c)
     target_include_directories(orca-slice-engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(orca-slice-engine PRIVATE ${SLIC3R_LIBRARY})
+endif()
 endif()
 
 message(STATUS "orca-slice-engine configured (C API consumer)")

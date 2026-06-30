@@ -56,9 +56,8 @@ static ordered_json issue_to_json(const Issue& issue) {
     return j;
 }
 
-void output_slice_statistics(const SliceOutputStats& stats,
-                             const std::string& json_output_path,
-                             const std::string& output_file_path)
+std::string build_statistics_json(const SliceOutputStats& stats,
+                                  const std::string& output_file_path)
 {
     ordered_json root;
 
@@ -154,7 +153,14 @@ void output_slice_statistics(const SliceOutputStats& stats,
     }
     root["plates"] = std::move(plates_json);
 
-    std::string json_str = root.dump(2);
+    return root.dump(2);
+}
+
+void output_slice_statistics(const SliceOutputStats& stats,
+                             const std::string& json_output_path,
+                             const std::string& output_file_path)
+{
+    std::string json_str = build_statistics_json(stats, output_file_path);
 
     std::cout << "\n=== SLICE STATISTICS (JSON) ===" << std::endl;
     std::cout << json_str << std::endl;
