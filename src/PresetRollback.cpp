@@ -7,7 +7,7 @@
 
 #include <boost/log/trivial.hpp>
 
-#include <cctype>
+#include <cmath>
 
 namespace Slic3r {
 
@@ -37,139 +37,107 @@ std::string PresetRollback::getFilamentVendor(const DynamicPrintConfig& config, 
 
 // ---- 查找基础大类预设 ----
 //
-// 两级回退策略：
-//   Pass 1 — 同厂商基础类：vendor 匹配且 filament_type 匹配（如 Snapmaker PLA → "Snapmaker PLA @U1 base"）
-//   Pass 2 — 通用基础类：OrcaFilamentLibrary / Generic 中 filament_type 匹配（如 "Generic PLA @System"）
-
-// 判断预设名是否带「具体喷嘴」后缀（如 "... @U1 0.6 nozzle"、"... @0.2 nozzle"）。
-// 基础大类预设不含喷嘴标记（如 "... @base"、"... @U1 base"）。
+// 三维精确匹配策略：
+//   Pass 1 — 同厂商：filament_vendor + filament_type + nozzle_diameter 全匹配
+//            （如 Snapmaker + PLA + 0.4 → "Snapmaker PLA Matte @U1 0.4 nozzle"）
+//   Pass 2 — Generic 兜底：filament_vendor == "Generic" + filament_type + nozzle_diameter
+//            （如 "Generic PLA @U1 0.4 nozzle"）
 //
-// 用独立 token "nozzle" 作为判据，而非匹配直径数字子串——后者会误中
-// "0.25"（被 find("0.2") 命中）等命名，且需硬编码直径列表。OrcaSlicer
-// 资源中所有带喷嘴的 filament 预设均以 " <直径> nozzle" 结尾，故
-// "nozzle" 词的存在即充分信号；filament 预设本身不携带 nozzle_diameter 字段。
-static bool name_has_nozzle_suffix(const std::string& name)
+// 喷嘴匹配：通过 filament 的 compatible_printers → 对应 printer 预设 → nozzle_diameter 数值比较。
+
+// 通过 filament 的 compatible_printers，筛出目标机型的 printer，
+// 读取 printer 的 nozzle_diameter 与目标值做 ε 比较。
+static bool filament_supports_nozzle(const PresetBundle& bundle,
+                                      const Preset& filament,
+                                      double target_nozzle,
+                                      const std::string& printer_model)
 {
-    const std::string token = "nozzle";
-    size_t pos = name.find(token);
-    while (pos != std::string::npos) {
-        // 要求 "nozzle" 是独立单词：前后非字母数字（或位于串首/尾）
-        bool left_ok  = (pos == 0) || !std::isalnum(static_cast<unsigned char>(name[pos - 1]));
-        size_t after  = pos + token.size();
-        bool right_ok = (after >= name.size()) || !std::isalnum(static_cast<unsigned char>(name[after]));
-        if (left_ok && right_ok)
+    auto* cp = filament.config.option<ConfigOptionStrings>("compatible_printers");
+    if (!cp || cp->values.empty()) return false;
+
+    for (const std::string& printer_name : cp->values) {
+        // 只考虑目标机型的 printer（如 "Snapmaker U1"）
+        if (printer_name.find(printer_model) == std::string::npos) continue;
+
+        const Preset* printer = nullptr;
+        for (const Preset& p : bundle.printers) {
+            if (p.name == printer_name) {
+                printer = &p;
+                break;
+            }
+        }
+        if (!printer) continue;
+
+        auto* nd = printer->config.option<ConfigOptionFloats>("nozzle_diameter");
+        if (!nd || nd->values.empty()) continue;
+
+        if (std::abs(nd->values[0] - target_nozzle) <= 0.001)
             return true;
-        pos = name.find(token, pos + 1);
     }
     return false;
 }
 
-static const Preset* find_in_vendor(const PresetBundle& bundle,
-                                     const std::string& filament_type,
-                                     const std::string& vendor_name)
+// 读取 preset 的 filament_type 配置值
+static std::string get_preset_filament_type(const Preset& preset)
 {
-    const Preset* best      = nullptr;
-    int           best_score = -1;
-
-    for (const Preset& preset : bundle.filaments) {
-        if (!preset.is_system && !preset.is_default) continue;
-        if (!preset.vendor) continue;
-        if (!boost::iequals(preset.vendor->name, vendor_name)) continue;
-
-        auto* ft_opt = preset.config.option<ConfigOptionStrings>("filament_type");
-        if (!ft_opt || ft_opt->values.empty()) continue;
-        if (!boost::iequals(ft_opt->values[0], filament_type)) continue;
-
-        int score = 0;
-
-        // 名称含 "base" → 是中间基础层，优先
-        if (preset.name.find("base") != std::string::npos ||
-            preset.name.find("Base") != std::string::npos)
-            score += 100;
-
-        // instantiation=false → 中间层模板，优先
-        auto* inst_opt = preset.config.option<ConfigOptionBool>("instantiation");
-        if (inst_opt && !inst_opt->value)
-            score += 80;
-
-        // inherits 指向 fdm_filament_* → 接近根大类
-        const std::string& inherits_to = preset.inherits();
-        if (inherits_to.find("fdm_filament_") != std::string::npos)
-            score += 60;
-        else if (!inherits_to.empty())
-            score += 30;
-
-        // 不含具体喷嘴后缀 → 更像基础类
-        if (!name_has_nozzle_suffix(preset.name))
-            score += 40;
-
-        if (score > best_score) {
-            best_score = score;
-            best       = &preset;
-        }
-    }
-
-    return best;
+    auto* opt = preset.config.option<ConfigOptionStrings>("filament_type");
+    if (!opt || opt->values.empty()) return {};
+    return opt->values[0];
 }
 
-static const Preset* find_generic(const PresetBundle& bundle,
-                                   const std::string& filament_type)
+// 读取 preset 的 filament_vendor 配置值
+static std::string get_preset_filament_vendor(const Preset& preset)
 {
-    const Preset* best      = nullptr;
-    int           best_score = -1;
+    auto* opt = preset.config.option<ConfigOptionStrings>("filament_vendor");
+    if (!opt || opt->values.empty()) return {};
+    return opt->values[0];
+}
 
+// 在 bundle 中找 {vendor_name, filament_type, nozzle_diameter, printer_model} 全匹配的系统预设
+static const Preset* find_in_vendor(const PresetBundle& bundle,
+                                     const std::string& filament_type,
+                                     const std::string& vendor_name,
+                                     double nozzle_diameter,
+                                     const std::string& printer_model)
+{
     for (const Preset& preset : bundle.filaments) {
-        if (!preset.is_system && !preset.is_default) continue;
+        if (!preset.is_system) continue;
 
-        auto* ft_opt = preset.config.option<ConfigOptionStrings>("filament_type");
-        if (!ft_opt || ft_opt->values.empty()) continue;
-        if (!boost::iequals(ft_opt->values[0], filament_type)) continue;
+        // 喷嘴直径匹配（compatible_printers → 目标机型 printer → nozzle_diameter）
+        if (!filament_supports_nozzle(bundle, preset, nozzle_diameter, printer_model)) continue;
 
-        int score = 0;
+        // filament_type 匹配（大小写不敏感）
+        if (!boost::iequals(get_preset_filament_type(preset), filament_type)) continue;
 
-        // OrcaFilamentLibrary → 通用跨厂商基础类
-        if (preset.m_from_orca_filament_lib)
-            score += 100;
+        // filament_vendor 匹配（大小写不敏感）
+        if (!boost::iequals(get_preset_filament_vendor(preset), vendor_name)) continue;
 
-        // 名称含 "Generic" → 明确的通用预设
-        if (preset.name.find("Generic") != std::string::npos)
-            score += 80;
-
-        // instantiation=false → 中间层
-        auto* inst_opt = preset.config.option<ConfigOptionBool>("instantiation");
-        if (inst_opt && !inst_opt->value)
-            score += 60;
-
-        // 无 inherits → 根大类
-        const std::string& inherits_to = preset.inherits();
-        if (inherits_to.empty())
-            score += 50;
-        else if (inherits_to.find("fdm_filament_common") != std::string::npos)
-            score += 40;
-
-        if (score > best_score) {
-            best_score = score;
-            best       = &preset;
-        }
+        return &preset;
     }
 
-    return best;
+    return nullptr;
 }
 
 const Preset* PresetRollback::findBaseFilament(const PresetBundle* bundle,
                                                 const std::string& filament_type,
-                                                const std::string& vendor_hint)
+                                                const std::string& vendor_hint,
+                                                double nozzle_diameter,
+                                                const std::string& printer_model)
 {
     if (!bundle || filament_type.empty()) return nullptr;
 
-    // Pass 1: 同厂商基础类
+    // Pass 1: 同厂商
     if (!vendor_hint.empty()) {
-        const Preset* vendor_base = find_in_vendor(*bundle, filament_type, vendor_hint);
-        if (vendor_base) return vendor_base;
+        const Preset* r = find_in_vendor(*bundle, filament_type, vendor_hint, nozzle_diameter, printer_model);
+        if (r) return r;
     }
 
-    // Pass 2: 通用基础类 (Generic / OrcaFilamentLibrary)
-    return find_generic(*bundle, filament_type);
+    // Pass 2: Generic 兜底（避免 vendor_hint 已经是 Generic 时重复查）
+    if (!boost::iequals(vendor_hint, "Generic")) {
+        return find_in_vendor(*bundle, filament_type, "Generic", nozzle_diameter, printer_model);
+    }
+
+    return nullptr;
 }
 
 // ---- 共享「全面覆盖」操作 ----
@@ -223,12 +191,25 @@ bool PresetRollback::rollback(DynamicPrintConfig& config,
         return false;
     }
 
+    // 1b. 读取 nozzle_diameter 和 printer_model（用于 compatible_printers → printer 喷嘴匹配）
+    double nozzle_diameter = 0.4;
+    if (config.has("nozzle_diameter")) {
+        auto* nozzle_opt = config.option<ConfigOptionFloats>("nozzle_diameter");
+        if (nozzle_opt && extruder_idx >= 0
+            && static_cast<size_t>(extruder_idx) < nozzle_opt->values.size())
+            nozzle_diameter = nozzle_opt->values[extruder_idx];
+    }
+
+    std::string printer_model = "Snapmaker U1";
+
     // 2. 查找基础大类预设
-    const Preset* base = findBaseFilament(bundle, filament_type, filament_vendor);
+    const Preset* base = findBaseFilament(bundle, filament_type, filament_vendor,
+                                          nozzle_diameter, printer_model);
     if (!base) {
         BOOST_LOG_TRIVIAL(warning)
             << "PresetRollback: no base filament found for type=\""
-            << filament_type << "\" vendor=\"" << filament_vendor << "\"";
+            << filament_type << "\" vendor=\"" << filament_vendor
+            << "\" nozzle=" << nozzle_diameter;
         return false;
     }
 
