@@ -72,6 +72,7 @@ private:
     void load_system_presets();
     void validate_presets();
     void apply_official_presets();
+    void apply_printer_official_preset();
     bool validate_filament_official();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
                                     const Slic3r::Preset& official_parent,

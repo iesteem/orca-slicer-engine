@@ -3,6 +3,8 @@
 #include "Utils.hpp"
 
 #include <cmath>
+#include <array>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -44,6 +46,47 @@ bool is_wipe_tower_error(const PlateSliceResult& result) {
     return false;
 }
 
+// Default values used to detect that the official printer preset was NOT
+// actually applied (printable_area / printable_height still at library defaults).
+constexpr double DEFAULT_PLATE_WIDTH      = 200.0;
+constexpr double DEFAULT_PLATE_DEPTH      = 200.0;
+constexpr double DEFAULT_PRINTABLE_HEIGHT = 100.0;
+
+// Tolerance for comparing plate dimensions against the library defaults.
+// Direct float == is unreliable; the official U1 bed (~270 mm) is far from
+// these defaults, so any small epsilon cleanly separates "applied" from "not".
+constexpr double PLATE_DIM_EPSILON = 1e-3;
+
+// Nozzle diameter values that, when within this epsilon of an integer, are
+// formatted with 0 decimals (e.g. 1.0 -> "1"); otherwise 1 decimal ("0.4").
+constexpr double NOZZLE_FORMAT_EPSILON = 0.05;
+
+// Overwrite every key present in `src` onto `dst` (only keys that already
+// exist in `dst`). Scalars are copied wholesale; vectors are copied
+// element-by-element up to the shorter length. No user value is preserved.
+inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
+{
+    for (auto it = src.cbegin(); it != src.cend(); ++it) {
+        const auto& key     = it->first;
+        ConfigOption* dst_opt = dst.option(key, false);
+        if (!dst_opt) continue;
+
+        if (dst_opt->is_scalar()) {
+            // ConfigOptionSingle::set() throws ConfigurationError when the
+            // source type differs. Guard against same-key/different-type
+            // mismatches (symmetric with the vector branch below).
+            if (dst_opt->type() != it->second->type()) continue;
+            dst_opt->set(it->second.get());
+        } else {
+            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
+            if (!dst_vec || !src_vec) continue;
+            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
+                dst_vec->set_at(src_vec, i, i);
+        }
+    }
+}
+
 } // namespace
 
 SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files)
@@ -81,6 +124,17 @@ bool SliceEngine::run() {
     if (!validate_printer_model()) {
         build_statistics();
         return false;
+    }
+
+    // Replace the user's printer config wholesale with the official U1 preset.
+    // Runs after the model check (model confirmed U1) and after the G-code
+    // strip above; the official machine G-code overwrites the cleared values.
+    if (m_cfg.enforce_official_presets) {
+        apply_printer_official_preset();
+        if (m_any_error) {
+            build_statistics();
+            return false;
+        }
     }
 
     bool validate_ok = validate_input();
@@ -637,6 +691,116 @@ void SliceEngine::apply_official_presets()
         }
     }
 
+}
+
+void SliceEngine::apply_printer_official_preset()
+{
+    // Replace the user's printer configuration wholesale with the official
+    // Snapmaker U1 preset matching the requested nozzle diameter. No user
+    // printer value (printable area, machine G-code, kinematics, …) is kept.
+    // The official preset config is sourced from the already-loaded
+    // PresetBundle, whose system presets carry a fully inherits-expanded
+    // config (fdm_U1 -> fdm_toolchanger merged in at load time).
+    if (!m_presets_available || !m_preset_bundle) {
+        std::string msg = "System presets not available; cannot apply official printer preset.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
+        return;
+    }
+
+    // Determine nozzle diameter from the first extruder (default 0.4).
+    double nozzle = 0.4;
+    if (auto* nd = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+        nd && !nd->values.empty() && nd->values[0] > 0)
+        nozzle = nd->values[0];
+
+    auto fmt_nozzle = [](double d) {
+        std::array<char, 8> buf;
+        const int precision = (std::abs(d - std::round(d)) < NOZZLE_FORMAT_EPSILON) ? 0 : 1;
+        snprintf(buf.data(), buf.size(), "%.*f", precision, d);
+        return std::string(buf.data());
+    };
+
+    std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
+
+    // Look up the official preset in the loaded bundle. find_preset returns
+    // nullptr when not found (first_visible_if_not_found = false).
+    const Preset* official = m_preset_bundle->printers.find_preset(preset_name, false);
+    if (!official) {
+        // Fall back to the known supported nozzle variants.
+        static const char* known[] = {"0.2", "0.4", "0.6", "0.8"};
+        for (const char* n : known) {
+            std::string candidate = "Snapmaker U1 (" + std::string(n) + " nozzle)";
+            if (const Preset* p = m_preset_bundle->printers.find_preset(candidate, false)) {
+                official = p;
+                preset_name = candidate;
+                break;
+            }
+        }
+    }
+
+    if (!official) {
+        std::string msg = "Official printer preset not found for nozzle "
+            + fmt_nozzle(nozzle) + " mm (looked for \"" + preset_name + "\").";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
+        return;
+    }
+
+    // Wholesale overwrite: every key in the official config replaces the
+    // user's value (machine G-code keys included).
+    overwrite_all_keys_from(m_config, official->config);
+
+    // Set the preset identity to the official one.
+    m_config.set_key_value("printer_settings_id", new ConfigOptionString(preset_name));
+    if (auto* pm = official->config.option<ConfigOptionString>("printer_model");
+        pm && m_config.has("printer_model"))
+        m_config.set_key_value("printer_model", new ConfigOptionString(pm->value));
+
+    // Verify the official preset actually took effect: printable_area must be
+    // a 4-point rectangle that differs from the library default, and
+    // printable_height must differ from the default.
+    auto fail = [&](const std::string& detail) {
+        std::string msg = "Printer configuration incomplete: " + detail
+            + ". The official U1 printer preset was not applied correctly.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_VALIDATION_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+    };
+
+    auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.size() != 4) {
+        fail("printable_area missing or wrong format");
+        return;
+    }
+    auto near = [](double a, double b) { return std::abs(a - b) < PLATE_DIM_EPSILON; };
+    bool is_default_area =
+        (near(pa->values[0].x(), 0.0)               && near(pa->values[0].y(), 0.0)) &&
+        (near(pa->values[1].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[1].y(), 0.0)) &&
+        (near(pa->values[2].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[2].y(), DEFAULT_PLATE_DEPTH)) &&
+        (near(pa->values[3].x(), 0.0)               && near(pa->values[3].y(), DEFAULT_PLATE_DEPTH));
+    if (is_default_area) {
+        fail("printable_area is still the default");
+        return;
+    }
+
+    auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
+    if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT)) {
+        fail("printable_height is still the default");
+        return;
+    }
+
+    m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED",
+        "Printer preset replaced with official preset \"" + preset_name
+        + "\" for cloud safety"));
 }
 
 // ============================================================================
