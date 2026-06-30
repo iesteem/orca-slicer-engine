@@ -80,19 +80,10 @@ int main(int argc, char* argv[]) {
     }
 
     /* Auto-generate log file path when --log is given without --log-file.
-     * Derive directory from input_3mf so the log lands beside the output.
-     * Must happen AFTER output path derivation so output is non-NULL. */
+     * Log lands beside the output file, e.g. -o /tmp/foo -> /tmp/foo.log */
     char log_auto_path[1024] = {0};
     if (log_enabled && !log_file) {
-        const char* dir_end = strrchr(input_3mf, '/');
-        if (!dir_end) dir_end = strrchr(input_3mf, '\\');
-        if (dir_end) {
-            int dir_len = (int)(dir_end - input_3mf);
-            snprintf(log_auto_path, sizeof(log_auto_path),
-                     "%.*s/%s.log", dir_len, input_3mf, output);
-        } else {
-            snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
-        }
+        snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
         log_file = log_auto_path;
     }
 
