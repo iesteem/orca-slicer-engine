@@ -15,6 +15,7 @@ int main(int argc, char* argv[]) {
     const char* input_3mf  = NULL;
     const char* output     = NULL;
     const char* resources  = NULL;
+    const char* log_file   = NULL;
     int         plate_id   = 0;
     const char* format     = "gcode.3mf";
     int         verbose    = 0;
@@ -28,6 +29,8 @@ int main(int argc, char* argv[]) {
             printf("  -p, --plate <id>      Plate ID (0=all, default: 0)\n");
             printf("  -f, --format <fmt>    gcode | gcode.3mf (default: gcode.3mf)\n");
             printf("  -r, --resources <dir> Resources directory\n");
+            printf("  --log                 Enable log file output\n");
+            printf("  --log-file <file>     Specify log file path (implies --log)\n");
             printf("  -v, --verbose         Verbose output\n");
             return 0;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
@@ -40,10 +43,25 @@ int main(int argc, char* argv[]) {
             if (++i < argc) format = argv[i];
         } else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--resources")) {
             if (++i < argc) resources = argv[i];
+        } else if (!strcmp(argv[i], "--log-file")) {
+            if (++i < argc) log_file = argv[i];
+        } else if (!strcmp(argv[i], "--log")) {
+            /* --log without --log-file: auto-generate log path later */
+            verbose = 1;
         } else if (argv[i][0] != '-') {
-            input_3mf = argv[i];
+            /* Only accept as input file if it has a .3mf extension
+             * (prevents --log-file <path> value from being eaten as input) */
+            const char* dot = strrchr(argv[i], '.');
+            if (dot && dot[1] == '3'
+                && (dot[2] == 'm' || dot[2] == 'M')
+                && (dot[3] == 'f' || dot[3] == 'F')
+                && dot[4] == '\0')
+                input_3mf = argv[i];
         }
     }
+
+    /* TODO: wire log_file into engine logging (Boost log file sink) */
+    (void)log_file;
 
     if (!input_3mf) {
         fprintf(stderr, "Error: input file required. Use -h for help.\n");
