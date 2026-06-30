@@ -97,7 +97,7 @@ std::string build_statistics_json(const SliceOutputStats& stats,
     }
 
     root["success"] = stats.success;
-    root["engine_version"] = SLIC3R_VERSION;
+    root["engine_version"] = ENGINE_VERSION;
 
     ordered_json print_info;
     print_info["output_file"]          = stats.success ? output_file_path : "";

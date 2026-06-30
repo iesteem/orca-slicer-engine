@@ -39,7 +39,7 @@ std::pair<std::string, std::string> format_exception_context(const Slic3r::Strin
 }
 
 void print_usage(const char* program_name) {
-    std::cout << "OrcaSlicer Cloud Slicing Engine v" << SLIC3R_VERSION << std::endl;
+    std::cout << "OrcaSlicer Cloud Slicing Engine v" << ENGINE_VERSION << std::endl;
     std::cout << std::endl;
     std::cout << "Usage: " << program_name << " input.3mf [OPTIONS]" << std::endl;
     std::cout << std::endl;

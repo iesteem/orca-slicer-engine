@@ -103,7 +103,7 @@ SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx);
 
 /* ---- Version ---- */
 
-/** Get the libslic3r version string (e.g. "01.10.01.50"). */
+/** Get the engine version string (e.g. "02.01.01"). */
 SLIC3R_API const char* slic3r_version(void);
 
 /* ---- Cancellation ---- */

@@ -171,7 +171,7 @@ SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx) {
 }
 
 SLIC3R_API const char* slic3r_version(void) {
-    return SLIC3R_VERSION;
+    return ENGINE_VERSION;
 }
 
 SLIC3R_API void slic3r_cancel(slic3r_ctx_t* ctx) {

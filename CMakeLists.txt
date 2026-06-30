@@ -62,7 +62,10 @@ if(ORCA_STATIC)
     endforeach()
     target_include_directories(orca-slice-engine PRIVATE ${_inc_dirs})
 
-    target_compile_definitions(orca-slice-engine PRIVATE ${ORCA_STATIC_DEFINES})
+    target_compile_definitions(orca-slice-engine PRIVATE
+        ${ORCA_STATIC_DEFINES}
+        ENGINE_VERSION="02.01.01"
+    )
 
     # Match libslic3r's translation-unit flags so our sources agree with its headers.
     target_compile_options(orca-slice-engine PRIVATE
