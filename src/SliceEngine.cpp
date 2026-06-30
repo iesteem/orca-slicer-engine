@@ -87,6 +87,32 @@ inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintC
     }
 }
 
+// Overwrite every key present in `src` onto `dst`, except keys listed in `except`.
+// Same scalar/vector copy semantics as overwrite_all_keys_from.
+inline void overwrite_all_keys_from_except(
+    DynamicPrintConfig& dst, const DynamicPrintConfig& src,
+    const std::set<std::string>& except)
+{
+    for (auto it = src.cbegin(); it != src.cend(); ++it) {
+        const auto& key = it->first;
+        if (except.find(key) != except.end()) continue;
+
+        ConfigOption* dst_opt = dst.option(key, false);
+        if (!dst_opt) continue;
+
+        if (dst_opt->is_scalar()) {
+            if (dst_opt->type() != it->second->type()) continue;
+            dst_opt->set(it->second.get());
+        } else {
+            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
+            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
+            if (!dst_vec || !src_vec) continue;
+            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
+                dst_vec->set_at(src_vec, i, i);
+        }
+    }
+}
+
 } // namespace
 
 SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files)
@@ -135,6 +161,13 @@ bool SliceEngine::run() {
             build_statistics();
             return false;
         }
+
+        // Also apply the official Snapmaker U1 process preset so that
+        // process-level settings (skirt_loops, brim_type, etc.) from a
+        // different printer profile in the 3MF don't leak through.
+        // User-explicit overrides (different_settings_to_system) are preserved.
+        // Non-blocking: missing preset is a warning, not a fatal error.
+        apply_process_official_preset();
     }
 
     bool validate_ok = validate_input();
@@ -809,6 +842,88 @@ void SliceEngine::apply_printer_official_preset()
     m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED",
         "Printer preset replaced with official preset \"" + preset_name
         + "\" for cloud safety"));
+}
+
+void SliceEngine::apply_process_official_preset()
+{
+    // Non-blocking: if system presets are unavailable, the existing process
+    // config from the 3MF is used as a fallback. Printer config is already
+    // correct at this point, so geometry is safe.
+    if (!m_presets_available || !m_preset_bundle) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "System presets not available; cannot apply official process preset.";
+        return;
+    }
+
+    // The official printer preset (already applied) sets default_print_profile
+    // to the matching Snapmaker U1 process preset name, e.g.
+    // "0.20 Standard @Snapmaker U1 (0.4 nozzle)".
+    auto* dpp = m_config.option<ConfigOptionString>("default_print_profile", false);
+    if (!dpp || dpp->value.empty()) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "default_print_profile not set; cannot determine process preset.";
+        return;
+    }
+    const std::string preset_name = dpp->value;
+
+    const Preset* official = m_preset_bundle->prints.find_preset(preset_name, false);
+    if (!official) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "Official process preset \"" << preset_name
+            << "\" not found in system presets; process settings not updated.";
+        return;
+    }
+
+    // Parse different_settings_to_system[0] — the set of process keys the
+    // user explicitly changed from the original printer's system defaults.
+    // These are preserved to honour the user's intent.
+    std::set<std::string> user_overrides;
+    {
+        auto* diff_opt = m_config.option<ConfigOptionStrings>(
+            "different_settings_to_system", false);
+        if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty()) {
+            std::istringstream ss(diff_opt->values[0]);
+            std::string key;
+            while (std::getline(ss, key, ';')) {
+                // Trim leading/trailing whitespace.
+                size_t start = key.find_first_not_of(" \t");
+                size_t end   = key.find_last_not_of(" \t");
+                if (start != std::string::npos && end != std::string::npos)
+                    key = key.substr(start, end - start + 1);
+                if (!key.empty())
+                    user_overrides.insert(key);
+            }
+        }
+    }
+
+    BOOST_LOG_TRIVIAL(info)
+        << "Applying official process preset \"" << preset_name
+        << "\" (" << user_overrides.size() << " user overrides preserved)";
+
+    // Apply every key from the official process preset, except keys the user
+    // explicitly overrode and keys that don't exist in the current config.
+    overwrite_all_keys_from_except(m_config, official->config, user_overrides);
+
+    // When brim_type is auto_brim, set brim_width to 0 so that the
+    // fallback path (when the algorithm decides no brim is needed)
+    // doesn't generate unwanted brim. The algorithm still sets its
+    // own computed width when it determines brim IS needed.
+    {
+        auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+        if (bt && bt->value == btAutoBrim) {
+            m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
+            BOOST_LOG_TRIVIAL(info)
+                << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
+        }
+    }
+
+    // Update the preset identity to reflect what was applied.
+    m_config.set_key_value("print_settings_id",
+                           new ConfigOptionString(preset_name));
+
+    m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
+        "Process preset replaced with official preset \"" + preset_name
+        + "\" for cloud consistency"));
 }
 
 // ============================================================================
