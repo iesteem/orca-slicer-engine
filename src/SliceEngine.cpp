@@ -102,13 +102,6 @@ bool SliceEngine::run() {
         return false;
     }
 
-    // Desktop parity: normalize each object's Z onto the bed exactly as opening
-    // the project in the desktop app would (ensure_on_bed with allow_negative_z,
-    // sinking preserved). Done once at load, before geometry checks and the
-    // per-plate loop, so every later stage sees the same coordinates the
-    // desktop would.
-    ensure_models_on_bed();
-
     // Config & preset validation (desktop parity — non-blocking)
     validate_config();
     load_system_presets();
@@ -173,6 +166,13 @@ bool SliceEngine::run() {
                 return false;
             }
         }
+
+        // Desktop parity: normalize each object's Z onto the bed exactly as opening
+        // the project in the desktop app would (ensure_on_bed with allow_negative_z,
+        // sinking preserved). Done once at load, before geometry checks and the
+        // per-plate loop, so every later stage sees the same coordinates the
+        // desktop would.
+        ensure_models_on_bed();
 
         m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base,
                                              m_cfg.plate_id, m_cfg.format, m_cfg.single_plate);
