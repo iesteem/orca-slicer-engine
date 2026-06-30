@@ -76,8 +76,20 @@ static void add_log_file_sink(const std::string& file_path, unsigned int level) 
     );
     logging::add_common_attributes();
 
-    // Set severity filter: only emit messages at or above the requested level
-    logging::core::get()->set_filter(logging::trivial::severity >= level);
+    // Map libslic3r integer level (0=fatal..5=trace) to Boost severity enum.
+    // Boost.Log enum values: trace=0, debug=1, info=2, warning=3, error=4, fatal=5.
+    // libslic3r mapping: 0=fatal, 1=error, 2=warning, 3=info, 4=debug, 5=trace.
+    boost::log::trivial::severity_level sev;
+    switch (level) {
+        case 0: sev = boost::log::trivial::fatal;   break;
+        case 1: sev = boost::log::trivial::error;   break;
+        case 2: sev = boost::log::trivial::warning; break;
+        case 3: sev = boost::log::trivial::info;    break;
+        case 4: sev = boost::log::trivial::debug;   break;
+        case 5: sev = boost::log::trivial::trace;   break;
+        default: sev = boost::log::trivial::info;   break;
+    }
+    logging::core::get()->set_filter(logging::trivial::severity >= sev);
 }
 
 // Parse CLI params JSON into EngineConfig
