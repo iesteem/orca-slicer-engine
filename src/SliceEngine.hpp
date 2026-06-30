@@ -85,6 +85,7 @@ private:
 
     // --- Per-plate sub-stages ---
     int  filter_instances(int plate_id, std::set<int>& identify_ids);
+    void ensure_models_on_bed();
     bool run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Slic3r::Vec3d& origin);
     Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);
     bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);

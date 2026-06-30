@@ -102,6 +102,13 @@ bool SliceEngine::run() {
         return false;
     }
 
+    // Desktop parity: normalize each object's Z onto the bed exactly as opening
+    // the project in the desktop app would (ensure_on_bed with allow_negative_z,
+    // sinking preserved). Done once at load, before geometry checks and the
+    // per-plate loop, so every later stage sees the same coordinates the
+    // desktop would.
+    ensure_models_on_bed();
+
     // Config & preset validation (desktop parity — non-blocking)
     validate_config();
     load_system_presets();
@@ -1018,6 +1025,35 @@ int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
         }
     }
     return count;
+}
+
+void SliceEngine::ensure_models_on_bed() {
+    // Desktop parity for Z placement. The desktop app, when opening a 3MF
+    // project, calls ModelObject::ensure_on_bed(is_project_file=true)
+    // (Plater.cpp), and the Snapmaker CLI additionally force-drops objects only
+    // when the `ensure_on_bed` option is set (Snapmaker_Orca.cpp, default off).
+    // The headless pipeline never normalized Z, so an object stored below the
+    // bed had its lower portion clipped at z=0 — a G-code missing the model's
+    // bottom. We delegate to the same SDK routine so behaviour matches exactly:
+    //
+    //   allow_negative_z = true  -> preserve intentional sinking; only correct
+    //       degenerate placement (object fully above, or fully below, the bed).
+    //       This is the default and matches "open project" in the desktop app.
+    //   allow_negative_z = false -> force every object flat on the bed. Opt-in
+    //       via the `ensure_on_bed` option, matching the CLI's force-on-bed.
+    const bool force_flat = m_config.has("ensure_on_bed")
+                         && m_config.opt_bool("ensure_on_bed");
+    for (ModelObject* obj : m_model.objects) {
+        if (obj->instances.empty())
+            continue;
+        const double before = obj->min_z();
+        obj->ensure_on_bed(!force_flat);
+        const double after = obj->min_z();
+        if (std::abs(after - before) > 1e-4)
+            BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name
+                << "\" min_z " << before << " -> " << after
+                << (force_flat ? " (forced flat)" : "");
+    }
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin) {
