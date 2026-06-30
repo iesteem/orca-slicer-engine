@@ -16,6 +16,7 @@ int main(int argc, char* argv[]) {
     const char* output     = NULL;
     const char* resources  = NULL;
     const char* log_file   = NULL;
+    int         log_enabled = 0;
     int         plate_id   = 0;
     const char* format     = "gcode.3mf";
     int         verbose    = 0;
@@ -44,10 +45,11 @@ int main(int argc, char* argv[]) {
         } else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--resources")) {
             if (++i < argc) resources = argv[i];
         } else if (!strcmp(argv[i], "--log-file")) {
-            if (++i < argc) log_file = argv[i];
+            if (++i < argc) { log_file = argv[i]; log_enabled = 1; }
         } else if (!strcmp(argv[i], "--log")) {
             /* --log without --log-file: auto-generate log path later */
             verbose = 1;
+            log_enabled = 1;
         } else if (argv[i][0] != '-') {
             /* Only accept as input file if it has a .3mf extension
              * (prevents --log-file <path> value from being eaten as input) */
@@ -59,9 +61,6 @@ int main(int argc, char* argv[]) {
                 input_3mf = argv[i];
         }
     }
-
-    /* TODO: wire log_file into engine logging (Boost log file sink) */
-    (void)log_file;
 
     if (!input_3mf) {
         fprintf(stderr, "Error: input file required. Use -h for help.\n");
@@ -78,6 +77,23 @@ int main(int argc, char* argv[]) {
         char* dot = strrchr(output_default, '.');
         if (dot) *dot = '\0';
         output = output_default;
+    }
+
+    /* Auto-generate log file path when --log is given without --log-file.
+     * Derive directory from input_3mf so the log lands beside the output.
+     * Must happen AFTER output path derivation so output is non-NULL. */
+    char log_auto_path[1024] = {0};
+    if (log_enabled && !log_file) {
+        const char* dir_end = strrchr(input_3mf, '/');
+        if (!dir_end) dir_end = strrchr(input_3mf, '\\');
+        if (dir_end) {
+            int dir_len = (int)(dir_end - input_3mf);
+            snprintf(log_auto_path, sizeof(log_auto_path),
+                     "%.*s/%s.log", dir_len, input_3mf, output);
+        } else {
+            snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
+        }
+        log_file = log_auto_path;
     }
 
     /* Default resources from environment */
@@ -99,9 +115,15 @@ int main(int argc, char* argv[]) {
     }
 
     /* Build params JSON */
-    char params[512];
-    snprintf(params, sizeof(params),
-        "{\"plate_id\":%d,\"format\":\"%s\"}", plate_id, format);
+    char params[1024];
+    if (log_file && log_file[0]) {
+        snprintf(params, sizeof(params),
+            "{\"plate_id\":%d,\"format\":\"%s\",\"log_path\":\"%s\"}",
+            plate_id, format, log_file);
+    } else {
+        snprintf(params, sizeof(params),
+            "{\"plate_id\":%d,\"format\":\"%s\"}", plate_id, format);
+    }
 
     /* Slice */
     char stats[32768] = {0};

@@ -20,6 +20,13 @@
 #include "nlohmann/json.hpp"
 #include <boost/filesystem.hpp>
 
+#include <boost/log/core.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/expressions.hpp>
+#include <boost/log/utility/setup/file.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
+#include <boost/log/support/date_time.hpp>
+
 #include "Types.hpp"
 #include "SliceEngine.hpp"
 #include "JsonReport.hpp"
@@ -48,6 +55,31 @@ static void set_error(slic3r_ctx_t* ctx, const std::string& msg) {
     fprintf(stderr, "[slic3r] ERROR: %s\n", msg.c_str());
 }
 
+// Add a Boost.Log file sink writing to the exact path (no g_data_dir prefix).
+// Uses the same format as libslic3r's set_log_path_and_level for consistency.
+static void add_log_file_sink(const std::string& file_path, unsigned int level) {
+    namespace logging = boost::log;
+    namespace keywords = boost::log::keywords;
+    namespace expr = boost::log::expressions;
+    namespace attrs = boost::log::attributes;
+
+    auto sink = logging::add_file_log(
+        keywords::file_name = file_path,
+        keywords::format =
+        (
+            expr::stream
+            << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
+            << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
+            << "[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
+            << ":" << expr::smessage
+        )
+    );
+    logging::add_common_attributes();
+
+    // Set severity filter: only emit messages at or above the requested level
+    logging::core::get()->set_filter(logging::trivial::severity >= level);
+}
+
 // Parse CLI params JSON into EngineConfig
 static bool parse_params(const char* json_str, EngineConfig& cfg) {
     if (!json_str || !json_str[0]) return true; // empty = defaults
@@ -66,6 +98,10 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
         }
         if (j.contains("cancel_file"))    cfg.cancel_file    = j["cancel_file"].get<std::string>();
         if (j.contains("data_dir"))       cfg.data_dir       = j["data_dir"].get<std::string>();
+        if (j.contains("log_path")) {
+            cfg.log_path = j["log_path"].get<std::string>();
+            if (!cfg.log_path.empty()) cfg.log_enabled = true;
+        }
         return true;
     } catch (const std::exception& e) {
         fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
@@ -132,6 +168,11 @@ SLIC3R_API int slic3r_slice(
         if (cfg.data_dir.empty())
             cfg.data_dir = ctx->resources_dir + "/profiles";
 
+        // Wire up Boost.Log file sink before any engine logging
+        if (cfg.log_enabled && !cfg.log_path.empty()) {
+            add_log_file_sink(cfg.log_path, 3);  // level 3 = info
+        }
+
         // Run the full pipeline
         std::vector<std::string> temp_files;
         TempFileGuard temp_guard(temp_files);
@@ -154,6 +195,9 @@ SLIC3R_API int slic3r_slice(
             set_error(ctx, stats.error_message.empty()
                 ? "Slicing produced no output" : stats.error_message);
         }
+
+        // Flush log before returning (avoid lost entries on abnormal exit)
+        Slic3r::flush_logs();
 
         return engine.exit_code();
 

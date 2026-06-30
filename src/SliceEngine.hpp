@@ -30,6 +30,8 @@ struct EngineConfig {
     bool enforce_official_presets = true;  // P0-2: replace user config with official presets
     bool substitute_filaments = true;     // whether to check & substitute filament with official parent
     bool clear_custom_gcode = true;       // whether to strip custom G-code blocks for cloud safety
+    std::string log_path;                 // log file path (empty = no file logging)
+    bool log_enabled = false;             // --log or --log-file was specified
 };
 
 // Intermediate result for a single plate during the pipeline
