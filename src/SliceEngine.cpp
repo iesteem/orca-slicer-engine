@@ -1028,31 +1028,31 @@ int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
 }
 
 void SliceEngine::ensure_models_on_bed() {
-    // Desktop parity for Z placement. The desktop app, when opening a 3MF
-    // project, calls ModelObject::ensure_on_bed(is_project_file=true)
-    // (Plater.cpp), and the Snapmaker CLI additionally force-drops objects only
-    // when the `ensure_on_bed` option is set (Snapmaker_Orca.cpp, default off).
-    // The headless pipeline never normalized Z, so an object stored below the
-    // bed had its lower portion clipped at z=0 — a G-code missing the model's
-    // bottom. We delegate to the same SDK routine so behaviour matches exactly:
+    // Seat every object flat on the bed before slicing.
     //
-    //   allow_negative_z = true  -> preserve intentional sinking; only correct
-    //       degenerate placement (object fully above, or fully below, the bed).
-    //       This is the default and matches "open project" in the desktop app.
-    //   allow_negative_z = false -> force every object flat on the bed. Opt-in
-    //       via the `ensure_on_bed` option, matching the CLI's force-on-bed.
-    const bool force_flat = m_config.has("ensure_on_bed")
-                         && m_config.opt_bool("ensure_on_bed");
+    // The desktop app, when opening a 3MF project, calls
+    // ModelObject::ensure_on_bed(allow_negative_z=true) (Plater.cpp), which
+    // PRESERVES intentional sinking — a model stored below the bed stays sunk
+    // and is sliced clipped at z=0. That is correct for an interactive editor
+    // (sinking is a deliberate tool, e.g. flattening a base against the bed),
+    // but wrong for cloud slicing: the user uploads a model expecting the whole
+    // thing printed and has no way to reposition it. A stored Z that sinks the
+    // model would silently drop the bottom of the G-code.
+    //
+    // So we pass allow_negative_z=false (the same path the Snapmaker CLI takes
+    // when its `ensure_on_bed` option is enabled): each object's lowest point is
+    // snapped to z=0. Partly-sunk, fully-sunk and floating objects are all
+    // corrected. We deliberately diverge from the desktop *default* here; this
+    // matches the desktop's force-on-bed behaviour.
     for (ModelObject* obj : m_model.objects) {
         if (obj->instances.empty())
             continue;
         const double before = obj->min_z();
-        obj->ensure_on_bed(!force_flat);
+        obj->ensure_on_bed(false);
         const double after = obj->min_z();
         if (std::abs(after - before) > 1e-4)
             BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name
-                << "\" min_z " << before << " -> " << after
-                << (force_flat ? " (forced flat)" : "");
+                << "\" min_z " << before << " -> " << after << " (seated on bed)";
     }
 }
 
