@@ -32,6 +32,7 @@ if(BUILD_SLIC3R_DLL)
         src/GeometryCheck.cpp
         src/Utils.cpp
         src/nanosvg.cpp
+        src/PresetRollback.cpp
     )
 
     target_include_directories(slic3r PRIVATE

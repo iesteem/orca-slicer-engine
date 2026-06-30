@@ -19,6 +19,8 @@
 #include "libslic3r/ProjectTask.hpp"
 #include "libslic3r/BoundingBox.hpp"
 
+#include "PresetRollback.hpp"
+
 constexpr int MAX_RETRIES = 3;
 
 using namespace Slic3r;
@@ -486,83 +488,85 @@ bool SliceEngine::validate_filament_official()
         return nullptr;
     };
 
-    for (int i = 0; i < num_filaments; ++i) {
+    // 所有非官方失败分支统一兜底：先尝试 PresetRollback 回退到基础大类，
+    // 成功则 warning + 视为已解决；失败才报原 error。
+    // 注意：rollback 成功后 filament_ids->values[i] 已被更新为基础大类名。
+    auto try_rollback = [&](int i, const std::string& name,
+                            const char* err_code, const std::string& err_msg) -> bool {
+        if (PresetRollback::rollback(m_config, m_preset_bundle.get(), i)) {
+            const std::string& base_name = filament_ids->values[i];
+            m_stats.issues.push_back(make_warning(-1, "FILAMENT_ROLLED_BACK",
+                "Filament \"" + name + "\" rolled back to base preset \"" + base_name + "\""));
+            return true;
+        }
+        BOOST_LOG_TRIVIAL(error) << err_msg;
+        m_stats.issues.push_back(make_error(-1, err_code, err_msg));
+        return false;
+    };
+
+    // 解析单个 filament：官方 → true；非官方 → 继承链找官方祖先（全面替换）；
+    // 失败则回退；回退也失败 → 报 error 返回 false。
+    auto resolve_filament = [&](int i) -> bool {
         const std::string& name = filament_ids->values[i];
 
         // Case 1: Direct system preset match
         if (Preset* sys = find_in_system(name)) {
-            if (is_official_preset(*sys)) {
-                continue; // OK
-            }
-            std::string msg = "Filament \"" + name + "\" belongs to unsupported vendor";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_stats.issues.push_back(make_error(-1, "FILAMENT_UNSUPPORTED_VENDOR", msg));
-            any_error = true;
-            continue;
+            if (is_official_preset(*sys))
+                return true; // OK
+            return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
+                "Filament \"" + name + "\" belongs to unsupported vendor");
         }
 
         // Case 2: Not a direct system match — walk the inheritance chain
         Preset* current = find_in_project(name);
         if (!current) {
-            std::string msg = "Filament \"" + name + "\" is not a recognized preset";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN", msg));
-            any_error = true;
-            continue;
+            return try_rollback(i, name, "FILAMENT_UNKNOWN",
+                "Filament \"" + name + "\" is not a recognized preset");
         }
 
-        bool resolved = false;
         std::set<std::string> visited;
-        while (current && !resolved) {
+        while (current) {
             std::string inherits_name = current->inherits();
             if (inherits_name.empty()) {
-                std::string msg = "Filament \"" + name
-                    + "\" is not derived from any Snapmaker or Generic filament";
-                BOOST_LOG_TRIVIAL(error) << msg;
-                m_stats.issues.push_back(make_error(-1, "FILAMENT_NO_OFFICIAL_ANCESTOR", msg));
-                any_error = true;
-                resolved = true;
-                break;
+                return try_rollback(i, name, "FILAMENT_NO_OFFICIAL_ANCESTOR",
+                    "Filament \"" + name
+                    + "\" is not derived from any Snapmaker or Generic filament");
             }
 
             if (!visited.insert(inherits_name).second) {
-                std::string msg = "Circular inheritance detected in filament \"" + name + "\"";
-                BOOST_LOG_TRIVIAL(error) << msg;
-                m_stats.issues.push_back(make_error(-1, "FILAMENT_CIRCULAR_INHERITS", msg));
-                any_error = true;
-                resolved = true;
-                break;
+                return try_rollback(i, name, "FILAMENT_CIRCULAR_INHERITS",
+                    "Circular inheritance detected in filament \"" + name + "\"");
             }
 
             // Try system presets first
             if (Preset* parent = find_in_system(inherits_name)) {
                 if (is_official_preset(*parent)) {
                     substitute_filament_params(filament_ids, i, *parent, name);
-                    resolved = true;
-                } else {
-                    std::string vendor_name = parent->vendor ? parent->vendor->name : "unknown";
-                    std::string msg = "Filament \"" + name + "\" derives from unsupported vendor \""
-                                    + vendor_name + "\" via \"" + inherits_name + "\"";
-                    BOOST_LOG_TRIVIAL(error) << msg;
-                    m_stats.issues.push_back(make_error(-1, "FILAMENT_UNSUPPORTED_VENDOR", msg));
-                    any_error = true;
-                    resolved = true;
+                    return true;
                 }
-            } else {
-                // Not in system — try project embedded, then continue walking
-                Preset* project_parent = find_in_project(inherits_name);
-                if (project_parent) {
-                    current = project_parent;
-                } else {
-                    std::string msg = "Filament \"" + name + "\" inherits from unknown preset \""
-                                    + inherits_name + "\"";
-                    BOOST_LOG_TRIVIAL(error) << msg;
-                    m_stats.issues.push_back(make_error(-1, "FILAMENT_UNKNOWN_ANCESTOR", msg));
-                    any_error = true;
-                    resolved = true;
-                }
+                std::string vendor_name = parent->vendor ? parent->vendor->name : "unknown";
+                return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
+                    "Filament \"" + name + "\" derives from unsupported vendor \""
+                    + vendor_name + "\" via \"" + inherits_name + "\"");
             }
+
+            // Not in system — try project embedded, then continue walking
+            Preset* project_parent = find_in_project(inherits_name);
+            if (project_parent) {
+                current = project_parent;
+                continue;
+            }
+            return try_rollback(i, name, "FILAMENT_UNKNOWN_ANCESTOR",
+                "Filament \"" + name + "\" inherits from unknown preset \""
+                + inherits_name + "\"");
         }
+
+        return true; // unreachable: loop only exits via return
+    };
+
+    for (int i = 0; i < num_filaments; ++i) {
+        if (!resolve_filament(i))
+            any_error = true;
     }
 
     if (any_error) {
@@ -577,55 +581,13 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
                                               const Preset& official_parent,
                                               const std::string& original_name)
 {
-    const std::string& parent_name = official_parent.name;
-
-    filament_ids->values[ext_idx] = parent_name;
-
-    const size_t ext_sz = static_cast<size_t>(ext_idx);
-
-    for (auto it = official_parent.config.cbegin(); it != official_parent.config.cend(); ++it) {
-        const auto& key = it->first;
-        const auto& opt = it->second;
-        auto* target = m_config.option(key, true);
-        if (!target) continue;
-
-        size_t target_size = 0;
-        if (auto* dst = dynamic_cast<ConfigOptionFloats*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionFloats*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionPercents*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionPercents*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionInts*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionInts*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionStrings*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionStrings*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        } else if (auto* dst = dynamic_cast<ConfigOptionBools*>(target)) {
-            target_size = dst->values.size();
-            if (auto* src = dynamic_cast<const ConfigOptionBools*>(opt.get())) {
-                if (!src->values.empty() && ext_sz < target_size)
-                    dst->values[ext_idx] = src->values[0];
-            }
-        }
-    }
+    // Full overwrite: 用官方祖先预设的全部 per-extruder 参数覆盖目标槽位，
+    // 不保留任何用户值。与 PresetRollback 回退路径共用同一 helper。
+    PresetRollback::overwriteExtruderFrom(m_config, official_parent, ext_idx, filament_ids);
 
     m_stats.issues.push_back(make_warning(-1, "FILAMENT_SUBSTITUTED",
         std::string("Filament \"") + original_name
-        + "\" substituted with official preset \"" + parent_name + "\""));
+        + "\" substituted with official preset \"" + official_parent.name + "\""));
 }
 
 bool SliceEngine::validate_printer_model()
