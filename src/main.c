@@ -15,8 +15,9 @@ int main(int argc, char* argv[]) {
     const char* input_3mf  = NULL;
     const char* output     = NULL;
     const char* resources  = NULL;
-    const char* log_file   = NULL;
+    const char* log_file    = NULL;
     int         log_enabled = 0;
+    const char* json_output = NULL;
     int         plate_id   = 0;
     const char* format     = "gcode.3mf";
     int         verbose    = 0;
@@ -32,6 +33,8 @@ int main(int argc, char* argv[]) {
             printf("  -r, --resources <dir> Resources directory\n");
             printf("  --log                 Enable log file output\n");
             printf("  --log-file <file>     Specify log file path (implies --log)\n");
+            printf("  -j, --json [file]     Output slice statistics as JSON\n");
+            printf("                        If not specified, auto-saved next to output\n");
             printf("  -v, --verbose         Verbose output\n");
             return 0;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
@@ -50,6 +53,11 @@ int main(int argc, char* argv[]) {
             /* --log without --log-file: auto-generate log path later */
             verbose = 1;
             log_enabled = 1;
+        } else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json")) {
+            if (i + 1 < argc && argv[i+1][0] != '-')
+                json_output = argv[++i];
+            else
+                json_output = "";  // flag present, no value → auto-derive
         } else if (argv[i][0] != '-') {
             /* Only accept as input file if it has a .3mf extension
              * (prevents --log-file <path> value from being eaten as input) */
@@ -87,6 +95,14 @@ int main(int argc, char* argv[]) {
         log_file = log_auto_path;
     }
 
+    /* Auto-generate JSON output path when -j is given without a value.
+     * JSON lands beside the output file, e.g. -o /tmp/foo -> /tmp/foo.json */
+    char json_auto_path[1024] = {0};
+    if (json_output && !json_output[0]) {
+        snprintf(json_auto_path, sizeof(json_auto_path), "%s.json", output);
+        json_output = json_auto_path;
+    }
+
     /* Default resources from environment */
     if (!resources) {
         resources = getenv("ORCA_RESOURCES");
@@ -105,16 +121,18 @@ int main(int argc, char* argv[]) {
         return 99;
     }
 
-    /* Build params JSON */
-    char params[1024];
-    if (log_file && log_file[0]) {
-        snprintf(params, sizeof(params),
-            "{\"plate_id\":%d,\"format\":\"%s\",\"log_path\":\"%s\"}",
-            plate_id, format, log_file);
-    } else {
-        snprintf(params, sizeof(params),
-            "{\"plate_id\":%d,\"format\":\"%s\"}", plate_id, format);
-    }
+    /* Build params JSON (incremental to avoid truncation with optional fields) */
+    char params[2048];
+    int pos = snprintf(params, sizeof(params),
+        "{\"plate_id\":%d,\"format\":\"%s\"", plate_id, format);
+    if (log_file && log_file[0])
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"log_path\":\"%s\"", log_file);
+    if (json_output && json_output[0])
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"json_output_path\":\"%s\"", json_output);
+    if (pos < (int)sizeof(params))
+        snprintf(params + pos, sizeof(params) - pos, "}");
 
     /* Slice */
     char stats[32768] = {0};

@@ -114,6 +114,8 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
             cfg.log_path = j["log_path"].get<std::string>();
             if (!cfg.log_path.empty()) cfg.log_enabled = true;
         }
+        if (j.contains("json_output_path"))
+            cfg.json_output_path = j["json_output_path"].get<std::string>();
         return true;
     } catch (const std::exception& e) {
         fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
@@ -194,7 +196,12 @@ SLIC3R_API int slic3r_slice(
 
         // Serialize stats (unified JsonReport schema: base-1 plate/filament ids)
         const auto& stats = engine.stats();
-        std::string json_str = build_statistics_json(stats, output_base);
+        std::string json_str = build_statistics_json(stats, engine.output_path());
+
+        // Write JSON statistics to file if enabled
+        if (!cfg.json_output_path.empty()) {
+            output_slice_statistics(stats, cfg.json_output_path, engine.output_path());
+        }
 
         if (stats_out && stats_size > 0) {
             size_t n = (json_str.size() < stats_size - 1)
