@@ -147,10 +147,9 @@ bool SliceEngine::run() {
         return false;
     }
 
-    // Strip custom G-code blocks for cloud safety, then replace the user's
-    // printer config wholesale with the official U1 preset. The official
-    // machine G-code overwrites the cleared values.
-    apply_official_presets();
+    // Replace the user's printer config wholesale with the official U1 preset.
+    // Custom G-code is stripped first, then the official machine G-code
+    // overwrites the cleared values.
     apply_printer_official_preset();
     if (m_any_error) {
         build_statistics();
@@ -677,34 +676,34 @@ bool SliceEngine::validate_printer_model()
     return true;
 }
 
-void SliceEngine::apply_official_presets()
-{
-    // Strip all custom G-code blocks — cloud slicing must not execute
-    // or embed user-supplied G-code for safety and consistency.
-    constexpr const char* gcode_keys[] = {
-        "start_gcode", "end_gcode", "layer_gcode",
-        "machine_start_gcode", "machine_end_gcode",
-        "before_layer_change_gcode", "between_objects_gcode",
-        "toolchange_gcode", "print_host",
-    };
-    for (const char* key : gcode_keys) {
-        if (m_config.has(key)) {
-            m_config.set_key_value(key, new ConfigOptionString(""));
-            m_stats.issues.push_back(make_tip(-1, "GCODE_CLEARED",
-                std::string("Custom G-code '") + key + "' cleared for cloud safety"));
-        }
-    }
-
-}
 
 void SliceEngine::apply_printer_official_preset()
 {
-    // Replace the user's printer configuration wholesale with the official
-    // Snapmaker U1 preset matching the requested nozzle diameter. No user
-    // printer value (printable area, machine G-code, kinematics, …) is kept.
-    // The official preset config is sourced from the already-loaded
-    // PresetBundle, whose system presets carry a fully inherits-expanded
-    // config (fdm_U1 -> fdm_toolchanger merged in at load time).
+    // 1. Strip all custom G-code blocks — cloud slicing must not execute
+    //    or embed user-supplied G-code for safety and consistency.
+    {
+        constexpr const char* gcode_keys[] = {
+            "start_gcode", "end_gcode", "layer_gcode",
+            "machine_start_gcode", "machine_end_gcode",
+            "before_layer_change_gcode", "between_objects_gcode",
+            "toolchange_gcode", "print_host",
+        };
+        for (const char* key : gcode_keys) {
+            if (m_config.has(key)) {
+                m_config.set_key_value(key, new ConfigOptionString(""));
+                m_stats.issues.push_back(make_tip(-1, "GCODE_CLEARED",
+                    std::string("Custom G-code '") + key + "' cleared for cloud safety"));
+            }
+        }
+    }
+
+    // 2. Replace the user's printer configuration wholesale with the official
+    //    Snapmaker U1 preset matching the requested nozzle diameter. No user
+    //    printer value (printable area, machine G-code, kinematics, …) is kept.
+    //    The official machine G-code overwrites the cleared values above.
+    //    The official preset config is sourced from the already-loaded
+    //    PresetBundle, whose system presets carry a fully inherits-expanded
+    //    config (fdm_U1 -> fdm_toolchanger merged in at load time).
     if (!m_presets_available || !m_preset_bundle) {
         std::string msg = "System presets not available; cannot apply official printer preset.";
         BOOST_LOG_TRIVIAL(error) << msg;

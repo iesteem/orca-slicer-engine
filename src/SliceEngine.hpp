@@ -70,7 +70,6 @@ private:
     void validate_config();
     void load_system_presets();
     void validate_presets();
-    void apply_official_presets();
     void apply_printer_official_preset();
     void apply_process_official_preset();
     bool validate_filament_official();
