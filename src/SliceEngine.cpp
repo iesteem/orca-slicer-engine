@@ -299,10 +299,8 @@ bool SliceEngine::load_3mf() {
 
     // Reset substitution state from any prior run
     m_config_substitutions = ConfigSubstitutionContext(ForwardCompatibilitySubstitutionRule::Enable);
-
     LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig |
                            LoadStrategy::AddDefaultInstances | LoadStrategy::LoadAuxiliary;
-
     try {
         m_model = Model::read_from_file(
             m_cfg.input_file,
@@ -365,11 +363,11 @@ void SliceEngine::validate_config()
 
     // A2: Check config substitutions (unknown keys, forward-compat changes)
     if (!m_config_substitutions.empty()) {
-        for (const auto& sub : m_config_substitutions.substitutions) {
-            const char* key = sub.opt_def ? sub.opt_def->opt_key.c_str() : "?";
+        for (const auto& substitution : m_config_substitutions.substitutions) {
+            const char* key = substitution.opt_def ? substitution.opt_def->opt_key.c_str() : "?";
             m_stats.issues.push_back(make_warning(-1, "CONFIG_SUBSTITUTION",
                 std::string("Config key '") + key
-                + "' value was substituted (old: " + sub.old_value + ")"));
+                + "' value was substituted (old: " + substitution.old_value + ")"));
         }
 
         for (const auto& key : m_config_substitutions.unrecogized_keys) {
@@ -382,20 +380,14 @@ void SliceEngine::validate_config()
 
 void SliceEngine::load_system_presets()
 {
-    // Determine profiles directory: --data-dir takes precedence,
-    // otherwise derive from resources_dir/profiles/
-    std::string profiles_path;
-    if (!m_cfg.data_dir.empty()) {
-        profiles_path = m_cfg.data_dir;
-    } else {
-        const std::string res_dir = Slic3r::resources_dir();
-        if (res_dir.empty()) {
-            BOOST_LOG_TRIVIAL(info) << "No resources directory set; skipping preset validation";
-            return;
-        }
-        profiles_path = res_dir + "/profiles";
+    // profiles_path is always pre-populated from the resources directory
+    // by the C API layer (slic3r_c_api.cpp). The guard handles the edge case
+    // of direct SliceEngine construction without the C API shim.
+    if (m_cfg.data_dir.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "data_dir not set; skipping preset validation";
+        return;
     }
-
+    std::string profiles_path = m_cfg.data_dir;
     boost::filesystem::path profiles_dir(profiles_path);
     if (!boost::filesystem::exists(profiles_dir) ||
         !boost::filesystem::is_directory(profiles_dir)) {
@@ -415,7 +407,6 @@ void SliceEngine::load_system_presets()
         name.erase(name.size() - 5); // strip .json
         vendor_names.push_back(name);
     }
-
     if (vendor_names.empty()) {
         BOOST_LOG_TRIVIAL(warning)
             << "No vendor JSON files in " << profiles_dir.string()
