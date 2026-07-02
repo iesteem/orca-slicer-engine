@@ -414,14 +414,6 @@ void SliceEngine::load_system_presets()
         return;
     }
 
-    // Move OrcaFilamentLibrary to the front (cross-vendor filament inheritance)
-    for (size_t i = 0; i < vendor_names.size(); ++i) {
-        if (vendor_names[i] == PresetBundle::ORCA_FILAMENT_LIBRARY) {
-            std::swap(vendor_names[0], vendor_names[i]);
-            break;
-        }
-    }
-
     try {
         m_preset_bundle = std::make_unique<Slic3r::PresetBundle>();
 
@@ -458,22 +450,18 @@ void SliceEngine::validate_presets()
         return;
     }
 
-    PresetBundle& bundle = *m_preset_bundle;
-
     // B2: Load project embedded presets
+    PresetBundle& preset_bundle = *m_preset_bundle;
     if (!m_project_presets.empty()) {
         try {
             PresetsConfigSubstitutions preset_subs =
-                bundle.load_project_embedded_presets(
-                    m_project_presets,
-                    ForwardCompatibilitySubstitutionRule::Enable);
+                preset_bundle.load_project_embedded_presets(m_project_presets, ForwardCompatibilitySubstitutionRule::Enable);
 
-            for (const auto& ps : preset_subs) {
-                for (const auto& sub : ps.substitutions) {
-                    const char* key = sub.opt_def ? sub.opt_def->opt_key.c_str() : "?";
+            for (const auto& preset_sub : preset_subs) {
+                for (const auto& substitution : preset_sub.substitutions) {
+                    const char* key = substitution.opt_def ? substitution.opt_def->opt_key.c_str() : "?";
                     m_stats.issues.push_back(make_warning(-1, "PRESET_SUBSTITUTION",
-                        std::string("Embedded preset '") + ps.preset_name
-                        + "' key '" + key + "' was substituted"));
+                        std::string("Embedded preset '") + preset_sub.preset_name + "' key '" + key + "' was substituted"));
                 }
             }
         } catch (const std::exception& e) {
@@ -485,7 +473,7 @@ void SliceEngine::validate_presets()
     // B3: Validate presets against system profiles
     try {
         std::set<std::string> modified_gcodes;
-        int validated = bundle.validate_presets(
+        int validated = preset_bundle.validate_presets(
             m_cfg.input_file, m_config, modified_gcodes);
 
         switch (validated) {
@@ -537,24 +525,16 @@ bool SliceEngine::validate_filament_official()
     // Skip if system presets are not available (no reference for comparison)
     if (!m_presets_available || !m_preset_bundle)
         return true;
-
     if (!m_config.has("filament_settings_id"))
         return true;
-
     auto* filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id", true);
     if (!filament_ids || filament_ids->values.empty())
         return true;
 
-    int num_filaments = static_cast<int>(filament_ids->values.size());
-    bool any_error = false;
-
-    // Lambda: check whether a system preset is "official" (Snapmaker or OrcaFilamentLibrary)
+    // Lambda: check whether a system preset is "official"
+    // Only Snapmaker vendor presets are supported in cloud deployment.
     auto is_official_preset = [](const Preset& p) -> bool {
-        if (p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE)
-            return true;
-        if (p.m_from_orca_filament_lib)
-            return true;
-        return false;
+        return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
     };
 
     // Look up a preset name: system presets first, then project embedded
@@ -651,16 +631,16 @@ bool SliceEngine::validate_filament_official()
         return true; // unreachable: loop only exits via return
     };
 
+    int num_filaments = static_cast<int>(filament_ids->values.size());
+    bool any_error = false;
     for (int i = 0; i < num_filaments; ++i) {
         if (!resolve_filament(i))
             any_error = true;
     }
-
     if (any_error) {
         m_any_error = true;
         set_error_type(EXIT_VALIDATION_ERROR);
     }
-
     return !any_error;
 }
 
