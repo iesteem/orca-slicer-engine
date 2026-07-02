@@ -101,15 +101,11 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
         if (j.contains("plate_id"))       cfg.plate_id       = j["plate_id"].get<int>();
         if (j.contains("timeout_seconds")) cfg.timeout_seconds = j["timeout_seconds"].get<int>();
         if (j.contains("max_size_mb"))     cfg.max_size_mb   = j["max_size_mb"].get<int>();
-        if (j.contains("enforce_official_presets")) cfg.enforce_official_presets = j["enforce_official_presets"].get<bool>();
-        if (j.contains("substitute_filaments"))    cfg.substitute_filaments    = j["substitute_filaments"].get<bool>();
-        if (j.contains("clear_custom_gcode"))      cfg.clear_custom_gcode      = j["clear_custom_gcode"].get<bool>();
         if (j.contains("format")) {
             std::string fmt = j["format"].get<std::string>();
             cfg.format = (fmt == "gcode") ? OutputFormat::GCODE : OutputFormat::GCODE_3MF;
         }
         if (j.contains("cancel_file"))    cfg.cancel_file    = j["cancel_file"].get<std::string>();
-        if (j.contains("data_dir"))       cfg.data_dir       = j["data_dir"].get<std::string>();
         if (j.contains("log_path")) {
             cfg.log_path = j["log_path"].get<std::string>();
             if (!cfg.log_path.empty()) cfg.log_enabled = true;
@@ -179,8 +175,6 @@ SLIC3R_API int slic3r_slice(
             return SLIC3R_ERR_ARGS;
         }
 
-        if (cfg.data_dir.empty())
-            cfg.data_dir = ctx->resources_dir + "/profiles";
 
         // Wire up Boost.Log file sink before any engine logging
         if (cfg.log_enabled && !cfg.log_path.empty()) {

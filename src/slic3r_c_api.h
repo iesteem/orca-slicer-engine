@@ -70,9 +70,6 @@ SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx);
  *   "timeout_seconds": 0,   // 0 = no timeout
  *   "max_size_mb": 200,     // max input file size, 0 = no limit
  *   "cancel_file": "",      // watchdog file for external cancellation
- *   "allow_custom_presets": false,
- *   "no_filament_substitution": false,
- *   "keep_custom_gcode": false
  * }
  *
  * stats_json format (on success):

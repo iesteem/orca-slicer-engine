@@ -141,36 +141,28 @@ bool SliceEngine::run() {
     load_system_presets();
     validate_presets();
 
-    // Filament official compliance check & substitution
-    if (m_cfg.substitute_filaments) {
-        if (!validate_filament_official()) {
-            build_statistics();
-            return false;
-        }
+    // Filament official compliance check & substitution (always enforced)
+    if (!validate_filament_official()) {
+        build_statistics();
+        return false;
     }
 
-    // Strip custom G-code blocks for cloud safety
-    if (m_cfg.clear_custom_gcode) {
-        apply_official_presets();
+    // Strip custom G-code blocks for cloud safety, then replace the user's
+    // printer config wholesale with the official U1 preset. The official
+    // machine G-code overwrites the cleared values.
+    apply_official_presets();
+    apply_printer_official_preset();
+    if (m_any_error) {
+        build_statistics();
+        return false;
     }
 
-    // Replace the user's printer config wholesale with the official U1 preset.
-    // Runs after the model check (model confirmed U1) and after the G-code
-    // strip above; the official machine G-code overwrites the cleared values.
-    if (m_cfg.enforce_official_presets) {
-        apply_printer_official_preset();
-        if (m_any_error) {
-            build_statistics();
-            return false;
-        }
-
-        // Also apply the official Snapmaker U1 process preset so that
-        // process-level settings (skirt_loops, brim_type, etc.) from a
-        // different printer profile in the 3MF don't leak through.
-        // User-explicit overrides (different_settings_to_system) are preserved.
-        // Non-blocking: missing preset is a warning, not a fatal error.
-        apply_process_official_preset();
-    }
+    // Also apply the official Snapmaker U1 process preset so that
+    // process-level settings (skirt_loops, brim_type, etc.) from a
+    // different printer profile in the 3MF don't leak through.
+    // User-explicit overrides (different_settings_to_system) are preserved.
+    // Non-blocking: missing preset is a warning, not a fatal error.
+    apply_process_official_preset();
 
     bool validate_ok = validate_input();
 
@@ -382,14 +374,11 @@ void SliceEngine::validate_config()
 
 void SliceEngine::load_system_presets()
 {
-    // profiles_path is always pre-populated from the resources directory
-    // by the C API layer (slic3r_c_api.cpp). The guard handles the edge case
-    // of direct SliceEngine construction without the C API shim.
-    if (m_cfg.data_dir.empty()) {
+    std::string profiles_path = Slic3r::data_dir();
+    if (profiles_path.empty()) {
         BOOST_LOG_TRIVIAL(warning) << "data_dir not set; skipping preset validation";
         return;
     }
-    std::string profiles_path = m_cfg.data_dir;
     boost::filesystem::path profiles_dir(profiles_path);
     if (!boost::filesystem::exists(profiles_dir) ||
         !boost::filesystem::is_directory(profiles_dir)) {

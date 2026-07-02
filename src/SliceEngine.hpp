@@ -23,13 +23,9 @@ struct EngineConfig {
     OutputFormat format = OutputFormat::GCODE_3MF;
     bool single_plate = false;
     std::string temp_dir;          // temp directory for intermediate gcode files
-    std::string data_dir;          // --data-dir, custom system presets path (empty = auto)
     int timeout_seconds = 0;       // 0 = no timeout; cloud service sets based on file size
     int max_size_mb = 200;         // 0 = no limit; max input file size in megabytes
     std::string cancel_file;       // watchdog file path for external cancellation
-    bool enforce_official_presets = true;  // P0-2: replace user config with official presets
-    bool substitute_filaments = true;     // whether to check & substitute filament with official parent
-    bool clear_custom_gcode = true;       // whether to strip custom G-code blocks for cloud safety
     std::string log_path;                 // log file path (empty = no file logging)
     bool log_enabled = false;             // --log or --log-file was specified
     std::string json_output_path;         // -j/--json: path for JSON output file (empty = don't write)
