@@ -233,7 +233,6 @@ bool SliceEngine::run() {
         // during export_gcode. Remove it if errors occurred.
         if (m_any_error && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE) {
             boost::filesystem::remove(m_output_path);
-            BOOST_LOG_TRIVIAL(info) << "Removed output file due to errors: " << m_output_path;
         }
 
         } catch (const std::exception& e) {
@@ -268,9 +267,9 @@ bool SliceEngine::load_3mf() {
     // --- Pre-load validation: format & size ---
 
     // Extension check (case-insensitive: .3mf, .3MF, .3Mf are all valid)
-    std::string ext = boost::filesystem::path(m_cfg.input_file).extension().string();
-    boost::to_lower(ext);
-    if (ext != ".3mf") {
+    std::string extension = boost::filesystem::path(m_cfg.input_file).extensionension().string();
+    boost::to_lower(extension);
+    if (extension != ".3mf") {
         std::string msg = "仅支持上传 .3mf 格式的打印配置文件，请使用 Snapmaker Orca Slicer 导出";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
@@ -283,9 +282,9 @@ bool SliceEngine::load_3mf() {
     // File size check (configurable via --max-size, default 200MB, 0 = no limit)
     if (m_cfg.max_size_mb > 0) {
         boost::uintmax_t max_file_size = static_cast<boost::uintmax_t>(m_cfg.max_size_mb) * 1024ULL * 1024ULL;
-        boost::system::error_code ec;
-        boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, ec);
-        if (!ec && file_size > max_file_size) {
+        boost::system::error_code err_code;
+        boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, err_code);
+        if (!err_code && file_size > max_file_size) {
             std::string msg = "文件大小超过限制 (" + std::to_string(m_cfg.max_size_mb)
                             + "MB)，请简化模型或减少面数后重试";
             BOOST_LOG_TRIVIAL(error) << msg;
@@ -912,8 +911,6 @@ void SliceEngine::apply_process_official_preset()
         auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
         if (bt && bt->value == btAutoBrim) {
             m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
-            BOOST_LOG_TRIVIAL(info)
-                << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
         }
     }
 
@@ -1880,7 +1877,6 @@ void SliceEngine::package_output() {
                 m_stats.error_message = msg;
             return;
         }
-        BOOST_LOG_TRIVIAL(info) << "gcode.3mf package created: " << m_output_path;
     }
     catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package: " << e.what();

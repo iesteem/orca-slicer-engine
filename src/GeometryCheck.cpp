@@ -226,8 +226,5 @@ std::vector<Issue> run_geometry_checks(const Slic3r::Model& model, int plate_id)
         }
     }
 
-    BOOST_LOG_TRIVIAL(info) << "Geometry check completed: "
-        << issues.size() << " defect(s) found";
-
     return issues;
 }
