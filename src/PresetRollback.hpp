@@ -10,17 +10,17 @@ class PresetBundle;
 class ConfigOptionStrings;
 
 // ============================================================================
-// PresetRollback — 将用户自定义耗材预设回退到匹配的基础库预设
+// PresetRollback — Roll back user-defined filament presets to matching library presets
 //
-// 使用场景：
-//   云引擎 enforce 模式下，官方预设替换后若切片失败，可通过
-//   rollback() 将目标 extruder 的耗材回退到库中匹配
-//   {filament_vendor, filament_type, nozzle_diameter} 的预设。
+// Use case:
+//   In cloud enforce mode, if slicing fails after official preset substitution,
+//   rollback() can revert the target extruder's filament to a library preset
+//   matching {filament_vendor, filament_type, nozzle_diameter}.
 //
-// 数据流：
+// Data flow:
 //   m_config (3MF project_settings.config) ──── filament_type, filament_vendor, nozzle_diameter
-//   PresetBundle::filaments (系统预设库) ──── 三维匹配查找
-//   m_config ← 匹配的库预设的 per-extruder 关键参数
+//   PresetBundle::filaments (system preset library) ──── 3D match lookup
+//   m_config ← per-extruder key parameters from the matched library preset
 // ============================================================================
 class PresetRollback
 {
@@ -28,55 +28,56 @@ public:
     PresetRollback()  = default;
     ~PresetRollback() = default;
 
-    // ---- 读取 m_config 中的耗材属性 ----
+    // ---- Read filament attributes from m_config ----
 
-    /// 读取指定 extruder 的 filament_type（如 "PLA", "PETG", "ABS"）
+    /// Read filament_type for the specified extruder (e.g. "PLA", "PETG", "ABS")
     static std::string getFilamentType(const DynamicPrintConfig& config, int extruder_idx);
 
-    /// 读取指定 extruder 的 filament_vendor（如 "Generic", "Snapmaker"）
+    /// Read filament_vendor for the specified extruder (e.g. "Generic", "Snapmaker")
     static std::string getFilamentVendor(const DynamicPrintConfig& config, int extruder_idx);
 
-    // ---- 查找基础大类预设 ----
+    // ---- Find base category preset ----
 
-    /// 在 PresetBundle::filaments 中查找匹配 filament_type 的基础大类预设。
+    /// Find a base category preset in PresetBundle::filaments matching filament_type.
     ///
-    /// 四维精确匹配策略：
-    ///   Pass 1 — 同厂商：filament_vendor + filament_type + nozzle_diameter + printer_model 全匹配
-    ///            （如 Snapmaker + PLA + 0.4 + Snapmaker U1 → "Snapmaker PLA @U1 0.4 nozzle"）
-    ///   Pass 2 — Generic 兜底：filament_vendor == "Generic" + nozzle_diameter + printer_model
-    ///            （如 "Generic PLA @U1 0.4 nozzle"）
+    /// 4D exact-match strategy:
+    ///   Pass 1 — same vendor: filament_vendor + filament_type + nozzle_diameter + printer_model all match
+    ///            (e.g. Snapmaker + PLA + 0.4 + Snapmaker U1 → "Snapmaker PLA @U1 0.4 nozzle")
+    ///   Pass 2 — Generic fallback: filament_vendor == "Generic" + nozzle_diameter + printer_model
+    ///            (e.g. "Generic PLA @U1 0.4 nozzle")
     ///
-    /// 返回 nullptr 表示未找到任何匹配的基础大类预设。
+    /// Returns nullptr if no matching base category preset is found.
     static const Preset* findBaseFilament(const PresetBundle* bundle,
                                           const std::string& filament_type,
                                           const std::string& vendor_hint = {},
                                           double nozzle_diameter = 0.4,
                                           const std::string& printer_model = "Snapmaker U1");
 
-    // ---- 共享「全面覆盖」操作 ----
+    // ---- Shared full-overwrite operation ----
 
-    /// 用 source 预设的全部 per-extruder 向量参数，全面覆盖 target 中
-    /// extruder_idx 对应槽位的值（不保留任何用户值），并把 filament_ids
-    /// 在该索引处更新为 source.name。
+    /// Replace all per-extruder vector parameters at the extruder_idx slot in
+    /// target with values from the source preset (no user values are preserved),
+    /// and update filament_ids at that index to source.name.
     ///
-    /// 「继承链替换」与「耗材回退」两条路径共用此 helper，确保替换语义一致。
-    /// filament_ids 可为 nullptr（仅覆盖参数、不更新名称）。
+    /// Shared by both the inheritance-chain substitution and filament rollback
+    /// paths to guarantee consistent replacement semantics.
+    /// filament_ids may be nullptr (parameters only, no name update).
     static void overwriteExtruderFrom(DynamicPrintConfig& target,
                                       const Preset& source,
                                       int extruder_idx,
                                       ConfigOptionStrings* filament_ids);
 
-    // ---- 完整回退操作 ----
+    // ---- Full rollback operation ----
 
-    /// 将指定 extruder 的耗材替换为匹配的库预设。
+    /// Replace the specified extruder's filament with a matching library preset.
     ///
-    /// 操作步骤：
-    ///   1. 从 config 读取 filament_type、filament_vendor、nozzle_diameter
-    ///   2. 在 bundle 中三维匹配查找库预设
-    ///   3. 将匹配预设的 per-extruder 参数写入 config 对应的 extruder 位置
-    ///   4. 更新 filament_settings_id 为匹配预设名称
+    /// Steps:
+    ///   1. Read filament_type, filament_vendor, nozzle_diameter from config
+    ///   2. 3D match lookup in bundle for a library preset
+    ///   3. Write matched preset's per-extruder parameters to the target extruder slot in config
+    ///   4. Update filament_settings_id to the matched preset name
     ///
-    /// 返回值：true = 回退成功，false = 未找到匹配的库预设。
+    /// Returns: true = rollback succeeded, false = no matching library preset found.
     static bool rollback(DynamicPrintConfig& config,
                          const PresetBundle* bundle,
                          int extruder_idx);

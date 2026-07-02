@@ -193,7 +193,7 @@ bool SliceEngine::run() {
             if (has_geom_error) {
                 m_any_error = true;
                 set_error_type(EXIT_VALIDATION_ERROR);
-                m_stats.error_message = "模型文件中检测到几何缺陷（非流形/自相交/零体积），请修复后重新上传";
+                m_stats.error_message = "Geometric defects detected in the model (non-manifold / self-intersecting / zero-volume). Please repair the model and re-upload.";
                 BOOST_LOG_TRIVIAL(error) << m_stats.error_message;
                 build_statistics();
                 return false;
@@ -264,19 +264,23 @@ bool SliceEngine::run() {
 // ============================================================================
 
 bool SliceEngine::load_3mf() {
+    auto fail_load = [&](const std::string& code, const std::string& msg) {
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_LOAD_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, code, msg));
+        return false;
+    };
+
     // --- Pre-load validation: format & size ---
 
     // Extension check (case-insensitive: .3mf, .3MF, .3Mf are all valid)
     std::string extension = boost::filesystem::path(m_cfg.input_file).extensionension().string();
     boost::to_lower(extension);
     if (extension != ".3mf") {
-        std::string msg = "仅支持上传 .3mf 格式的打印配置文件，请使用 Snapmaker Orca Slicer 导出";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_LOAD_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "FORMAT_REJECTED", msg));
-        return false;
+        return fail_load("FORMAT_REJECTED",
+            "Only .3mf files are supported. Please export your project from Snapmaker Orca Slicer.");
     }
 
     // File size check (configurable via --max-size, default 200MB, 0 = no limit)
@@ -285,14 +289,9 @@ bool SliceEngine::load_3mf() {
         boost::system::error_code err_code;
         boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, err_code);
         if (!err_code && file_size > max_file_size) {
-            std::string msg = "文件大小超过限制 (" + std::to_string(m_cfg.max_size_mb)
-                            + "MB)，请简化模型或减少面数后重试";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_LOAD_ERROR);
-            m_stats.error_message = msg;
-            m_stats.issues.push_back(make_error(-1, "FILE_SIZE_EXCEEDED", msg));
-            return false;
+            return fail_load("FILE_SIZE_EXCEEDED",
+                "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb)
+                + " MB). Please simplify the model or reduce face count and try again.");
         }
     }
 
@@ -345,7 +344,7 @@ bool SliceEngine::load_3mf() {
         auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
         if (pp && !pp->values.empty()) {
             m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
-                "自定义后处理脚本在云切片中不被支持"));
+                "Custom post-processing scripts are not supported in cloud slicing."));
             m_config.set_key_value("post_process", new ConfigOptionStrings({}));
         }
     }
@@ -582,9 +581,11 @@ bool SliceEngine::validate_filament_official()
         return nullptr;
     };
 
-    // 所有非官方失败分支统一兜底：先尝试 PresetRollback 回退到基础大类，
-    // 成功则 warning + 视为已解决；失败才报原 error。
-    // 注意：rollback 成功后 filament_ids->values[i] 已被更新为基础大类名。
+    // All non-official failure branches funnel through here: first try
+    // PresetRollback to fall back to a base category preset. On success,
+    // emit a warning and treat as resolved; on failure, emit the original error.
+    // After a successful rollback, filament_ids->values[i] is already updated
+    // to the base category name.
     auto try_rollback = [&](int i, const std::string& name,
                             const char* err_code, const std::string& err_msg) -> bool {
         if (PresetRollback::rollback(m_config, m_preset_bundle.get(), i)) {
@@ -598,8 +599,9 @@ bool SliceEngine::validate_filament_official()
         return false;
     };
 
-    // 解析单个 filament：官方 → true；非官方 → 继承链找官方祖先（全面替换）；
-    // 失败则回退；回退也失败 → 报 error 返回 false。
+    // Resolve a single filament: official → true; unofficial → walk the
+    // inheritance chain to find an official ancestor (full substitution);
+    // on failure, rollback; if rollback also fails → emit error and return false.
     auto resolve_filament = [&](int i) -> bool {
         const std::string& name = filament_ids->values[i];
 
@@ -675,8 +677,9 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
                                               const Preset& official_parent,
                                               const std::string& original_name)
 {
-    // Full overwrite: 用官方祖先预设的全部 per-extruder 参数覆盖目标槽位，
-    // 不保留任何用户值。与 PresetRollback 回退路径共用同一 helper。
+    // Full overwrite: replace all per-extruder parameters in the target slot
+    // with values from the official ancestor preset. No user values are
+    // preserved. Shares the same helper with the PresetRollback fallback path.
     PresetRollback::overwriteExtruderFrom(m_config, official_parent, ext_idx, filament_ids);
 
     m_stats.issues.push_back(make_warning(-1, "FILAMENT_SUBSTITUTED",
@@ -686,28 +689,27 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
 
 bool SliceEngine::validate_printer_model()
 {
-    const std::string ALLOWED_PRINTER_MODEL = "Snapmaker U1";
-
-    if (!m_config.has("printer_model")) {
-        std::string msg = "打印机型号缺失，仅支持 Snapmaker U1 机型";
+    auto fail_model = [&](const std::string& code, const std::string& msg) {
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
         set_error_type(EXIT_VALIDATION_ERROR);
         m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_MODEL_MISSING", msg));
+        m_stats.issues.push_back(make_error(-1, code, msg));
         return false;
+    };
+
+    const std::string ALLOWED_PRINTER_MODEL = "Snapmaker U1";
+
+    if (!m_config.has("printer_model")) {
+        return fail_model("PRINTER_MODEL_MISSING",
+            "Printer model is missing. Only the Snapmaker U1 is supported.");
     }
 
     std::string printer_model = m_config.opt_string("printer_model");
     if (printer_model != ALLOWED_PRINTER_MODEL) {
-        std::string msg = "不支持的打印机型号: \"" + printer_model
-                        + "\"，仅支持 Snapmaker U1 机型";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_MODEL_UNSUPPORTED", msg));
-        return false;
+        return fail_model("PRINTER_MODEL_UNSUPPORTED",
+            "Unsupported printer model: \"" + printer_model
+            + "\". Only the Snapmaker U1 is supported.");
     }
 
     return true;
@@ -1020,7 +1022,7 @@ void SliceEngine::process_plate(int plate_id) {
         if (m_has_timeout && std::chrono::steady_clock::now() > m_timeout_deadline) {
             BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
             m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
-                "切片超时，模型可能过于复杂。如果您有异议，可点击申诉提交复审。"));
+                "Slicing timed out. The model may be too complex. If you believe this is an error, please submit an appeal for review."));
             m_any_error = true;
             set_error_type(EXIT_SLICING_ERROR);
             return;

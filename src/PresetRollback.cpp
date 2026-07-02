@@ -11,7 +11,7 @@
 
 namespace Slic3r {
 
-// ---- 读取 m_config ----
+// ---- Read m_config ----
 
 std::string PresetRollback::getFilamentType(const DynamicPrintConfig& config, int extruder_idx)
 {
@@ -35,15 +35,15 @@ std::string PresetRollback::getFilamentVendor(const DynamicPrintConfig& config, 
     return opt->values[extruder_idx];
 }
 
-// ---- 查找基础大类预设 ----
+// ---- Find base category preset ----
 //
-// 三维精确匹配策略：
-//   Pass 1 — 同厂商：filament_vendor + filament_type + nozzle_diameter 全匹配
-//            （如 Snapmaker + PLA + 0.4 → "Snapmaker PLA Matte @U1 0.4 nozzle"）
-//   Pass 2 — Generic 兜底：filament_vendor == "Generic" + filament_type + nozzle_diameter
-//            （如 "Generic PLA @U1 0.4 nozzle"）
+// 3D exact-match strategy:
+//   Pass 1 — same vendor: filament_vendor + filament_type + nozzle_diameter all match
+//            (e.g. Snapmaker + PLA + 0.4 → "Snapmaker PLA Matte @U1 0.4 nozzle")
+//   Pass 2 — Generic fallback: filament_vendor == "Generic" + filament_type + nozzle_diameter
+//            (e.g. "Generic PLA @U1 0.4 nozzle")
 //
-// 喷嘴匹配：通过 filament 的 compatible_printers → 对应 printer 预设 → nozzle_diameter 数值比较。
+// Nozzle match: via filament's compatible_printers → target printer preset → nozzle_diameter numeric comparison.
 
 // 通过 filament 的 compatible_printers，筛出目标机型的 printer，
 // 读取 printer 的 nozzle_diameter 与目标值做 ε 比较。
@@ -56,7 +56,7 @@ static bool filament_supports_nozzle(const PresetBundle& bundle,
     if (!cp || cp->values.empty()) return false;
 
     for (const std::string& printer_name : cp->values) {
-        // 只考虑目标机型的 printer（如 "Snapmaker U1"）
+        // Only consider printers matching the target model (e.g. "Snapmaker U1")
         if (printer_name.find(printer_model) == std::string::npos) continue;
 
         const Preset* printer = nullptr;
@@ -77,7 +77,7 @@ static bool filament_supports_nozzle(const PresetBundle& bundle,
     return false;
 }
 
-// 读取 preset 的 filament_type 配置值
+// Read the preset's filament_type config value
 static std::string get_preset_filament_type(const Preset& preset)
 {
     auto* opt = preset.config.option<ConfigOptionStrings>("filament_type");
@@ -85,7 +85,7 @@ static std::string get_preset_filament_type(const Preset& preset)
     return opt->values[0];
 }
 
-// 读取 preset 的 filament_vendor 配置值
+// Read the preset's filament_vendor config value
 static std::string get_preset_filament_vendor(const Preset& preset)
 {
     auto* opt = preset.config.option<ConfigOptionStrings>("filament_vendor");
@@ -93,7 +93,7 @@ static std::string get_preset_filament_vendor(const Preset& preset)
     return opt->values[0];
 }
 
-// 在 bundle 中找 {vendor_name, filament_type, nozzle_diameter, printer_model} 全匹配的系统预设
+// Find a system preset in bundle matching {vendor_name, filament_type, nozzle_diameter, printer_model}
 static const Preset* find_in_vendor(const PresetBundle& bundle,
                                      const std::string& filament_type,
                                      const std::string& vendor_name,
@@ -103,13 +103,13 @@ static const Preset* find_in_vendor(const PresetBundle& bundle,
     for (const Preset& preset : bundle.filaments) {
         if (!preset.is_system) continue;
 
-        // 喷嘴直径匹配（compatible_printers → 目标机型 printer → nozzle_diameter）
+        // Nozzle diameter match (compatible_printers → target printer → nozzle_diameter)
         if (!filament_supports_nozzle(bundle, preset, nozzle_diameter, printer_model)) continue;
 
-        // filament_type 匹配（大小写不敏感）
+        // filament_type match (case-insensitive)
         if (!boost::iequals(get_preset_filament_type(preset), filament_type)) continue;
 
-        // filament_vendor 匹配（大小写不敏感）
+        // filament_vendor match (case-insensitive)
         if (!boost::iequals(get_preset_filament_vendor(preset), vendor_name)) continue;
 
         return &preset;
@@ -126,13 +126,13 @@ const Preset* PresetRollback::findBaseFilament(const PresetBundle* bundle,
 {
     if (!bundle || filament_type.empty()) return nullptr;
 
-    // Pass 1: 同厂商
+    // Pass 1: same vendor
     if (!vendor_hint.empty()) {
         const Preset* r = find_in_vendor(*bundle, filament_type, vendor_hint, nozzle_diameter, printer_model);
         if (r) return r;
     }
 
-    // Pass 2: Generic 兜底（避免 vendor_hint 已经是 Generic 时重复查）
+    // Pass 2: Generic fallback (avoid duplicate lookup when vendor_hint is already Generic)
     if (!boost::iequals(vendor_hint, "Generic")) {
         return find_in_vendor(*bundle, filament_type, "Generic", nozzle_diameter, printer_model);
     }
@@ -140,10 +140,11 @@ const Preset* PresetRollback::findBaseFilament(const PresetBundle* bundle,
     return nullptr;
 }
 
-// ---- 共享「全面覆盖」操作 ----
+// ---- Shared full-overwrite operation ----
 //
-// Full overwrite: 用 source 预设的所有 per-extruder 向量值，覆盖 target 中
-// extruder_idx 槽位。与「继承链替换」「耗材回退」两条路径共用，确保语义一致。
+// Full overwrite: replace the extruder_idx slot in target with all per-extruder
+// vector values from the source preset. Shared by both the inheritance-chain
+// substitution and filament rollback paths to guarantee consistent semantics.
 
 void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target,
                                            const Preset& source,
@@ -169,18 +170,18 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target,
             dst_vec->set_at(src_vec, dst_idx, 0);
     }
 
-    // 更新 filament_settings_id 为 source 名称
+    // Update filament_settings_id to the source preset name
     if (filament_ids && dst_idx < filament_ids->values.size())
         filament_ids->values[dst_idx] = source.name;
 }
 
-// ---- 完整回退操作 ----
+// ---- Full rollback operation ----
 
 bool PresetRollback::rollback(DynamicPrintConfig& config,
                                const PresetBundle* bundle,
                                int extruder_idx)
 {
-    // 1. 读取当前耗材属性
+    // 1. Read current filament attributes
     const std::string filament_type   = getFilamentType(config, extruder_idx);
     const std::string filament_vendor = getFilamentVendor(config, extruder_idx);
 
@@ -191,7 +192,7 @@ bool PresetRollback::rollback(DynamicPrintConfig& config,
         return false;
     }
 
-    // 1b. 读取 nozzle_diameter 和 printer_model（用于 compatible_printers → printer 喷嘴匹配）
+    // 1b. Read nozzle_diameter and printer_model (for compatible_printers → printer nozzle match)
     double nozzle_diameter = 0.4;
     if (config.has("nozzle_diameter")) {
         auto* nozzle_opt = config.option<ConfigOptionFloats>("nozzle_diameter");
@@ -202,7 +203,7 @@ bool PresetRollback::rollback(DynamicPrintConfig& config,
 
     std::string printer_model = "Snapmaker U1";
 
-    // 2. 查找基础大类预设
+    // 2. Find base category preset
     const Preset* base = findBaseFilament(bundle, filament_type, filament_vendor,
                                           nozzle_diameter, printer_model);
     if (!base) {
@@ -218,7 +219,7 @@ bool PresetRollback::rollback(DynamicPrintConfig& config,
         << " from type=\"" << filament_type << "\" to base preset \""
         << base->name << "\"";
 
-    // 3. Full overwrite + 更新 filament_settings_id（共享 helper）
+    // 3. Full overwrite + update filament_settings_id (shared helper)
     auto* fsi = config.has("filament_settings_id")
                   ? config.option<ConfigOptionStrings>("filament_settings_id", true)
                   : nullptr;
