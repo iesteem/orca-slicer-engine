@@ -128,6 +128,14 @@ bool SliceEngine::run() {
         return false;
     }
 
+    // Block slicing if printer model is not Snapmaker U1.
+    // Moved before preset loading to fail fast — this check reads only
+    // m_config (populated during 3MF load) and has no preset dependency.
+    if (!validate_printer_model()) {
+        build_statistics();
+        return false;
+    }
+
     // Config & preset validation (desktop parity — non-blocking)
     validate_config();
     load_system_presets();
@@ -144,12 +152,6 @@ bool SliceEngine::run() {
     // Strip custom G-code blocks for cloud safety
     if (m_cfg.clear_custom_gcode) {
         apply_official_presets();
-    }
-
-    // Block slicing if printer model is not Snapmaker U1
-    if (!validate_printer_model()) {
-        build_statistics();
-        return false;
     }
 
     // Replace the user's printer config wholesale with the official U1 preset.
