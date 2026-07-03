@@ -1724,19 +1724,34 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
-        // Collect PrintBase warnings (EmptyGcodeLayers, G-code overlap, etc.)
+        auto collect_issue = [&](const PrintStateBase::Warning& w)
+        {
+            if (w.level == PrintStateBase::WarningLevel::CRITICAL)
+                result.issues.push_back(make_error(plate_id, "PRINT_WARNING", w.message));
+            else
+                result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+        };
+
         for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step)
         {
-            auto wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
+            const auto& wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
             for (const auto& w : wstate.warnings)
             {
-                if (!w.current)
-                    continue;
-                bool is_critical = (w.level == PrintStateBase::WarningLevel::CRITICAL);
-                if (is_critical)
-                    result.issues.push_back(make_error(plate_id, "PRINT_WARNING", w.message));
-                else
-                    result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+                if (w.current)
+                    collect_issue(w);
+            }
+        }
+
+        for (const PrintObject* obj : print.objects())
+        {
+            for (int step = 0; step < static_cast<int>(PrintObjectStep::posCount); ++step)
+            {
+                const auto& wstate = obj->step_state_with_warnings(static_cast<PrintObjectStep>(step));
+                for (const auto& w : wstate.warnings)
+                {
+                    if (w.current)
+                        collect_issue(w);
+                }
             }
         }
 
