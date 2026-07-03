@@ -19,6 +19,7 @@
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/PostProcessor.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/PNGReadWrite.hpp"
 #include "libslic3r/ProjectTask.hpp"
 
 #include "PresetRollback.hpp"
@@ -205,6 +206,8 @@ bool SliceEngine::run()
             // per-plate loop, so every later stage sees the same coordinates the
             // desktop would.
             ensure_models_on_bed();
+
+            decode_plate_thumbnails();
 
             m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
                                                  m_cfg.single_plate);
@@ -1196,6 +1199,37 @@ void SliceEngine::ensure_models_on_bed()
     }
 }
 
+void SliceEngine::decode_plate_thumbnails()
+{
+    for (auto& pd : m_plate_data)
+    {
+        if (pd->plate_thumbnail.pixels.empty())
+            continue;
+
+        Slic3r::png::ReadBuf buf{pd->plate_thumbnail.pixels.data(), pd->plate_thumbnail.pixels.size()};
+
+        Slic3r::png::ImageColorscale img;
+        if (!Slic3r::png::decode_colored_png(buf, img))
+            continue;
+
+        pd->plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
+
+        const size_t src_bpp = static_cast<size_t>(img.bytes_per_pixel);
+        for (size_t y = 0; y < img.rows; ++y)
+        {
+            for (size_t x = 0; x < img.cols; ++x)
+            {
+                size_t src_idx = (y * img.cols + x) * src_bpp;
+                size_t dst_idx = (y * img.cols + x) * 4;
+                pd->plate_thumbnail.pixels[dst_idx + 0] = img.buf[src_idx + 0];
+                pd->plate_thumbnail.pixels[dst_idx + 1] = img.buf[src_idx + 1];
+                pd->plate_thumbnail.pixels[dst_idx + 2] = img.buf[src_idx + 2];
+                pd->plate_thumbnail.pixels[dst_idx + 3] = (src_bpp >= 4) ? img.buf[src_idx + 3] : 255;
+            }
+        }
+    }
+}
+
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)
 {
     if (!(m_config.has("printable_area") && m_config.has("printable_height")))
@@ -1662,7 +1696,28 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     try
     {
         GCodeProcessor::s_IsBBLPrinter = print.is_BBL_printer();
-        std::string exported = print.export_gcode(gcode_output, &result.gcode_result, nullptr);
+
+        auto thumbnail_cb = [this](const Slic3r::ThumbnailsParams& params) -> std::vector<Slic3r::ThumbnailData>
+        {
+            std::vector<Slic3r::ThumbnailData> thumbnails;
+            const Slic3r::ThumbnailData* source = nullptr;
+            for (const auto& pd : m_plate_data)
+            {
+                if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
+                {
+                    source = &pd->plate_thumbnail;
+                    break;
+                }
+            }
+            if (!source)
+                return thumbnails;
+            for (const auto& size : params.sizes)
+                thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
+                                                      static_cast<unsigned int>(size.y())));
+            return thumbnails;
+        };
+
+        std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         result.gcode_path = exported;
 
         // Post-processing scripts are disabled in cloud mode to prevent
@@ -1934,6 +1989,16 @@ void SliceEngine::package_output()
     std::vector<ThumbnailData*> top_thumbnail_data;
     std::vector<ThumbnailData*> pick_thumbnail_data;
     std::vector<ThumbnailData*> calibration_thumbnail_data;
+
+    for (const auto& pd : m_plate_data)
+    {
+        thumbnail_data.push_back(pd->plate_thumbnail.is_valid() ? &pd->plate_thumbnail : nullptr);
+        no_light_thumbnail_data.push_back(nullptr);
+        top_thumbnail_data.push_back(nullptr);
+        pick_thumbnail_data.push_back(nullptr);
+        calibration_thumbnail_data.push_back(nullptr);
+    }
+
     std::vector<PlateBBoxData*> id_bboxes;
     std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
     id_bboxes_owned.reserve(m_plate_data.size());

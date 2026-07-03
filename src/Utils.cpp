@@ -180,3 +180,64 @@ std::string generate_output_path(const std::string& input_file, const std::strin
 
     return path;
 }
+
+Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigned int target_width,
+                                       unsigned int target_height)
+{
+    Slic3r::ThumbnailData dst;
+    dst.set(target_width, target_height);
+
+    if (src.width == target_width && src.height == target_height)
+    {
+        std::copy(src.pixels.begin(), src.pixels.end(), dst.pixels.begin());
+        return dst;
+    }
+
+    const double scale_x = static_cast<double>(src.width) / target_width;
+    const double scale_y = static_cast<double>(src.height) / target_height;
+
+    for (unsigned int dy = 0; dy < target_height; ++dy)
+    {
+        for (unsigned int dx = 0; dx < target_width; ++dx)
+        {
+            double sx = (dx + 0.5) * scale_x - 0.5;
+            double sy = (dy + 0.5) * scale_y - 0.5;
+
+            if (sx < 0)
+                sx = 0;
+            if (sy < 0)
+                sy = 0;
+            if (sx >= src.width - 1)
+                sx = src.width - 1.001;
+            if (sy >= src.height - 1)
+                sy = src.height - 1.001;
+
+            unsigned int x0 = static_cast<unsigned int>(sx);
+            unsigned int y0 = static_cast<unsigned int>(sy);
+            unsigned int x1 = x0 + 1;
+            unsigned int y1 = y0 + 1;
+            if (x1 >= src.width)
+                x1 = src.width - 1;
+            if (y1 >= src.height)
+                y1 = src.height - 1;
+
+            double fx = sx - x0;
+            double fy = sy - y0;
+
+            for (int c = 0; c < 4; ++c)
+            {
+                double v00 = src.pixels[(y0 * src.width + x0) * 4 + c];
+                double v10 = src.pixels[(y0 * src.width + x1) * 4 + c];
+                double v01 = src.pixels[(y1 * src.width + x0) * 4 + c];
+                double v11 = src.pixels[(y1 * src.width + x1) * 4 + c];
+
+                double val =
+                    v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
+
+                dst.pixels[(dy * target_width + dx) * 4 + c] =
+                    static_cast<unsigned char>(std::min(255.0, std::max(0.0, val)));
+            }
+        }
+    }
+    return dst;
+}

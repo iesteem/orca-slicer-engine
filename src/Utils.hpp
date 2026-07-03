@@ -7,6 +7,7 @@
 #include <boost/filesystem.hpp>
 
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Print.hpp"
 
 #include "Types.hpp"
@@ -32,6 +33,10 @@ std::string format_time_hhmmss(float seconds);
 // Generate output filename based on parameters
 std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
                                  OutputFormat format, bool single_plate);
+
+// Bilinear resize of RGBA thumbnail data to target dimensions
+Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigned int target_width,
+                                       unsigned int target_height);
 
 // Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic)
 inline int compute_column_count(int count)
