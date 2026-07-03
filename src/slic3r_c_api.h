@@ -84,7 +84,9 @@ extern "C"
  *     "filament": {"total_m": 1.23, "total_g": 4.56, "cost": 0.12},
  *     "gcode_file": "result.gcode.3mf"
  *   }],
- *   "issues": [{"level":"warning","plate_id":1,"object":"cube","code":"X","msg":"..."}]
+ *   "issues": [{"level":"warning","plate_id":1,"object":"cube","code":"X","msg":"..."},
+ *              {"level":"serious_warning","plate_id":1,"object":"cube","code":"Y","msg":"..."},
+ *              {"level":"error","plate_id":1,"object":"cube","code":"Z","msg":"..."}]
  * }
  */
     SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char* output_base,

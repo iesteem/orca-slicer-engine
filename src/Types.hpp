@@ -26,7 +26,7 @@ enum class OutputFormat
 // Structured issue for error/warning/tip collection
 struct Issue
 {
-    std::string level; // "error" | "warning" | "tip"
+    std::string level; // "error" | "warning" | "serious_warning" | "tip"
     int plate_id; // plate index, -1 for global
     std::string object_name; // related object, empty if N/A
     double z_height; // Z-level in mm, -1 if N/A
@@ -49,6 +49,11 @@ inline Issue make_warning(int plate_id, const std::string& code, const std::stri
 inline Issue make_tip(int plate_id, const std::string& code, const std::string& message)
 {
     return Issue{"tip", plate_id, "", -1.0, code, message, ""};
+}
+inline Issue make_serious_warning(int plate_id, const std::string& code, const std::string& message,
+                                  const std::string& object_name = "", const std::string& suggestion = "")
+{
+    return Issue{"serious_warning", plate_id, object_name, -1.0, code, message, suggestion};
 }
 
 // Output statistics structure for JSON export

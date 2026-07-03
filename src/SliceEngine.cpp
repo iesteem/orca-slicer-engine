@@ -1347,10 +1347,11 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
                         if (warned_objects.insert(obj->name).second)
                         {
                             m_stats.issues.push_back(
-                                make_warning(plate_id, "SPIRAL_LIFT_NEAR_BOUNDARY",
+                                make_serious_warning(plate_id, "SPIRAL_LIFT_NEAR_BOUNDARY",
                                              "Model too close to bed boundary. "
                                              "Disable spiral lifting or keep at least 3.5mm gap to avoid collision.",
                                              obj->name));
+                            m_any_postprocess_warning = true;
                         }
                     }
                 }
@@ -1814,13 +1815,14 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
         const auto& cr = result.gcode_result.conflict_result.value();
         std::string obj1 = cr._obj1 ? cr._objName1 : "Wipe Tower";
         std::string obj2 = cr._obj2 ? cr._objName2 : "Wipe Tower";
-        log_plate_message("[Post-processing]", "ERROR", plate_id,
-                          "Toolpath conflict detected between \"" + obj1 + "\" and \"" + obj2 +
-                              "\" at Z=" + std::to_string(cr._height) + "mm.");
-        has_postprocess_error = true;
-        Issue conflict = make_error(plate_id, "TOOLPATH_CONFLICT",
-                                    "Toolpath conflict detected between \"" + obj1 + "\" and \"" + obj2 +
-                                        "\" at Z=" + std::to_string(cr._height) + "mm",
+        std::string conflict_msg = "Conflicts of G-code paths have been found at layer "
+            + std::to_string(cr.layer) + ", z = "
+            + std::to_string(cr._height) + " mm. Please separate the conflicted objects farther ("
+            + obj1 + " <-> " + obj2 + ").";
+        log_plate_message("[Post-processing]", "WARNING", plate_id, conflict_msg);
+        has_postprocess_warning = true;
+        Issue conflict = make_serious_warning(plate_id, "TOOLPATH_CONFLICT",
+                                    conflict_msg,
                                     obj1 + " vs " + obj2);
         conflict.z_height = cr._height;
         result.issues.push_back(conflict);
@@ -2097,7 +2099,7 @@ void SliceEngine::build_statistics()
         {
             if (issue.level == "error")
                 plate_has_error = true;
-            if (issue.level == "warning")
+            if (issue.level == "warning" || issue.level == "serious_warning")
                 plate_has_warning = true;
             m_stats.issues.push_back(issue);
         }
