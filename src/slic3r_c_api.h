@@ -30,14 +30,27 @@ extern "C"
     /* ---- Opaque handle ---- */
     typedef struct slic3r_ctx_s slic3r_ctx_t;
 
-/* ---- Status codes ---- */
+/* ---- Status codes ----
+ * Values 0-7 match the C++ EXIT_* constants in Types.hpp exactly;
+ * slic3r_slice() returns engine.exit_code() directly without translation.
+ *
+ *   0  SLIC3R_OK              Success
+ *   1  SLIC3R_ERR_ARGS        Invalid command-line arguments
+ *   2  SLIC3R_ERR_FILE_NOT_FOUND  Input file not found
+ *   3  SLIC3R_ERR_LOAD        3MF load / parse failure
+ *   4  SLIC3R_ERR_SLICING     Slicing engine exception (std::exception / timeout / fatal SlicingError)
+ *   5  SLIC3R_ERR_EXPORT      GCode export failure (I/O error / config error / cancellation)
+ *   6  SLIC3R_ERR_PREPROCESS  Pre-slicing validation error (config / input / presets invalid)
+ *   7  SLIC3R_ERR_POSTPROCESS Post-slicing fatal error (GCode generated but unusable, e.g. empty layers / toolpath out of bounds)
+ *  99  SLIC3R_ERR_INTERNAL    C++ exception crossing API boundary (unexpected internal error)
+ */
 #define SLIC3R_OK 0
 #define SLIC3R_ERR_ARGS 1
 #define SLIC3R_ERR_FILE_NOT_FOUND 2
 #define SLIC3R_ERR_LOAD 3
 #define SLIC3R_ERR_SLICING 4
 #define SLIC3R_ERR_EXPORT 5
-#define SLIC3R_ERR_VALIDATION 6
+#define SLIC3R_ERR_PREPROCESS 6
 #define SLIC3R_ERR_POSTPROCESS 7
 #define SLIC3R_ERR_INTERNAL 99
 

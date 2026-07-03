@@ -13,8 +13,8 @@ constexpr int EXIT_FILE_NOT_FOUND = 2;
 constexpr int EXIT_LOAD_ERROR = 3;
 constexpr int EXIT_SLICING_ERROR = 4;
 constexpr int EXIT_EXPORT_ERROR = 5;
-constexpr int EXIT_VALIDATION_ERROR = 6;
-constexpr int EXIT_POSTPROCESS_WARNING = 7;
+constexpr int EXIT_PREPROCESS_ERROR = 6; // pre-slicing validation failure (config/input/presets invalid)
+constexpr int EXIT_POSTPROCESS_ERROR = 7; // post-slicing fatal error (GCode generated but unusable)
 
 // Output format enum
 enum class OutputFormat
@@ -23,10 +23,19 @@ enum class OutputFormat
     GCODE_3MF
 };
 
+// Issue severity levels — ordinal defines sort / display order (high to low)
+enum class IssueLevel
+{
+    error = 0,
+    serious_warning = 1,
+    warning = 2,
+    tip = 3
+};
+
 // Structured issue for error/warning/tip collection
 struct Issue
 {
-    std::string level; // "error" | "warning" | "serious_warning" | "tip"
+    IssueLevel level;
     int plate_id; // plate index, -1 for global
     std::string object_name; // related object, empty if N/A
     double z_height; // Z-level in mm, -1 if N/A
@@ -39,21 +48,21 @@ struct Issue
 inline Issue make_error(int plate_id, const std::string& code, const std::string& message,
                         const std::string& object_name = "", const std::string& suggestion = "")
 {
-    return Issue{"error", plate_id, object_name, -1.0, code, message, suggestion};
+    return Issue{IssueLevel::error, plate_id, object_name, -1.0, code, message, suggestion};
 }
 inline Issue make_warning(int plate_id, const std::string& code, const std::string& message,
                           const std::string& object_name = "", const std::string& suggestion = "")
 {
-    return Issue{"warning", plate_id, object_name, -1.0, code, message, suggestion};
+    return Issue{IssueLevel::warning, plate_id, object_name, -1.0, code, message, suggestion};
 }
 inline Issue make_tip(int plate_id, const std::string& code, const std::string& message)
 {
-    return Issue{"tip", plate_id, "", -1.0, code, message, ""};
+    return Issue{IssueLevel::tip, plate_id, "", -1.0, code, message, ""};
 }
 inline Issue make_serious_warning(int plate_id, const std::string& code, const std::string& message,
                                   const std::string& object_name = "", const std::string& suggestion = "")
 {
-    return Issue{"serious_warning", plate_id, object_name, -1.0, code, message, suggestion};
+    return Issue{IssueLevel::serious_warning, plate_id, object_name, -1.0, code, message, suggestion};
 }
 
 // Output statistics structure for JSON export

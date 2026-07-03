@@ -672,7 +672,7 @@ bool SliceEngine::apply_filament_official_preset()
     if (any_error)
     {
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
     }
     return !any_error;
 }
@@ -696,7 +696,7 @@ bool SliceEngine::validate_printer_model()
     {
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, code, msg));
         return false;
@@ -752,7 +752,7 @@ bool SliceEngine::apply_printer_official_preset()
         std::string msg = "System presets not available; cannot apply official printer preset.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
         return false;
@@ -781,7 +781,7 @@ bool SliceEngine::apply_printer_official_preset()
                           preset_name + "\").";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
         return false;
@@ -800,7 +800,7 @@ bool SliceEngine::apply_printer_official_preset()
                           ". The official U1 printer preset was not applied correctly.";
         BOOST_LOG_TRIVIAL(error) << msg;
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
     };
@@ -937,7 +937,7 @@ bool SliceEngine::validate_input()
                 BOOST_LOG_TRIVIAL(warning) << oss.str();
             }
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
             m_stats.error_message = "Requested plate " + std::to_string(m_cfg.plate_id) + " not found in 3MF file";
             m_stats.issues.push_back(make_error(-1, "PLATE_NOT_FOUND", m_stats.error_message));
             return false;
@@ -1055,7 +1055,36 @@ void SliceEngine::process_plate(int plate_id)
         return;
     }
 
-    // Success
+    // Check for EmptyGcodeLayers before post-processing.
+    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
+    // exists but is effectively empty. Skip post-processing and flag as failed.
+    {
+        bool has_empty_gcode_layers = false;
+        for (const auto& iss : slice_result.issues)
+        {
+            if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
+            {
+                has_empty_gcode_layers = true;
+                break;
+            }
+        }
+        if (has_empty_gcode_layers)
+        {
+            boost::filesystem::remove(slice_result.gcode_path);
+            BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                                       << ": empty G-code layers, G-code file discarded";
+            for (auto& iss : slice_result.issues)
+                m_stats.issues.push_back(std::move(iss));
+            slice_result.issues.clear();
+            slice_result.gcode_result.moves.clear();
+            slice_result.gcode_result.moves.shrink_to_fit();
+            slice_result.gcode_result.lines_ends.clear();
+            slice_result.gcode_result.lines_ends.shrink_to_fit();
+            m_plate_results[plate_id] = slice_result;
+            return;
+        }
+    }
+
     run_postprocessing(plate_id, slice_result);
     m_plate_results[plate_id] = slice_result;
 }
@@ -1381,7 +1410,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects outside build volume, skipping";
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         return false;
     }
     return true;
@@ -1621,7 +1650,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
         }
         m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_PREPROCESS_ERROR);
         return false;
     }
 
@@ -1725,22 +1754,43 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
-        auto collect_issue = [&](const PrintStateBase::Warning& w)
+        // Collect PrintBase warnings with message_id-aware grading.
+        // Desktop CLI treats EmptyGcodeLayers and GcodeOverlap as
+        // CLI_SLICING_ERROR (hard exit). Cloud engine flags the plate
+        // but continues processing remaining plates.
+        auto grade_warning = [&](const PrintStateBase::Warning& w)
         {
-            if (w.level == PrintStateBase::WarningLevel::CRITICAL)
-                result.issues.push_back(make_error(plate_id, "PRINT_WARNING", w.message));
+            if (!w.current)
+                return;
+            auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
+            if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers)
+            {
+                result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
+                                                   "Empty G-code layers detected: " + w.message));
+                m_any_error = true;
+                set_error_type(EXIT_POSTPROCESS_ERROR);
+            }
+            else if (msg_type == PrintStateBase::SlicingGcodeOverlap)
+            {
+                result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
+                                                     "G-code overlap detected: " + w.message));
+                m_any_postprocess_warning = true;
+            }
+            else if (w.level == PrintStateBase::WarningLevel::CRITICAL)
+            {
+                result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
+            }
             else
+            {
                 result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+            }
         };
 
         for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step)
         {
             const auto& wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
             for (const auto& w : wstate.warnings)
-            {
-                if (w.current)
-                    collect_issue(w);
-            }
+                grade_warning(w);
         }
 
         for (const PrintObject* obj : print.objects())
@@ -1749,10 +1799,7 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
             {
                 const auto& wstate = obj->step_state_with_warnings(static_cast<PrintObjectStep>(step));
                 for (const auto& w : wstate.warnings)
-                {
-                    if (w.current)
-                        collect_issue(w);
-                }
+                    grade_warning(w);
             }
         }
 
@@ -1782,13 +1829,16 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
 
-    // Toolpaths outside print volume (matches desktop SLICING_ERROR severity)
+    // Toolpaths outside print volume. Desktop blocks printing via
+    // is_slice_result_ready_for_print() when toolpath_outside is true.
     if (result.gcode_result.toolpath_outside)
     {
-        log_plate_message("[Post-processing]", "ERROR", plate_id, "Some toolpaths are outside the printable area.");
+        log_plate_message("[Post-processing]", "ERROR", plate_id,
+                          "Toolpaths extend outside the printable area.");
         has_postprocess_error = true;
-        result.issues.push_back(
-            make_error(plate_id, "TOOLPATH_OUTSIDE", "Some toolpaths are outside the printable area"));
+        result.issues.push_back(make_error(plate_id, "TOOLPATH_OUTSIDE",
+                                           "Toolpaths extend outside the printable area. "
+                                           "The object exceeds the printer's build volume and cannot be printed safely."));
     }
 
     // Tool height outside check (matches desktop GLCanvas3D.cpp:9658)
@@ -1881,7 +1931,7 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
     if (has_postprocess_error)
     {
         m_any_error = true;
-        set_error_type(EXIT_VALIDATION_ERROR);
+        set_error_type(EXIT_POSTPROCESS_ERROR);
     }
 }
 
@@ -2076,9 +2126,11 @@ int SliceEngine::exit_code() const
     if (m_error_type > EXIT_OK)
         return m_error_type;
     if (m_any_error)
-        return EXIT_VALIDATION_ERROR;
+        return EXIT_PREPROCESS_ERROR;
+    // Post-processing warnings are non-fatal — G-code has been generated
+    // and is usable. Treat as success per alignment with desktop behavior.
     if (m_any_postprocess_warning)
-        return EXIT_POSTPROCESS_WARNING;
+        return EXIT_OK;
     return EXIT_OK;
 }
 
@@ -2097,9 +2149,9 @@ void SliceEngine::build_statistics()
         bool plate_has_warning = false;
         for (const auto& issue : result.issues)
         {
-            if (issue.level == "error")
+            if (issue.level == IssueLevel::error)
                 plate_has_error = true;
-            if (issue.level == "warning" || issue.level == "serious_warning")
+            if (issue.level == IssueLevel::warning || issue.level == IssueLevel::serious_warning)
                 plate_has_warning = true;
             m_stats.issues.push_back(issue);
         }
@@ -2108,7 +2160,7 @@ void SliceEngine::build_statistics()
         if (plate_has_error)
         {
             m_any_error = true;
-            set_error_type(EXIT_VALIDATION_ERROR);
+            set_error_type(EXIT_PREPROCESS_ERROR);
         }
         if (plate_has_warning || result.has_postprocess_warning)
             m_any_postprocess_warning = true;
@@ -2291,6 +2343,23 @@ void SliceEngine::build_statistics()
             }
         }
     }
+
+    // Sort issues by severity within each plate (stable: preserves detection order within same level)
+    for (auto& p : m_stats.plates)
+    {
+        std::stable_sort(p.issues.begin(), p.issues.end(),
+                         [](const Issue& a, const Issue& b)
+                         {
+                             return static_cast<int>(a.level) < static_cast<int>(b.level);
+                         });
+    }
+
+    // Sort global issues by severity
+    std::stable_sort(m_stats.issues.begin(), m_stats.issues.end(),
+                     [](const Issue& a, const Issue& b)
+                     {
+                         return static_cast<int>(a.level) < static_cast<int>(b.level);
+                     });
 
     // Sort plates by plate_id
     std::sort(m_stats.plates.begin(), m_stats.plates.end(),

@@ -48,10 +48,26 @@ static double round2(double v)
     return std::round(v * 100.0) / 100.0;
 }
 
+static const char* issue_level_name(IssueLevel level)
+{
+    switch (level)
+    {
+    case IssueLevel::error:
+        return "error";
+    case IssueLevel::serious_warning:
+        return "serious_warning";
+    case IssueLevel::warning:
+        return "warning";
+    case IssueLevel::tip:
+        return "tip";
+    }
+    return "unknown";
+}
+
 static ordered_json issue_to_json(const Issue& issue)
 {
     ordered_json j;
-    j["level"] = issue.level;
+    j["level"] = issue_level_name(issue.level);
     j["plate_id"] = issue.plate_id >= 0 ? issue.plate_id + 1 : issue.plate_id;
     j["object_name"] = issue.object_name;
     j["z_height"] = issue.z_height;
