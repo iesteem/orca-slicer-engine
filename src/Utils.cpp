@@ -129,6 +129,10 @@ Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigne
     Slic3r::ThumbnailData dst;
     dst.set(target_width, target_height);
 
+    // Guard against zero-dimension inputs: empty thumbnails produce no output
+    if (src.width == 0 || src.height == 0 || target_width == 0 || target_height == 0)
+        return dst;
+
     if (src.width == target_width && src.height == target_height)
     {
         std::copy(src.pixels.begin(), src.pixels.end(), dst.pixels.begin());

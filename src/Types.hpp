@@ -16,6 +16,13 @@ constexpr int EXIT_EXPORT_ERROR = 5;
 constexpr int EXIT_PREPROCESS_ERROR = 6; // pre-slicing validation failure (config/input/presets invalid)
 constexpr int EXIT_POSTPROCESS_ERROR = 7; // post-slicing fatal error (GCode generated but unusable)
 
+// Sentinel plate_id for issues not associated with a specific plate (global errors/warnings)
+constexpr int GLOBAL_ISSUE = -1;
+
+// Preset default values — used as fallbacks when config keys are absent
+constexpr double DEFAULT_NOZZLE_DIAMETER = 0.4;
+constexpr const char* DEFAULT_PRINTER_MODEL = "Snapmaker U1";
+
 // Output format enum
 enum class OutputFormat
 {

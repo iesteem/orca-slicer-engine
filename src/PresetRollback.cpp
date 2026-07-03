@@ -1,5 +1,7 @@
 #include "PresetRollback.hpp"
 
+#include "Types.hpp"
+
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -209,7 +211,7 @@ bool PresetRollback::rollback(DynamicPrintConfig& config, const PresetBundle* bu
     }
 
     // 1b. Read nozzle_diameter and printer_model (for compatible_printers → printer nozzle match)
-    double nozzle_diameter = 0.4;
+    double nozzle_diameter = DEFAULT_NOZZLE_DIAMETER;
     if (config.has("nozzle_diameter"))
     {
         auto* nozzle_opt = config.option<ConfigOptionFloats>("nozzle_diameter");
@@ -217,7 +219,7 @@ bool PresetRollback::rollback(DynamicPrintConfig& config, const PresetBundle* bu
             nozzle_diameter = nozzle_opt->values[extruder_idx];
     }
 
-    std::string printer_model = "Snapmaker U1";
+    std::string printer_model = DEFAULT_PRINTER_MODEL;
 
     // 2. Find base category preset
     const Preset* base = findBaseFilament(bundle, filament_type, filament_vendor, nozzle_diameter, printer_model);

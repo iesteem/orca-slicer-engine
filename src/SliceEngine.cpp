@@ -61,14 +61,19 @@ constexpr double PLATE_DIM_EPSILON = 1e-3;
 // formatted with 0 decimals (e.g. 1.0 -> "1"); otherwise 1 decimal ("0.4").
 constexpr double NOZZLE_FORMAT_EPSILON = 0.05;
 
-// Overwrite every key present in `src` onto `dst` (only keys that already
-// exist in `dst`). Scalars are copied wholesale; vectors are copied
-// element-by-element up to the shorter length. No user value is preserved.
-inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
+// Common implementation for overwriting keys from src onto dst.
+// If except is non-null, keys present in the set are skipped.
+// Scalars are copied wholesale; vectors are copied element-by-element
+// up to the shorter length. Only keys that already exist in dst are touched.
+inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
+                                         const std::set<std::string>* except)
 {
     for (auto it = src.cbegin(); it != src.cend(); ++it)
     {
         const auto& key = it->first;
+        if (except && except->find(key) != except->end())
+            continue;
+
         ConfigOption* dst_opt = dst.option(key, false);
         if (!dst_opt)
             continue;
@@ -94,37 +99,20 @@ inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintC
     }
 }
 
+// Overwrite every key present in `src` onto `dst` (only keys that already
+// exist in `dst`). Scalars are copied wholesale; vectors are copied
+// element-by-element up to the shorter length. No user value is preserved.
+inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
+{
+    overwrite_all_keys_from_impl(dst, src, nullptr);
+}
+
 // Overwrite every key present in `src` onto `dst`, except keys listed in `except`.
 // Same scalar/vector copy semantics as overwrite_all_keys_from.
 inline void overwrite_all_keys_from_except(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
                                            const std::set<std::string>& except)
 {
-    for (auto it = src.cbegin(); it != src.cend(); ++it)
-    {
-        const auto& key = it->first;
-        if (except.find(key) != except.end())
-            continue;
-
-        ConfigOption* dst_opt = dst.option(key, false);
-        if (!dst_opt)
-            continue;
-
-        if (dst_opt->is_scalar())
-        {
-            if (dst_opt->type() != it->second->type())
-                continue;
-            dst_opt->set(it->second.get());
-        }
-        else
-        {
-            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
-            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
-            if (!dst_vec || !src_vec)
-                continue;
-            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
-                dst_vec->set_at(src_vec, i, i);
-        }
-    }
+    overwrite_all_keys_from_impl(dst, src, &except);
 }
 
 } // namespace
@@ -699,7 +687,7 @@ bool SliceEngine::apply_filament_official_preset()
                                 "Filament \"" + name + "\" inherits from unknown preset \"" + inherits_name + "\"");
         }
 
-        return true; // unreachable: loop only exits via return
+        __builtin_unreachable(); // loop always exits via return
     };
 
     int num_filaments = static_cast<int>(filament_ids->values.size());
@@ -742,7 +730,7 @@ bool SliceEngine::validate_printer_model()
         return false;
     };
 
-    const std::string ALLOWED_PRINTER_MODEL = "Snapmaker U1";
+    constexpr const char* ALLOWED_PRINTER_MODEL = DEFAULT_PRINTER_MODEL;
 
     if (!m_config.has("printer_model"))
     {

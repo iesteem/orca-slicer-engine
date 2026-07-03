@@ -125,6 +125,10 @@ private:
     Slic3r::Model m_model;
     Slic3r::DynamicPrintConfig m_config;
     Slic3r::ConfigSubstitutionContext m_config_substitutions{Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
+    // Raw owning pointers populated by Model::read_from_file().
+    // Owned and cleaned up by ~SliceEngine() via release_PlateData_list().
+    // Cannot use unique_ptr due to libslic3r API compatibility (PlateDataPtrs is
+    // a shared type across the library boundary).
     Slic3r::PlateDataPtrs m_plate_data;
     std::vector<Slic3r::Preset*> m_project_presets;
     bool m_is_bbl_3mf = false;
