@@ -23,14 +23,9 @@
 
 #include "PresetRollback.hpp"
 
-constexpr int MAX_RETRIES = 3;
-
 using namespace Slic3r;
 
 namespace {
-
-// Bed3D::Axes::DefaultTipRadius, used in plate size calculation
-constexpr double BED_AXES_TIP_RADIUS = 1.25;
 
 // 1/5, same as GUI's LOGICAL_PART_PLATE_GAP
 constexpr double LOGICAL_PART_PLATE_GAP = 0.2;
@@ -834,8 +829,6 @@ bool SliceEngine::validate_input() {
         m_plate_data.push_back(pd);
     }
 
-    BOOST_LOG_TRIVIAL(info) << "Found " << m_plate_data.size() << " plate(s) in 3MF";
-
     // Validate requested plate exists
     if (m_cfg.single_plate) {
         // Internal plate_index is 0-based (from 3MF import), CLI plate_id is 1-based
@@ -875,143 +868,98 @@ bool SliceEngine::validate_input() {
 void SliceEngine::process_plate(int plate_id) {
     // --- Filter instances for this plate ---
     std::set<int> identify_ids;
-    int instances_on_plate = filter_instances(plate_id, identify_ids);
-
-    BOOST_LOG_TRIVIAL(info) << "Filtered model: " << instances_on_plate
-        << " instances on plate " << (plate_id + 1);
-
-    if (instances_on_plate == 0) {
-        BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate " << (plate_id + 1);
+    if (!filter_instances(plate_id, identify_ids))
         return;
-    }
 
     // Calculate plate dimensions and origin (done before build-volume check
     // so the check can translate instances into plate-local coordinates).
-    double plate_width = 200.0;
-    double plate_depth = 200.0;
-
-    if (m_config.has("printable_area")) {
-        auto printable_area_opt = m_config.option<ConfigOptionPoints>("printable_area");
-        if (printable_area_opt && !printable_area_opt->values.empty()) {
-            BoundingBoxf bbox;
-            for (const Vec2d& pt : printable_area_opt->values)
-                bbox.merge(pt);
-            plate_width = bbox.size().x() - BED_AXES_TIP_RADIUS;
-            plate_depth = bbox.size().y() - BED_AXES_TIP_RADIUS;
-        }
-    }
-
-    Vec3d origin = setup_print_origin(plate_id, plate_width, plate_depth);
+    // printable_area is guaranteed valid by apply_printer_official_preset().
+    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    BoundingBoxf bbox;
+    for (const Vec2d& pt : pa->values)
+        bbox.merge(pt);
+    Vec3d origin = setup_print_origin(plate_id, bbox.size().x(), bbox.size().y());
 
     // --- Build volume check (uses plate-local coordinates) ---
     if (!run_build_volume_check(plate_id, identify_ids, origin))
         return;
 
-    // Get BBL vendor flag once
-    bool is_bbl = (m_presets_available && m_preset_bundle)
-        ? m_preset_bundle->is_bbl_vendor() : false;
-
-    // --- Slicing + Export (with retry for non-fatal exceptions) ---
-    // Each attempt creates a fresh Print to avoid explicit dtor + placement-new
-    // on the wipe-tower-disabled retry path.
-    bool wipe_tower_disabled = false;
-
-    for (int attempt = 1; attempt <= MAX_RETRIES; ++attempt) {
-        // Check timeout before each attempt
-        if (m_has_timeout && std::chrono::steady_clock::now() > m_timeout_deadline) {
-            BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
-            m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
-                "Slicing timed out. The model may be too complex. If you believe this is an error, please submit an appeal for review."));
-            m_any_error = true;
-            set_error_type(EXIT_SLICING_ERROR);
-            return;
-        }
-
-        if (attempt > 1) {
-            BOOST_LOG_TRIVIAL(warning) << "Retry attempt " << attempt << "/" << MAX_RETRIES
-                << " for plate " << (plate_id + 1);
-            // Clear error issues from the previous failed attempt
-            m_stats.issues.erase(
-                std::remove_if(m_stats.issues.begin(), m_stats.issues.end(),
-                    [&](const Issue& i) { return i.plate_id == plate_id && i.level == "error"; }),
-                m_stats.issues.end());
-            m_any_error = false;
-            m_error_type = EXIT_OK;
-        }
-
-        // --- Create fresh Print for this attempt ---
-        Print print;
-        print.set_status_callback([&print, this](const PrintBase::SlicingStatus& s) {
-            default_status_callback(s, &print, &m_cfg.cancel_file);
-        });
-        print.is_BBL_printer() = is_bbl;
-
-        // --- Apply model ---
-        if (!apply_model(plate_id, print, origin))
-            return;
-
-        // --- Assign arrange_order ---
-        {
-            int order = 1;
-            for (ModelObject* obj : m_model.objects)
-                for (ModelInstance* inst : obj->instances)
-                    inst->arrange_order = order++;
-        }
-
-        // --- Set global extruder params & speed table ---
-        {
-            int num_extruders = 0;
-            if (m_config.has("filament_diameter")) {
-                auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
-                if (fd) num_extruders = static_cast<int>(fd->values.size());
-            }
-            Model::setExtruderParams(m_config, num_extruders);
-            Model::setPrintSpeedTable(m_config, print.config());
-        }
-
-        // --- Validation ---
-        if (!run_validation(plate_id, print))
-            return;
-
-        // Slicing
-        if (!run_slicing(plate_id, print)) {
-            BOOST_LOG_TRIVIAL(warning) << "Slicing failed for plate " << (plate_id + 1)
-                << " on attempt " << attempt;
-            continue;
-        }
-
-        BOOST_LOG_TRIVIAL(info) << "Slicing completed for plate " << (plate_id + 1);
-
-        // Export G-code
-        PlateSliceResult slice_result;
-        if (!export_gcode(plate_id, print, slice_result)) {
-            // Check if this is a wipe tower tool change mismatch.
-            // On the next iteration a fresh Print is created with the updated config.
-            bool is_wt_error = is_wipe_tower_error(slice_result);
-
-            if (is_wt_error && !wipe_tower_disabled) {
-                BOOST_LOG_TRIVIAL(warning) << "Wipe tower tool change mismatch on plate "
-                    << (plate_id + 1) << " — disabling wipe tower and re-slicing";
-                wipe_tower_disabled = true;
-                m_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-                continue;
-            }
-
-            BOOST_LOG_TRIVIAL(warning) << "G-code export failed for plate " << (plate_id + 1)
-                << " on attempt " << attempt;
-            slice_result.issues.clear();
-            continue;
-        }
-
-        // Success
-        run_postprocessing(plate_id, slice_result);
-        m_plate_results[plate_id] = slice_result;
+    // --- Slicing + Export ---
+    // Check timeout before slicing
+    if (m_has_timeout && std::chrono::steady_clock::now() > m_timeout_deadline) {
+        BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
+        m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
+            "Slicing timed out. The model may be too complex. If you believe this is an error, please submit an appeal for review."));
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
         return;
     }
 
-    // All retries exhausted
-    BOOST_LOG_TRIVIAL(error) << "Slicing/export failed for plate " << (plate_id + 1)
-        << " after " << MAX_RETRIES << " attempts";
+    // --- Create Print ---
+    Print print;
+    print.set_status_callback([&print, this](const PrintBase::SlicingStatus& s) {
+        default_status_callback(s, &print, &m_cfg.cancel_file);
+    });
+    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
+
+    // --- Apply model ---
+    if (!apply_model(plate_id, print, origin))
+        return;
+
+    // --- Assign arrange_order ---
+    {
+        int order = 1;
+        for (ModelObject* obj : m_model.objects)
+            for (ModelInstance* inst : obj->instances)
+                inst->arrange_order = order++;
+    }
+
+    // --- Set global extruder params & speed table ---
+    {
+        int num_extruders = 0;
+        if (m_config.has("filament_diameter")) {
+            auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
+            if (fd) num_extruders = static_cast<int>(fd->values.size());
+        }
+        Model::setExtruderParams(m_config, num_extruders);
+        Model::setPrintSpeedTable(m_config, print.config());
+    }
+
+    // --- Validation ---
+    if (!run_validation(plate_id, print))
+        return;
+
+    // Slicing
+    if (!run_slicing(plate_id, print)) {
+        BOOST_LOG_TRIVIAL(error) << "Slicing failed for plate " << (plate_id + 1);
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        return;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "Slicing completed for plate " << (plate_id + 1);
+
+    // Export G-code
+    PlateSliceResult slice_result;
+    if (!export_gcode(plate_id, print, slice_result)) {
+        if (is_wipe_tower_error(slice_result)) {
+            BOOST_LOG_TRIVIAL(error) << "Wipe tower tool change mismatch on plate "
+                << (plate_id + 1) << ". This model may be incompatible with the "
+                "prime tower. Please disable the prime tower and re-submit.";
+            m_stats.issues.push_back(make_error(plate_id, "WIPE_TOWER_TOOLCHANGE_ERROR",
+                "Wipe tower tool change mismatch. Please disable the prime tower "
+                "in filament settings and re-submit the model."));
+        } else {
+            BOOST_LOG_TRIVIAL(error) << "G-code export failed for plate " << (plate_id + 1);
+        }
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        return;
+    }
+
+    // Success
+    run_postprocessing(plate_id, slice_result);
+    m_plate_results[plate_id] = slice_result;
 }
 
 // ============================================================================
@@ -1037,7 +985,15 @@ int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
             if (on_plate) ++count;
         }
     }
-    return count;
+
+    BOOST_LOG_TRIVIAL(info) << "Filtered model: " << count
+        << " instances on plate " << (plate_id + 1);
+
+    if (count == 0) {
+        BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate " << (plate_id + 1);
+        return false;
+    }
+    return true;
 }
 
 void SliceEngine::ensure_models_on_bed() {
