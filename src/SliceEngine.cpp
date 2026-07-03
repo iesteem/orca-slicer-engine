@@ -937,6 +937,8 @@ void SliceEngine::process_plate(int plate_id) {
     if (!run_build_volume_check(plate_id, identify_ids, origin))
         return;
 
+    size_t const issues_before_slicing = m_stats.issues.size();
+
     // Get BBL vendor flag once
     bool is_bbl = (m_presets_available && m_preset_bundle)
         ? m_preset_bundle->is_bbl_vendor() : false;
@@ -960,11 +962,10 @@ void SliceEngine::process_plate(int plate_id) {
         if (attempt > 1) {
             BOOST_LOG_TRIVIAL(warning) << "Retry attempt " << attempt << "/" << MAX_RETRIES
                 << " for plate " << (plate_id + 1);
-            // Clear error issues from the previous failed attempt
-            m_stats.issues.erase(
-                std::remove_if(m_stats.issues.begin(), m_stats.issues.end(),
-                    [&](const Issue& i) { return i.plate_id == plate_id && i.level == "error"; }),
-                m_stats.issues.end());
+            // Roll back to pre-slicing issues, discarding stale issues
+            // (errors, warnings, tips) from the failed attempt while
+            // preserving setup-phase warnings (e.g. build volume).
+            m_stats.issues.resize(issues_before_slicing);
             m_any_error = false;
             m_error_type = EXIT_OK;
         }
