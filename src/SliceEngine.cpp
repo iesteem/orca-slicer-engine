@@ -141,25 +141,26 @@ bool SliceEngine::run() {
     load_system_presets();
     validate_presets();
 
-    // Filament official compliance check & substitution (always enforced)
-    if (!validate_filament_official()) {
+    // Apply the official Snapmaker U1 printer preset — clears custom G-code,
+    // then wholesale-replaces printer config (printable_area, machine G-code,
+    // nozzle_diameter, etc.) with official values.
+    if (!apply_printer_official_preset()) {
         build_statistics();
         return false;
     }
 
-    // Replace the user's printer config wholesale with the official U1 preset.
-    // Custom G-code is stripped first, then the official machine G-code
-    // overwrites the cleared values.
-    apply_printer_official_preset();
-    if (m_any_error) {
+    // Filament official compliance check & substitution (always enforced).
+    // Runs after printer preset so PresetRollback reads the corrected
+    // nozzle_diameter from the official config, not the user's 3MF value.
+    if (!apply_filament_official_preset()) {
         build_statistics();
         return false;
     }
 
-    // Also apply the official Snapmaker U1 process preset so that
-    // process-level settings (skirt_loops, brim_type, etc.) from a
-    // different printer profile in the 3MF don't leak through.
-    // User-explicit overrides (different_settings_to_system) are preserved.
+    // Apply the official Snapmaker U1 process preset so that process-level
+    // settings (skirt_loops, brim_type, etc.) from a different printer
+    // profile in the 3MF don't leak through. User-explicit overrides
+    // (different_settings_to_system) are preserved.
     // Non-blocking: missing preset is a warning, not a fatal error.
     apply_process_official_preset();
 
@@ -510,7 +511,7 @@ void SliceEngine::validate_presets()
     }
 }
 
-bool SliceEngine::validate_filament_official()
+bool SliceEngine::apply_filament_official_preset()
 {
     // Skip if system presets are not available (no reference for comparison)
     if (!m_presets_available || !m_preset_bundle)
@@ -677,7 +678,7 @@ bool SliceEngine::validate_printer_model()
 }
 
 
-void SliceEngine::apply_printer_official_preset()
+bool SliceEngine::apply_printer_official_preset()
 {
     // 1. Strip all custom G-code blocks — cloud slicing must not execute
     //    or embed user-supplied G-code for safety and consistency.
@@ -711,7 +712,7 @@ void SliceEngine::apply_printer_official_preset()
         set_error_type(EXIT_VALIDATION_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
-        return;
+        return false;
     }
 
     // Determine nozzle diameter from the first extruder (default 0.4).
@@ -753,7 +754,7 @@ void SliceEngine::apply_printer_official_preset()
         set_error_type(EXIT_VALIDATION_ERROR);
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
-        return;
+        return false;
     }
 
     // Wholesale overwrite: every key in the official config replaces the
@@ -782,7 +783,7 @@ void SliceEngine::apply_printer_official_preset()
     auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
     if (!pa || pa->values.size() != 4) {
         fail("printable_area missing or wrong format");
-        return;
+        return false;
     }
     auto near = [](double a, double b) { return std::abs(a - b) < PLATE_DIM_EPSILON; };
     bool is_default_area =
@@ -792,18 +793,19 @@ void SliceEngine::apply_printer_official_preset()
         (near(pa->values[3].x(), 0.0)               && near(pa->values[3].y(), DEFAULT_PLATE_DEPTH));
     if (is_default_area) {
         fail("printable_area is still the default");
-        return;
+        return false;
     }
 
     auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
     if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT)) {
         fail("printable_height is still the default");
-        return;
+        return false;
     }
 
     m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED",
         "Printer preset replaced with official preset \"" + preset_name
         + "\" for cloud safety"));
+    return true;
 }
 
 void SliceEngine::apply_process_official_preset()
