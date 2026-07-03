@@ -167,12 +167,12 @@ bool SliceEngine::run()
         return false;
     }
 
-    // Apply the official Snapmaker U1 process preset so that process-level
-    // settings (skirt_loops, brim_type, etc.) from a different printer
-    // profile in the 3MF don't leak through. User-explicit overrides
-    // (different_settings_to_system) are preserved.
-    // Non-blocking: missing preset is a warning, not a fatal error.
-    apply_process_official_preset();
+    // Substitute the process preset with the official Snapmaker U1 preset
+    // so that process-level settings (skirt_loops, brim_type, etc.) from a
+    // different printer profile in the 3MF don't leak through. User-explicit
+    // overrides (different_settings_to_system) are preserved.
+    // Non-blocking: substitution failure is a warning, not a fatal error.
+    handle_process_substitution();
 
     if (validate_input())
     {
@@ -865,62 +865,16 @@ bool SliceEngine::apply_printer_official_preset()
     return true;
 }
 
-void SliceEngine::apply_process_official_preset()
+void SliceEngine::handle_process_substitution()
 {
-    auto* dpp = m_config.option<ConfigOptionString>("default_print_profile", false);
-    if (!dpp || dpp->value.empty()) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "default_print_profile not set; cannot determine process preset.";
-        return;
-    }
-    const std::string preset_name = dpp->value;
-    const Preset* official = m_preset_bundle->prints.find_preset(preset_name, false);
-    if (!official)
-    {
-        BOOST_LOG_TRIVIAL(warning) << "Official process preset \"" << preset_name
-                                   << "\" not found in system presets; process settings not updated.";
-        return;
-    }
-
-    // Parse different_settings_to_system[0] — the set of process keys the
-    // user explicitly changed from the original printer's system defaults.
-    // These are preserved to honour the user's intent.
-    std::set<std::string> user_overrides;
-    {
-        auto* diff_opt = m_config.option<ConfigOptionStrings>("different_settings_to_system", false);
-        if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty())
-        {
-            std::istringstream ss(diff_opt->values[0]);
-            std::string key;
-            while (std::getline(ss, key, ';'))
-            {
-                // Trim leading/trailing whitespace.
-                size_t start = key.find_first_not_of(" \t");
-                size_t end = key.find_last_not_of(" \t");
-                if (start != std::string::npos && end != std::string::npos)
-                    key = key.substr(start, end - start + 1);
-                if (!key.empty())
-                    user_overrides.insert(key);
-            }
-        }
-    }
-    BOOST_LOG_TRIVIAL(info) << "Applying official process preset \"" << preset_name << "\" (" << user_overrides.size()
-                            << " user overrides preserved)";
-
-    // Apply every key from the official process preset, except keys the user
-    // explicitly overrode and keys that don't exist in the current config.
-    overwrite_all_keys_from_except(m_config, official->config, user_overrides);
-
     // When brim_type is auto_brim, set brim_width to 0 so that the
     // fallback path (when the algorithm decides no brim is needed)
     // doesn't generate unwanted brim. The algorithm still sets its
     // own computed width when it determines brim IS needed.
+    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+    if (bt && bt->value == btAutoBrim)
     {
-        auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
-        if (bt && bt->value == btAutoBrim)
-        {
-            m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
-        }
+        m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
     }
 
     m_stats.issues.push_back(
