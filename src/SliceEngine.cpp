@@ -497,9 +497,6 @@ void SliceEngine::validate_presets()
 
 bool SliceEngine::apply_filament_official_preset()
 {
-    // Skip if system presets are not available (no reference for comparison)
-    if (!m_presets_available || !m_preset_bundle)
-        return true;
     if (!m_config.has("filament_settings_id"))
         return true;
     auto* filament_ids = m_config.option<ConfigOptionStrings>("filament_settings_id", true);
@@ -742,7 +739,6 @@ bool SliceEngine::apply_printer_official_preset()
         m_stats.error_message = msg;
         m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
     };
-
     auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
     if (!pa || pa->values.size() != 4) {
         fail("printable_area missing or wrong format");
@@ -758,7 +754,6 @@ bool SliceEngine::apply_printer_official_preset()
         fail("printable_area is still the default");
         return false;
     }
-
     auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
     if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT)) {
         fail("printable_height is still the default");
@@ -773,26 +768,7 @@ bool SliceEngine::apply_printer_official_preset()
 
 void SliceEngine::apply_process_official_preset()
 {
-    // Non-blocking: if system presets are unavailable, the existing process
-    // config from the 3MF is used as a fallback. Printer config is already
-    // correct at this point, so geometry is safe.
-    if (!m_presets_available || !m_preset_bundle) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "System presets not available; cannot apply official process preset.";
-        return;
-    }
-
-    // The official printer preset (already applied) sets default_print_profile
-    // to the matching Snapmaker U1 process preset name, e.g.
-    // "0.20 Standard @Snapmaker U1 (0.4 nozzle)".
-    auto* dpp = m_config.option<ConfigOptionString>("default_print_profile", false);
-    if (!dpp || dpp->value.empty()) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "default_print_profile not set; cannot determine process preset.";
-        return;
-    }
-    const std::string preset_name = dpp->value;
-
+    const std::string preset_name = m_config.option<ConfigOptionString>("default_print_profile")->value;
     const Preset* official = m_preset_bundle->prints.find_preset(preset_name, false);
     if (!official) {
         BOOST_LOG_TRIVIAL(warning)
@@ -806,8 +782,7 @@ void SliceEngine::apply_process_official_preset()
     // These are preserved to honour the user's intent.
     std::set<std::string> user_overrides;
     {
-        auto* diff_opt = m_config.option<ConfigOptionStrings>(
-            "different_settings_to_system", false);
+        auto* diff_opt = m_config.option<ConfigOptionStrings>("different_settings_to_system", false);
         if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty()) {
             std::istringstream ss(diff_opt->values[0]);
             std::string key;
@@ -822,7 +797,6 @@ void SliceEngine::apply_process_official_preset()
             }
         }
     }
-
     BOOST_LOG_TRIVIAL(info)
         << "Applying official process preset \"" << preset_name
         << "\" (" << user_overrides.size() << " user overrides preserved)";
@@ -841,10 +815,6 @@ void SliceEngine::apply_process_official_preset()
             m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
         }
     }
-
-    // Update the preset identity to reflect what was applied.
-    m_config.set_key_value("print_settings_id",
-                           new ConfigOptionString(preset_name));
 
     m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
         "Process preset replaced with official preset \"" + preset_name
@@ -937,8 +907,6 @@ void SliceEngine::process_plate(int plate_id) {
     if (!run_build_volume_check(plate_id, identify_ids, origin))
         return;
 
-    size_t const issues_before_slicing = m_stats.issues.size();
-
     // Get BBL vendor flag once
     bool is_bbl = (m_presets_available && m_preset_bundle)
         ? m_preset_bundle->is_bbl_vendor() : false;
@@ -962,10 +930,11 @@ void SliceEngine::process_plate(int plate_id) {
         if (attempt > 1) {
             BOOST_LOG_TRIVIAL(warning) << "Retry attempt " << attempt << "/" << MAX_RETRIES
                 << " for plate " << (plate_id + 1);
-            // Roll back to pre-slicing issues, discarding stale issues
-            // (errors, warnings, tips) from the failed attempt while
-            // preserving setup-phase warnings (e.g. build volume).
-            m_stats.issues.resize(issues_before_slicing);
+            // Clear error issues from the previous failed attempt
+            m_stats.issues.erase(
+                std::remove_if(m_stats.issues.begin(), m_stats.issues.end(),
+                    [&](const Issue& i) { return i.plate_id == plate_id && i.level == "error"; }),
+                m_stats.issues.end());
             m_any_error = false;
             m_error_type = EXIT_OK;
         }
