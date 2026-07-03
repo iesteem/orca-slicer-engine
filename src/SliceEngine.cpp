@@ -2,8 +2,9 @@
 #include "GeometryCheck.hpp"
 #include "Utils.hpp"
 
-#include <array>
+#include <cassert>
 #include <cmath>
+#include <array>
 #include <cstdio>
 #include <iostream>
 #include <memory>
@@ -549,6 +550,9 @@ bool SliceEngine::apply_filament_official_preset()
     if (!filament_ids || filament_ids->values.empty())
         return true;
 
+    // Guaranteed by run(): apply_printer_official_preset() must succeed first
+    assert(m_preset_bundle);
+
     // Lambda: check whether a system preset is "official"
     // Only Snapmaker vendor presets are supported in cloud deployment.
     auto is_official_preset = [](const Preset& p) -> bool
@@ -839,7 +843,13 @@ bool SliceEngine::apply_printer_official_preset()
 
 void SliceEngine::apply_process_official_preset()
 {
-    const std::string preset_name = m_config.option<ConfigOptionString>("default_print_profile")->value;
+    auto* dpp = m_config.option<ConfigOptionString>("default_print_profile", false);
+    if (!dpp || dpp->value.empty()) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "default_print_profile not set; cannot determine process preset.";
+        return;
+    }
+    const std::string preset_name = dpp->value;
     const Preset* official = m_preset_bundle->prints.find_preset(preset_name, false);
     if (!official)
     {
@@ -953,6 +963,9 @@ bool SliceEngine::validate_input()
 
 void SliceEngine::process_plate(int plate_id)
 {
+    // Guaranteed by run(): apply_printer_official_preset() must succeed first
+    assert(m_preset_bundle);
+
     // --- Filter instances for this plate ---
     std::set<int> identify_ids;
     if (!filter_instances(plate_id, identify_ids))
