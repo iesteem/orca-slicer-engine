@@ -249,7 +249,7 @@ bool SliceEngine::load_3mf() {
     // --- Pre-load validation: format & size ---
 
     // Extension check (case-insensitive: .3mf, .3MF, .3Mf are all valid)
-    std::string extension = boost::filesystem::path(m_cfg.input_file).extensionension().string();
+    std::string extension = boost::filesystem::path(m_cfg.input_file).extension().string();
     boost::to_lower(extension);
     if (extension != ".3mf") {
         return fail_load("FORMAT_REJECTED",
@@ -966,7 +966,7 @@ void SliceEngine::process_plate(int plate_id) {
 // Per-plate sub-stages
 // ============================================================================
 
-int SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
+bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids) {
     for (const auto& pd : m_plate_data) {
         if (pd->plate_index == plate_id) {
             for (const auto& [object_id, inst_info] : pd->obj_inst_map) {
