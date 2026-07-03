@@ -38,8 +38,8 @@ extern "C"
  *   1  SLIC3R_ERR_ARGS        Invalid command-line arguments
  *   2  SLIC3R_ERR_FILE_NOT_FOUND  Input file not found
  *   3  SLIC3R_ERR_LOAD        3MF load / parse failure
- *   4  SLIC3R_ERR_SLICING     Slicing engine exception (std::exception / timeout / fatal SlicingError)
- *   5  SLIC3R_ERR_EXPORT      GCode export failure (I/O error / config error / cancellation)
+ *   4  SLIC3R_ERR_SLICING     Slicing failure (geometry defects / timeout / cancellation / internal error)
+ *   5  SLIC3R_ERR_EXPORT      Output write failure (GCode I/O error / .3mf packaging error)
  *   6  SLIC3R_ERR_PREPROCESS  Pre-slicing validation error (config / input / presets invalid)
  *   7  SLIC3R_ERR_POSTPROCESS Post-slicing fatal error (GCode generated but unusable, e.g. empty layers / toolpath out of bounds)
  *  99  SLIC3R_ERR_INTERNAL    C++ exception crossing API boundary (unexpected internal error)

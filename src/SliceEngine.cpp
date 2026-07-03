@@ -257,7 +257,7 @@ bool SliceEngine::run()
             m_any_error = true;
             set_error_type(EXIT_SLICING_ERROR);
             m_stats.issues.push_back(
-                make_error(-1, "INTERNAL_ERROR", "Unhandled unknown exception in slicing pipeline"));
+                make_error(-1, "INTERNAL_FATAL", "Unhandled unknown exception in slicing pipeline"));
         }
     }
 
@@ -1669,9 +1669,10 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
         for (const auto& ex : exs.errors_)
         {
             BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-            m_stats.issues.push_back(
-                make_error(plate_id, "SLICING_ERROR",
-                           "Slicing failed for this plate. The model may contain geometry that cannot be sliced."));
+            m_stats.issues.push_back(make_error(
+                plate_id, "SLICING_ERROR",
+                "Slicing engine reported errors while processing this plate. "
+                "The model may contain non-manifold edges, self-intersections, or other geometry defects."));
         }
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
@@ -1680,9 +1681,10 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
     catch (const SlicingError& ex)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-        m_stats.issues.push_back(
-            make_error(plate_id, "SLICING_ERROR",
-                       "Slicing failed for this plate. The model may contain geometry that cannot be sliced."));
+        m_stats.issues.push_back(make_error(
+            plate_id, "SLICING_FATAL_ERROR",
+            "A fatal slicing error occurred while processing this plate. "
+            "The model geometry or print settings may be incompatible with the selected configuration."));
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
         return false;
@@ -1690,7 +1692,9 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
     catch (const CanceledException&)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": Slicing was cancelled.";
-        m_stats.issues.push_back(make_error(plate_id, "SLICING_CANCELLED", "Slicing was cancelled"));
+        m_stats.issues.push_back(make_error(plate_id, "SLICING_CANCELLED",
+                                            "Slicing was cancelled before completion. "
+                                            "This may be caused by an external cancellation request or a resource limit."));
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
         return false;
@@ -1699,7 +1703,9 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing exception: " << e.what();
         m_stats.issues.push_back(
-            make_error(plate_id, "SLICING_EXCEPTION", "Slicing failed due to an internal error. Please try again."));
+            make_error(plate_id, "SLICING_EXCEPTION",
+                       "An unexpected internal error interrupted slicing for this plate. "
+                       "This is not caused by the model — please try again or contact support."));
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
         return false;
@@ -1816,7 +1822,9 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     {
         BOOST_LOG_TRIVIAL(error) << "Failed to export G-code for plate " << plate_id << ": " << e.what();
         result.issues.push_back(
-            make_error(plate_id, "GCODE_EXPORT_ERROR", "G-code export failed due to an internal error."));
+            make_error(plate_id, "GCODE_EXPORT_ERROR",
+                       "Failed to write G-code output. "
+                       "Check that the output directory exists and has sufficient disk space."));
         m_any_error = true;
         set_error_type(EXIT_EXPORT_ERROR);
         m_plate_results[plate_id] = result;
@@ -2104,7 +2112,7 @@ void SliceEngine::package_output()
         BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package: " << e.what();
         m_any_error = true;
         set_error_type(EXIT_EXPORT_ERROR);
-        std::string msg = "Failed to create output package due to an internal error.";
+        std::string msg = "Failed to create output package: an internal error occurred while writing the .3mf archive.";
         m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
         if (m_stats.error_message.empty())
             m_stats.error_message = msg;
