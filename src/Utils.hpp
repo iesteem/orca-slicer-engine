@@ -18,9 +18,6 @@ void log_plate_message(const char* stage, const char* level, int plate, const st
 // Extract human-readable object name and config hint from a StringObjectException
 std::pair<std::string, std::string> format_exception_context(const Slic3r::StringObjectException& ex);
 
-// Print CLI usage information
-void print_usage(const char* program_name);
-
 // Simple progress callback for cloud environment.
 // When print and cancel_file are provided, the callback periodically checks
 // for the existence of cancel_file and triggers print->cancel() if found.

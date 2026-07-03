@@ -38,64 +38,6 @@ std::pair<std::string, std::string> format_exception_context(const Slic3r::Strin
     return {obj_name, opt_hint};
 }
 
-void print_usage(const char* program_name)
-{
-    std::cout << "OrcaSlicer Cloud Slicing Engine v" << ENGINE_VERSION << std::endl;
-    std::cout << std::endl;
-    std::cout << "Usage: " << program_name << " input.3mf [OPTIONS]" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Options:" << std::endl;
-    std::cout << "  -o, --output <file>    Output file path (without extension)" << std::endl;
-    std::cout << "                         Single plate: outputs {file}.gcode or {file}.gcode.3mf" << std::endl;
-    std::cout << "                         All plates: outputs {file}.gcode.3mf" << std::endl;
-    std::cout << "  -p, --plate <id>       Plate number to slice (1, 2, 3...)" << std::endl;
-    std::cout << "                         Omit or \"all\" for all plates (default: all)" << std::endl;
-    std::cout << "  -f, --format <fmt>     Output format: gcode | gcode.3mf (default: gcode.3mf)" << std::endl;
-    std::cout << "                         Note: All plates always use gcode.3mf" << std::endl;
-    std::cout << "  -r, --resources <dir>  Resources directory containing printer profiles" << std::endl;
-    std::cout << "  -d, --data-dir <dir>   System presets directory (default: <resources>/profiles)" << std::endl;
-    std::cout << "  -j, --json [file]      Output slice statistics as JSON to specified file" << std::endl;
-    std::cout << "                         If not specified, JSON is auto-saved next to the output" << std::endl;
-    std::cout << "  -t, --timeout <sec>    Slicing timeout in seconds (0 = no limit)" << std::endl;
-    std::cout << "  --max-size <mb>        Max input file size in MB (default: 200, 0 = no limit)" << std::endl;
-    std::cout << "  --cancel-file <file>   Watchdog file for external cancellation" << std::endl;
-    std::cout << "                         If the file is created, slicing is cancelled" << std::endl;
-    std::cout << "  --log                  Enable log file output (auto-saved next to the output)" << std::endl;
-    std::cout << "  --log-file <file>      Specify log file path (implies --log)" << std::endl;
-    std::cout << "  -v, --verbose          Enable verbose logging" << std::endl;
-    std::cout << "  -h, --help             Show this help message" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Exit codes:" << std::endl;
-    std::cout << "  0  Success" << std::endl;
-    std::cout << "  1  Invalid arguments" << std::endl;
-    std::cout << "  2  Input file not found" << std::endl;
-    std::cout << "  3  3MF load / format validation error" << std::endl;
-    std::cout << "  4  Slicing error (incl. timeout)" << std::endl;
-    std::cout << "  5  G-code export error" << std::endl;
-    std::cout << "  6  Pre-processing validation error (collision, invalid config, geometry defects)" << std::endl;
-    std::cout << "  7  Post-processing warning (toolpath outside print volume)" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Output:" << std::endl;
-    std::cout << "  On success, outputs JSON with slicing statistics including:" << std::endl;
-    std::cout << "    - success: true/false" << std::endl;
-    std::cout << "    - plates[].time: total, prepare, print time (seconds and formatted)" << std::endl;
-    std::cout << "    - plates[].filament: total/model filament (m, g), cost, per-extruder usage" << std::endl;
-    std::cout << "    - plates[].gcode_file: path to output file" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Examples:" << std::endl;
-    std::cout << "  " << program_name << " model.3mf                        # All plates -> model.gcode.3mf"
-              << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1                   # Plate 1 -> model-p1.gcode.3mf"
-              << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1 -f gcode          # Plate 1 -> model-p1.gcode (plain text)"
-              << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1 -o output         # Plate 1 -> output.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -o result              # All plates -> result.gcode.3mf"
-              << std::endl;
-    std::cout << "  " << program_name << " model.3mf -j stats.json          # Output statistics to stats.json"
-              << std::endl;
-}
-
 void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Slic3r::PrintBase* print,
                              const std::string* cancel_file)
 {

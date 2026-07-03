@@ -66,11 +66,13 @@ extern "C"
  *
  * params_json format:
  * {
- *   "plate_id": 0,          // 0 = all plates, N = specific plate (1-based)
- *   "format": "gcode.3mf",  // "gcode" or "gcode.3mf"
- *   "timeout_seconds": 0,   // 0 = no timeout
- *   "max_size_mb": 200,     // max input file size, 0 = no limit
- *   "cancel_file": "",      // watchdog file for external cancellation
+ *   "plate_id": 0,           // 0 = all plates, N = specific plate (1-based)
+ *   "format": "gcode.3mf",   // "gcode" or "gcode.3mf"
+ *   "timeout_seconds": 0,    // 0 = no timeout
+ *   "max_size_mb": 200,      // max input file size, 0 = no limit
+ *   "cancel_file": "",       // watchdog file for external cancellation
+ *   "log_path": "",          // log file path (empty = no file logging)
+ *   "json_output_path": ""   // JSON statistics output file path
  * }
  *
  * stats_json format (on success):

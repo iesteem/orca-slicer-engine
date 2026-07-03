@@ -12,15 +12,18 @@
 #include "slic3r_c_api.h"
 
 int main(int argc, char* argv[]) {
-    const char* input_3mf  = NULL;
-    const char* output     = NULL;
-    const char* resources  = NULL;
+    const char* input_3mf   = NULL;
+    const char* output      = NULL;
+    const char* resources   = NULL;
     const char* log_file    = NULL;
     int         log_enabled = 0;
     const char* json_output = NULL;
-    int         plate_id   = 0;
-    const char* format     = "gcode.3mf";
-    int         verbose    = 0;
+    int         plate_id    = 0;
+    const char* format      = "gcode.3mf";
+    int         verbose     = 0;
+    int         timeout_sec = 0;
+    int         max_size_mb = 0;
+    const char* cancel_file = NULL;
 
     /* Parse CLI arguments */
     for (int i = 1; i < argc; i++) {
@@ -35,10 +38,19 @@ int main(int argc, char* argv[]) {
             printf("  --log-file <file>     Specify log file path (implies --log)\n");
             printf("  -j, --json [file]     Output slice statistics as JSON\n");
             printf("                        If not specified, auto-saved next to output\n");
+            printf("  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit)\n");
+            printf("  --max-size <mb>       Max input file size in MB (0 = no limit)\n");
+            printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
             printf("  -v, --verbose         Verbose output\n");
             return 0;
         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
             verbose = 1;
+        } else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--timeout")) {
+            if (++i < argc) timeout_sec = atoi(argv[i]);
+        } else if (!strcmp(argv[i], "--max-size")) {
+            if (++i < argc) max_size_mb = atoi(argv[i]);
+        } else if (!strcmp(argv[i], "--cancel-file")) {
+            if (++i < argc) cancel_file = argv[i];
         } else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output")) {
             if (++i < argc) output = argv[i];
         } else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate")) {
@@ -131,6 +143,15 @@ int main(int argc, char* argv[]) {
     if (json_output && json_output[0])
         pos += snprintf(params + pos, sizeof(params) - pos,
             ",\"json_output_path\":\"%s\"", json_output);
+    if (timeout_sec > 0)
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"timeout_seconds\":%d", timeout_sec);
+    if (max_size_mb > 0)
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"max_size_mb\":%d", max_size_mb);
+    if (cancel_file && cancel_file[0])
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"cancel_file\":\"%s\"", cancel_file);
     if (pos < (int)sizeof(params))
         snprintf(params + pos, sizeof(params) - pos, "}");
 
