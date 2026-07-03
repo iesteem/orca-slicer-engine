@@ -6,33 +6,35 @@
 #include <vector>
 
 #include "libslic3r/Config.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
-#include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Semver.hpp"
 
 #include "Types.hpp"
 
-struct EngineConfig {
+struct EngineConfig
+{
     std::string input_file;
-    std::string output_base;       // -o value, empty = auto-derive from input name
-    int plate_id = 0;              // 0 = all plates
+    std::string output_base; // -o value, empty = auto-derive from input name
+    int plate_id = 0; // 0 = all plates
     OutputFormat format = OutputFormat::GCODE_3MF;
     bool single_plate = false;
-    std::string temp_dir;          // temp directory for intermediate gcode files
-    int timeout_seconds = 0;       // 0 = no timeout; cloud service sets based on file size
-    int max_size_mb = 200;         // 0 = no limit; max input file size in megabytes
-    std::string cancel_file;       // watchdog file path for external cancellation
-    std::string log_path;                 // log file path (empty = no file logging)
-    bool log_enabled = false;             // --log or --log-file was specified
-    std::string json_output_path;         // -j/--json: path for JSON output file (empty = don't write)
+    std::string temp_dir; // temp directory for intermediate gcode files
+    int timeout_seconds = 0; // 0 = no timeout; cloud service sets based on file size
+    int max_size_mb = 200; // 0 = no limit; max input file size in megabytes
+    std::string cancel_file; // watchdog file path for external cancellation
+    std::string log_path; // log file path (empty = no file logging)
+    bool log_enabled = false; // --log or --log-file was specified
+    std::string json_output_path; // -j/--json: path for JSON output file (empty = don't write)
 };
 
 // Intermediate result for a single plate during the pipeline
-struct PlateSliceResult {
+struct PlateSliceResult
+{
     std::string gcode_path;
     Slic3r::GCodeProcessorResult gcode_result;
     double total_weight = 0.0;
@@ -40,11 +42,12 @@ struct PlateSliceResult {
     bool has_postprocess_warning = false;
     double total_used_filament = 0.0;
     double total_cost = 0.0;
-    std::map<size_t, double> filament_volumes;  // per extruder
-    std::vector<Issue> issues;                   // collected issues for this plate
+    std::map<size_t, double> filament_volumes; // per extruder
+    std::vector<Issue> issues; // collected issues for this plate
 };
 
-class SliceEngine {
+class SliceEngine
+{
 public:
     SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files);
 
@@ -52,12 +55,24 @@ public:
     bool run();
 
     // Results after run()
-    const SliceOutputStats& stats() const { return m_stats; }
-    const std::string& output_path() const { return m_output_path; }
+    const SliceOutputStats& stats() const
+    {
+        return m_stats;
+    }
+    const std::string& output_path() const
+    {
+        return m_output_path;
+    }
 
     // Accessors for exit-code determination
-    bool any_error() const { return m_any_error; }
-    bool any_postprocess_warning() const { return m_any_postprocess_warning; }
+    bool any_error() const
+    {
+        return m_any_error;
+    }
+    bool any_postprocess_warning() const
+    {
+        return m_any_postprocess_warning;
+    }
 
     // Returns the most specific exit code based on what failed.
     // Precedence: validation > slicing > export > load > postprocess_warning > ok.
@@ -74,8 +89,7 @@ private:
     void apply_process_official_preset();
     bool apply_filament_official_preset();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
-                                    const Slic3r::Preset& official_parent,
-                                    const std::string& original_name);
+                                    const Slic3r::Preset& official_parent, const std::string& original_name);
     bool validate_printer_model();
     bool validate_input();
     void process_plate(int plate_id);
@@ -103,13 +117,12 @@ private:
     std::map<int, PlateSliceResult> m_plate_results;
     bool m_any_error = false;
     bool m_any_postprocess_warning = false;
-    int m_error_type = EXIT_OK;  // most severe exit code encountered
+    int m_error_type = EXIT_OK; // most severe exit code encountered
 
     // Loaded data
     Slic3r::Model m_model;
     Slic3r::DynamicPrintConfig m_config;
-    Slic3r::ConfigSubstitutionContext m_config_substitutions{
-        Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
+    Slic3r::ConfigSubstitutionContext m_config_substitutions{Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
     Slic3r::PlateDataPtrs m_plate_data;
     std::vector<Slic3r::Preset*> m_project_presets;
     bool m_is_bbl_3mf = false;

@@ -10,48 +10,49 @@
 #ifndef SLIC3R_C_API_H
 #define SLIC3R_C_API_H
 
-#include <stddef.h>   /* size_t */
+#include <stddef.h> /* size_t */
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 #ifdef _WIN32
-  #ifdef SLIC3R_DLL_EXPORTS
-    #define SLIC3R_API __declspec(dllexport)
-  #else
-    #define SLIC3R_API __declspec(dllimport)
-  #endif
+#ifdef SLIC3R_DLL_EXPORTS
+#define SLIC3R_API __declspec(dllexport)
 #else
-  #define SLIC3R_API __attribute__((visibility("default")))
+#define SLIC3R_API __declspec(dllimport)
+#endif
+#else
+#define SLIC3R_API __attribute__((visibility("default")))
 #endif
 
-/* ---- Opaque handle ---- */
-typedef struct slic3r_ctx_s slic3r_ctx_t;
+    /* ---- Opaque handle ---- */
+    typedef struct slic3r_ctx_s slic3r_ctx_t;
 
 /* ---- Status codes ---- */
-#define SLIC3R_OK                  0
-#define SLIC3R_ERR_ARGS            1
-#define SLIC3R_ERR_FILE_NOT_FOUND  2
-#define SLIC3R_ERR_LOAD            3
-#define SLIC3R_ERR_SLICING         4
-#define SLIC3R_ERR_EXPORT          5
-#define SLIC3R_ERR_VALIDATION      6
-#define SLIC3R_ERR_POSTPROCESS     7
-#define SLIC3R_ERR_INTERNAL        99
+#define SLIC3R_OK 0
+#define SLIC3R_ERR_ARGS 1
+#define SLIC3R_ERR_FILE_NOT_FOUND 2
+#define SLIC3R_ERR_LOAD 3
+#define SLIC3R_ERR_SLICING 4
+#define SLIC3R_ERR_EXPORT 5
+#define SLIC3R_ERR_VALIDATION 6
+#define SLIC3R_ERR_POSTPROCESS 7
+#define SLIC3R_ERR_INTERNAL 99
 
-/* ---- Lifecycle ---- */
+    /* ---- Lifecycle ---- */
 
-/** Create a slicer context. resources_dir points to OrcaSlicer/resources/.
+    /** Create a slicer context. resources_dir points to OrcaSlicer/resources/.
  *  Returns NULL on failure. */
-SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir);
+    SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir);
 
-/** Destroy a slicer context and free all resources. */
-SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx);
+    /** Destroy a slicer context and free all resources. */
+    SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx);
 
-/* ---- Core operation ---- */
+    /* ---- Core operation ---- */
 
-/**
+    /**
  * Slice a 3MF file.
  *
  * @param ctx           Slicer context from slic3r_create()
@@ -84,33 +85,27 @@ SLIC3R_API void slic3r_destroy(slic3r_ctx_t* ctx);
  *   "issues": [{"level":"warning","plate_id":1,"object":"cube","code":"X","msg":"..."}]
  * }
  */
-SLIC3R_API int slic3r_slice(
-    slic3r_ctx_t*       ctx,
-    const char*         input_3mf,
-    const char*         output_base,
-    const char*         params_json,
-    char*               stats_out,
-    size_t              stats_size
-);
+    SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char* output_base,
+                                const char* params_json, char* stats_out, size_t stats_size);
 
-/* ---- Error handling ---- */
+    /* ---- Error handling ---- */
 
-/** Get the last error message. Valid until next slic3r_* call on this ctx. */
-SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx);
+    /** Get the last error message. Valid until next slic3r_* call on this ctx. */
+    SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx);
 
-/* ---- Version ---- */
+    /* ---- Version ---- */
 
-/** Get the engine version string (e.g. "02.01.01"). */
-SLIC3R_API const char* slic3r_version(void);
+    /** Get the engine version string (e.g. "02.01.01"). */
+    SLIC3R_API const char* slic3r_version(void);
 
-/* ---- Cancellation ---- */
+    /* ---- Cancellation ---- */
 
-/** Request cancellation of the current slicing operation.
+    /** Request cancellation of the current slicing operation.
  *  Safe to call from any thread. Non-blocking. */
-SLIC3R_API void slic3r_cancel(slic3r_ctx_t* ctx);
+    SLIC3R_API void slic3r_cancel(slic3r_ctx_t* ctx);
 
-/** Check if cancellation has been requested (non-zero = yes). */
-SLIC3R_API int slic3r_is_cancelled(slic3r_ctx_t* ctx);
+    /** Check if cancellation has been requested (non-zero = yes). */
+    SLIC3R_API int slic3r_is_cancelled(slic3r_ctx_t* ctx);
 
 #ifdef __cplusplus
 }

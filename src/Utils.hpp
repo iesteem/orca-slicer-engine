@@ -23,25 +23,20 @@ void print_usage(const char* program_name);
 // Simple progress callback for cloud environment.
 // When print and cancel_file are provided, the callback periodically checks
 // for the existence of cancel_file and triggers print->cancel() if found.
-void default_status_callback(
-    const Slic3r::PrintBase::SlicingStatus& status,
-    Slic3r::PrintBase* print = nullptr,
-    const std::string* cancel_file = nullptr);
+void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Slic3r::PrintBase* print = nullptr,
+                             const std::string* cancel_file = nullptr);
 
 // Format time in seconds as HH:MM:SS
 std::string format_time_hhmmss(float seconds);
 
 // Generate output filename based on parameters
-std::string generate_output_path(
-    const std::string& input_file,
-    const std::string& output_base,
-    int plate_id,
-    OutputFormat format,
-    bool single_plate);
+std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
+                                 OutputFormat format, bool single_plate);
 
 // Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic)
-inline int compute_column_count(int count) {
-    float value = sqrt((float)count);
+inline int compute_column_count(int count)
+{
+    float value = sqrt((float) count);
     float round_value = round(value);
     return (value > round_value) ? (round_value + 1) : round_value;
 }

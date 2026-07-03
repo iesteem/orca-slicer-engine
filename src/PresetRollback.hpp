@@ -2,7 +2,8 @@
 
 #include <string>
 
-namespace Slic3r {
+namespace Slic3r
+{
 
 class DynamicPrintConfig;
 class Preset;
@@ -25,7 +26,7 @@ class ConfigOptionStrings;
 class PresetRollback
 {
 public:
-    PresetRollback()  = default;
+    PresetRollback() = default;
     ~PresetRollback() = default;
 
     // ---- Read filament attributes from m_config ----
@@ -47,10 +48,8 @@ public:
     ///            (e.g. "Generic PLA @U1 0.4 nozzle")
     ///
     /// Returns nullptr if no matching base category preset is found.
-    static const Preset* findBaseFilament(const PresetBundle* bundle,
-                                          const std::string& filament_type,
-                                          const std::string& vendor_hint = {},
-                                          double nozzle_diameter = 0.4,
+    static const Preset* findBaseFilament(const PresetBundle* bundle, const std::string& filament_type,
+                                          const std::string& vendor_hint = {}, double nozzle_diameter = 0.4,
                                           const std::string& printer_model = "Snapmaker U1");
 
     // ---- Shared full-overwrite operation ----
@@ -62,9 +61,7 @@ public:
     /// Shared by both the inheritance-chain substitution and filament rollback
     /// paths to guarantee consistent replacement semantics.
     /// filament_ids may be nullptr (parameters only, no name update).
-    static void overwriteExtruderFrom(DynamicPrintConfig& target,
-                                      const Preset& source,
-                                      int extruder_idx,
+    static void overwriteExtruderFrom(DynamicPrintConfig& target, const Preset& source, int extruder_idx,
                                       ConfigOptionStrings* filament_ids);
 
     // ---- Full rollback operation ----
@@ -78,9 +75,7 @@ public:
     ///   4. Update filament_settings_id to the matched preset name
     ///
     /// Returns: true = rollback succeeded, false = no matching library preset found.
-    static bool rollback(DynamicPrintConfig& config,
-                         const PresetBundle* bundle,
-                         int extruder_idx);
+    static bool rollback(DynamicPrintConfig& config, const PresetBundle* bundle, int extruder_idx);
 };
 
 } // namespace Slic3r

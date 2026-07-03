@@ -8,24 +8,27 @@
 #include <boost/log/trivial.hpp>
 #include <nlohmann/json.hpp>
 
-#include "libslic3r/libslic3r.h"
 #include "Types.hpp"
+#include "libslic3r/libslic3r.h"
 
 using ordered_json = nlohmann::ordered_json;
 
 // Keep base64_encode — nlohmann doesn't provide base64
 static constexpr char BASE64_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static std::string base64_encode(const unsigned char* input, size_t input_len) {
+static std::string base64_encode(const unsigned char* input, size_t input_len)
+{
     std::string result;
     result.reserve((input_len + 2) / 3 * 4);
 
     int val = 0;
     int valb = 0;
-    for (size_t i = 0; i < input_len; ++i) {
+    for (size_t i = 0; i < input_len; ++i)
+    {
         val = (val << 8) + input[i];
         valb += 8;
-        while (valb >= 6) {
+        while (valb >= 6)
+        {
             valb -= 6;
             result.push_back(BASE64_CHARS[(val >> valb) & 0x3F]);
         }
@@ -38,59 +41,76 @@ static std::string base64_encode(const unsigned char* input, size_t input_len) {
 }
 
 // Round to 2 decimal places — matches the original std::setprecision(2) output
-static double round2(double v) {
-    if (!std::isfinite(v)) return 0.0;
+static double round2(double v)
+{
+    if (!std::isfinite(v))
+        return 0.0;
     return std::round(v * 100.0) / 100.0;
 }
 
-static ordered_json issue_to_json(const Issue& issue) {
+static ordered_json issue_to_json(const Issue& issue)
+{
     ordered_json j;
-    j["level"]       = issue.level;
-    j["plate_id"]    = issue.plate_id >= 0 ? issue.plate_id + 1 : issue.plate_id;
+    j["level"] = issue.level;
+    j["plate_id"] = issue.plate_id >= 0 ? issue.plate_id + 1 : issue.plate_id;
     j["object_name"] = issue.object_name;
-    j["z_height"]    = issue.z_height;
-    j["code"]        = issue.code;
-    j["message"]     = issue.message;
+    j["z_height"] = issue.z_height;
+    j["code"] = issue.code;
+    j["message"] = issue.message;
     if (!issue.suggestion.empty())
         j["suggestion"] = issue.suggestion;
     return j;
 }
 
-std::string build_statistics_json(const SliceOutputStats& stats,
-                                  const std::string& output_file_path)
+std::string build_statistics_json(const SliceOutputStats& stats, const std::string& output_file_path)
 {
     ordered_json root;
 
     // ---- Aggregate totals for print_info_total ----
     double total_print_time = 0;
-    double total_weight  = 0;
-    double total_length  = 0;
+    double total_weight = 0;
+    double total_length = 0;
     std::vector<ordered_json> total_filaments;
     {
         // Deduplicate by (type, color), summing used_g across plates
-        struct AggFilament { std::string type; std::string color; double used_g = 0; double used_m = 0; };
+        struct AggFilament
+        {
+            std::string type;
+            std::string color;
+            double used_g = 0;
+            double used_m = 0;
+        };
         std::vector<AggFilament> agg;
-        for (const auto& plate : stats.plates) {
-            if (plate.success) {
+        for (const auto& plate : stats.plates)
+        {
+            if (plate.success)
+            {
                 total_print_time += plate.print_time;
-                total_weight    += plate.total_filament_g;
-                total_length    += plate.total_filament_m;
-                for (const auto& detail : plate.filament_details) {
+                total_weight += plate.total_filament_g;
+                total_length += plate.total_filament_m;
+                for (const auto& detail : plate.filament_details)
+                {
                     auto it = std::find_if(agg.begin(), agg.end(),
-                        [&](const AggFilament& a) { return a.type == detail.type && a.color == detail.color; });
-                    if (it != agg.end()) {
+                                           [&](const AggFilament& a)
+                                           {
+                                               return a.type == detail.type && a.color == detail.color;
+                                           });
+                    if (it != agg.end())
+                    {
                         it->used_g += detail.used_g;
                         it->used_m += detail.used_m;
-                    } else
+                    }
+                    else
                         agg.push_back({detail.type, detail.color, detail.used_g, detail.used_m});
                 }
             }
         }
-        for (const auto& a : agg) {
+        for (const auto& a : agg)
+        {
             ordered_json fj;
-            fj["type"]   = a.type;
-            fj["color"]  = a.color;
-            fj["used_g"]  = round2(a.used_g);
+            fj["type"] = a.type;
+            fj["color"] = a.color;
+            fj["used_g"] = round2(a.used_g);
             fj["used_mm"] = round2(a.used_m * 1000.0);
             total_filaments.push_back(std::move(fj));
         }
@@ -100,13 +120,13 @@ std::string build_statistics_json(const SliceOutputStats& stats,
     root["engine_version"] = ENGINE_VERSION;
 
     ordered_json print_info;
-    print_info["output_file"]          = stats.success ? output_file_path : "";
-    print_info["print_time_seconds"]   = round2(total_print_time);
+    print_info["output_file"] = stats.success ? output_file_path : "";
+    print_info["print_time_seconds"] = round2(total_print_time);
     print_info["print_time_formatted"] = format_time_hhmmss(static_cast<float>(total_print_time));
-    print_info["total_weight_g"]       = round2(total_weight);
-    print_info["total_length_mm"]      = round2(total_length);
-    print_info["plate_count"]          = static_cast<int>(stats.plates.size());
-    print_info["filaments"]            = total_filaments;
+    print_info["total_weight_g"] = round2(total_weight);
+    print_info["total_length_mm"] = round2(total_length);
+    print_info["plate_count"] = static_cast<int>(stats.plates.size());
+    print_info["filaments"] = total_filaments;
     root["print_info_total"] = std::move(print_info);
 
     // Global issues
@@ -117,35 +137,39 @@ std::string build_statistics_json(const SliceOutputStats& stats,
 
     // Plates
     ordered_json plates_json = ordered_json::array();
-    for (const auto& plate : stats.plates) {
+    for (const auto& plate : stats.plates)
+    {
         ordered_json pj;
         pj["plate_id"] = plate.plate_id + 1;
-        pj["success"]  = plate.success;
+        pj["success"] = plate.success;
 
-        if (!plate.issues.empty()) {
+        if (!plate.issues.empty())
+        {
             ordered_json pi = ordered_json::array();
             for (const auto& iss : plate.issues)
                 pi.push_back(issue_to_json(iss));
             pj["issues"] = std::move(pi);
         }
 
-        if (plate.success) {
-            pj["print_time_seconds"]   = round2(plate.print_time);
+        if (plate.success)
+        {
+            pj["print_time_seconds"] = round2(plate.print_time);
             pj["print_time_formatted"] = format_time_hhmmss(plate.print_time);
-            pj["total_weight_g"]       = round2(plate.total_filament_g);
+            pj["total_weight_g"] = round2(plate.total_filament_g);
 
             ordered_json fils = ordered_json::array();
-            for (const auto& detail : plate.filament_details) {
+            for (const auto& detail : plate.filament_details)
+            {
                 ordered_json fdj;
                 fdj["id"] = detail.id + 1;
-                fdj["type"]        = detail.type;
-                fdj["color"]       = detail.color;
-                fdj["used_g"]      = round2(detail.used_g);
-                fdj["used_mm"]     = round2(detail.used_m * 1000.0);
+                fdj["type"] = detail.type;
+                fdj["color"] = detail.color;
+                fdj["used_g"] = round2(detail.used_g);
+                fdj["used_mm"] = round2(detail.used_m * 1000.0);
                 fils.push_back(std::move(fdj));
             }
-            pj["filaments"]              = std::move(fils);
-            pj["model_thumbnail"]        = plate.model_thumbnail;
+            pj["filaments"] = std::move(fils);
+            pj["model_thumbnail"] = plate.model_thumbnail;
             pj["long_retraction_when_cut"] = plate.long_retraction_when_cut;
         }
 
@@ -156,8 +180,7 @@ std::string build_statistics_json(const SliceOutputStats& stats,
     return root.dump(2);
 }
 
-void output_slice_statistics(const SliceOutputStats& stats,
-                             const std::string& json_output_path,
+void output_slice_statistics(const SliceOutputStats& stats, const std::string& json_output_path,
                              const std::string& output_file_path)
 {
     std::string json_str = build_statistics_json(stats, output_file_path);
@@ -166,11 +189,15 @@ void output_slice_statistics(const SliceOutputStats& stats,
     std::cout << json_str << std::endl;
     std::cout << "=== END STATISTICS ===" << std::endl;
 
-    if (!json_output_path.empty()) {
+    if (!json_output_path.empty())
+    {
         std::ofstream ofs(json_output_path);
-        if (ofs.is_open()) {
+        if (ofs.is_open())
+        {
             ofs << json_str;
-        } else {
+        }
+        else
+        {
             BOOST_LOG_TRIVIAL(warning) << "Failed to write statistics to: " << json_output_path;
         }
     }

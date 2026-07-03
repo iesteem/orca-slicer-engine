@@ -1,0 +1,60 @@
+# Orca Slicer Engine — coding standards (切片部门 C++ 代码规范 v1.0)
+# Usage: clang-format -i src/**/*.cpp src/**/*.hpp
+BasedOnStyle: LLVM
+
+# ---- 2.3 格式规范 ----
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# Allman 风格：左/右括号独占一行
+BreakBeforeBraces: Allman
+
+# 运算符两侧加空格；函数名与括号之间无空格
+SpaceBeforeParens: ControlStatements
+
+# 逗号后加空格
+SpaceAfterCStyleCast: true
+
+# 指针/引用靠左
+PointerAlignment: Left
+
+# ---- 2.4 语法规则 ----
+# C++17
+Standard: c++17
+
+# ---- Misc ----
+# 空行：函数之间空 1 行
+MaxEmptyLinesToKeep: 1
+
+# 对齐
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: false
+
+# 短行允许单行，但大括号仍独占一行
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: None
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortCompoundRequirementOnASingleLine: false
+
+# 换行与缩进
+AccessModifierOffset: -4
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+IndentCaseLabels: false
+IndentGotoLabels: false
+NamespaceIndentation: None
+
+# 大括号内部的空行
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# 紧凑但清晰
+Cpp11BracedListStyle: true
+BinPackArguments: true
+BinPackParameters: true
+
+# 注释
+ReflowComments: false

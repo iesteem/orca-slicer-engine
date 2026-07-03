@@ -23,19 +23,23 @@ void log_plate_message(const char* stage, const char* level, int plate, const st
 std::pair<std::string, std::string> format_exception_context(const Slic3r::StringObjectException& ex)
 {
     std::string obj_name;
-    if (ex.object) {
+    if (ex.object)
+    {
         auto mo = dynamic_cast<Slic3r::ModelObject const*>(ex.object);
-        if (!mo) {
+        if (!mo)
+        {
             if (auto po = dynamic_cast<Slic3r::PrintObjectBase const*>(ex.object))
                 mo = po->model_object();
         }
-        if (mo) obj_name = " [object: " + mo->name + "]";
+        if (mo)
+            obj_name = " [object: " + mo->name + "]";
     }
     std::string opt_hint = ex.opt_key.empty() ? "" : " (config: " + ex.opt_key + ")";
     return {obj_name, opt_hint};
 }
 
-void print_usage(const char* program_name) {
+void print_usage(const char* program_name)
+{
     std::cout << "OrcaSlicer Cloud Slicing Engine v" << ENGINE_VERSION << std::endl;
     std::cout << std::endl;
     std::cout << "Usage: " << program_name << " input.3mf [OPTIONS]" << std::endl;
@@ -79,37 +83,47 @@ void print_usage(const char* program_name) {
     std::cout << "    - plates[].gcode_file: path to output file" << std::endl;
     std::cout << std::endl;
     std::cout << "Examples:" << std::endl;
-    std::cout << "  " << program_name << " model.3mf                        # All plates -> model.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1                   # Plate 1 -> model-p1.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1 -f gcode          # Plate 1 -> model-p1.gcode (plain text)" << std::endl;
+    std::cout << "  " << program_name << " model.3mf                        # All plates -> model.gcode.3mf"
+              << std::endl;
+    std::cout << "  " << program_name << " model.3mf -p 1                   # Plate 1 -> model-p1.gcode.3mf"
+              << std::endl;
+    std::cout << "  " << program_name << " model.3mf -p 1 -f gcode          # Plate 1 -> model-p1.gcode (plain text)"
+              << std::endl;
     std::cout << "  " << program_name << " model.3mf -p 1 -o output         # Plate 1 -> output.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -o result              # All plates -> result.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -j stats.json          # Output statistics to stats.json" << std::endl;
+    std::cout << "  " << program_name << " model.3mf -o result              # All plates -> result.gcode.3mf"
+              << std::endl;
+    std::cout << "  " << program_name << " model.3mf -j stats.json          # Output statistics to stats.json"
+              << std::endl;
 }
 
-void default_status_callback(
-    const Slic3r::PrintBase::SlicingStatus& status,
-    Slic3r::PrintBase* print,
-    const std::string* cancel_file)
+void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Slic3r::PrintBase* print,
+                             const std::string* cancel_file)
 {
     // Check for external cancellation via watchdog file
-    if (print && cancel_file && !cancel_file->empty()) {
-        if (boost::filesystem::exists(*cancel_file)) {
+    if (print && cancel_file && !cancel_file->empty())
+    {
+        if (boost::filesystem::exists(*cancel_file))
+        {
             print->cancel();
             std::cout << "[Status] Cancellation requested via " << *cancel_file << std::endl;
             return;
         }
     }
 
-    if (status.percent >= 0) {
+    if (status.percent >= 0)
+    {
         std::cout << "[Progress] " << status.percent << "% - " << status.text << std::endl;
-    } else {
+    }
+    else
+    {
         std::cout << "[Status] " << status.text << std::endl;
     }
 }
 
-std::string format_time_hhmmss(float seconds) {
-    if (!std::isfinite(seconds) || seconds < 0) return "00:00:00";
+std::string format_time_hhmmss(float seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0)
+        return "00:00:00";
     int total_secs = static_cast<int>(seconds);
     int hours = total_secs / 3600;
     int mins = (total_secs % 3600) / 60;
@@ -119,19 +133,18 @@ std::string format_time_hhmmss(float seconds) {
     return std::string(buf);
 }
 
-std::string generate_output_path(
-    const std::string& input_file,
-    const std::string& output_base,
-    int plate_id,
-    OutputFormat format,
-    bool single_plate)
+std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
+                                 OutputFormat format, bool single_plate)
 {
     boost::filesystem::path input_path(input_file);
     std::string base_name;
 
-    if (!output_base.empty()) {
+    if (!output_base.empty())
+    {
         base_name = output_base;
-    } else {
+    }
+    else
+    {
         boost::filesystem::path parent = input_path.parent_path();
         if (parent.empty())
             parent = boost::filesystem::current_path();
@@ -141,18 +154,25 @@ std::string generate_output_path(
     std::string extension = (format == OutputFormat::GCODE_3MF) ? ".gcode.3mf" : ".gcode";
 
     std::string path;
-    if (single_plate) {
-        if (output_base.empty()) {
+    if (single_plate)
+    {
+        if (output_base.empty())
+        {
             path = base_name + "-p" + std::to_string(plate_id) + extension;
-        } else {
+        }
+        else
+        {
             path = base_name + extension;
         }
-    } else {
+    }
+    else
+    {
         path = base_name + ".gcode.3mf";
     }
 
     // Prevent multi-process collision: append unique suffix if output file already exists
-    if (boost::filesystem::exists(path)) {
+    if (boost::filesystem::exists(path))
+    {
         auto ts = std::chrono::system_clock::now().time_since_epoch().count();
         boost::filesystem::path p(path);
         path = (p.parent_path() / (p.stem().string() + "_" + std::to_string(ts))).string() + p.extension().string();
