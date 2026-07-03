@@ -394,10 +394,12 @@ bool SliceEngine::load_3mf()
 
 void SliceEngine::validate_config()
 {
-    // A1: Validate config values (layer_height, nozzle_diameter, etc.)
-    std::map<std::string, std::string> invalid = m_config.validate(true);
+    // A1: Validate config values (layer_height, nozzle_diameter, etc.).
+    // Use under_cli=false to match desktop GUI behavior — invalid config
+    // values produce warnings but do NOT block slicing.
+    std::map<std::string, std::string> invalid = m_config.validate(false);
     for (const auto& [key, msg] : invalid)
-        m_stats.issues.push_back(make_error(-1, "CONFIG_INVALID_" + key, msg));
+        m_stats.issues.push_back(make_warning(-1, "CONFIG_INVALID_" + key, msg));
 
     // A2: Check config substitutions (unknown keys, forward-compat changes)
     if (!m_config_substitutions.empty())
@@ -1679,33 +1681,45 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
     if (!err.string.empty())
     {
         auto [obj_name, opt_hint] = format_exception_context(err);
-        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-        std::string ecode;
-        switch (err.type)
+        // STRING_EXCEPT_NOT_DEFINED (type 0) is used by the library for
+        // generic checks (e.g. exceeds-build-volume-height) that the
+        // desktop GUI treats as non-fatal warnings.  Match that behavior.
+        if (err.type == STRING_EXCEPT_NOT_DEFINED)
         {
-        case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-            ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH";
-            break;
-        case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-            ecode = "PRINT_VALIDATE_FILAMENT_TEMP_MISMATCH";
-            break;
-        case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-            ecode = "PRINT_VALIDATE_OBJECT_COLLISION_SEQ";
-            break;
-        case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-            ecode = "PRINT_VALIDATE_OBJECT_COLLISION_LAYER";
-            break;
-        case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-            ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
-            break;
-        default:
-            ecode = "PRINT_VALIDATE_ERROR";
-            break;
+            BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+            m_stats.issues.push_back(make_warning(plate_id, "PRINT_VALIDATE_WARNING",
+                                                  err.string + opt_hint, obj_name));
         }
-        m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        return false;
+        else
+        {
+            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+            std::string ecode;
+            switch (err.type)
+            {
+            case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
+                ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH";
+                break;
+            case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
+                ecode = "PRINT_VALIDATE_FILAMENT_TEMP_MISMATCH";
+                break;
+            case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
+                ecode = "PRINT_VALIDATE_OBJECT_COLLISION_SEQ";
+                break;
+            case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
+                ecode = "PRINT_VALIDATE_OBJECT_COLLISION_LAYER";
+                break;
+            case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
+                ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
+                break;
+            default:
+                ecode = "PRINT_VALIDATE_ERROR";
+                break;
+            }
+            m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
+            m_any_error = true;
+            set_error_type(EXIT_PREPROCESS_ERROR);
+            return false;
+        }
     }
 
     return true;
@@ -1722,11 +1736,10 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
     {
         for (const auto& ex : exs.errors_)
         {
-            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-            m_stats.issues.push_back(make_error(
-                plate_id, "SLICING_ERROR",
-                "Slicing engine reported errors while processing this plate. "
-                "The model may contain non-manifold edges, self-intersections, or other geometry defects."));
+            std::string msg = ex.what();
+            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << msg;
+            m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
+                                                "Slicing failed for this plate: " + msg));
         }
         m_any_error = true;
         set_error_type(EXIT_SLICING_ERROR);
@@ -1912,10 +1925,12 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
                 max_z = move.position.z();
         if (max_z - result.gcode_result.printable_height >= 1e-6)
         {
-            log_plate_message("[Post-processing]", "ERROR", plate_id,
+            log_plate_message("[Post-processing]", "WARNING", plate_id,
                               "A G-code path goes beyond the max print height.");
-            has_postprocess_error = true;
-            Issue h = make_error(plate_id, "TOOL_HEIGHT_OUTSIDE", "A G-code path goes beyond the max print height");
+            has_postprocess_warning = true;
+            Issue h = make_warning(plate_id, "TOOL_HEIGHT_OUTSIDE",
+                                   "A G-code path goes beyond the max print height. "
+                                   "The object may not print correctly.");
             h.z_height = static_cast<double>(max_z);
             result.issues.push_back(h);
         }
