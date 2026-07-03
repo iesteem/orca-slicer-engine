@@ -134,6 +134,11 @@ SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp
 {
 }
 
+SliceEngine::~SliceEngine()
+{
+    release_PlateData_list(m_plate_data);
+}
+
 bool SliceEngine::run()
 {
     if (!load_3mf())
@@ -353,9 +358,9 @@ bool SliceEngine::load_3mf()
         }
 
         // Model::read_from_file() may have partially populated output parameters
-        // (plate data, project presets) before throwing.  Clear them to prevent
+        // (plate data, project presets) before throwing.  Release them to prevent
         // downstream code from accessing invalid state.
-        m_plate_data.clear();
+        release_PlateData_list(m_plate_data);
         m_project_presets.clear();
 
         return false;
@@ -2067,7 +2072,7 @@ void SliceEngine::package_output()
         pd->nozzle_diameters = nozzle_diameters_str;
 
         auto& modes = result.gcode_result.print_statistics.modes;
-        int print_time = (int) modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
+        int print_time = static_cast<int>(modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time);
         pd->gcode_prediction = std::to_string(print_time);
 
         if (result.total_weight != 0.0)

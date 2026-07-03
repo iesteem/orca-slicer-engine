@@ -50,6 +50,7 @@ class SliceEngine
 {
 public:
     SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files);
+    ~SliceEngine();
 
     // Run the full pipeline. Returns true if at least one plate produced output.
     bool run();

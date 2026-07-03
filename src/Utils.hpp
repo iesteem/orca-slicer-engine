@@ -38,7 +38,7 @@ Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigne
 // Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic)
 inline int compute_column_count(int count)
 {
-    float value = sqrt((float) count);
+    float value = sqrt(static_cast<float>(count));
     float round_value = round(value);
     return (value > round_value) ? (round_value + 1) : round_value;
 }
