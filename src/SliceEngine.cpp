@@ -1673,18 +1673,24 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result) {
     }
 
     // Toolpath conflict detection
+    // Downgraded to warning: matches desktop OrcaSlicer behavior where
+    // toolpath conflicts (e.g. wipe tower vs model) are non-fatal.
+    // The gcode is already produced at this point; the conflict means
+    // overlapping extrusion paths that may cause minor first-layer defects
+    // but no mechanical risk.
     if (result.gcode_result.conflict_result.has_value()) {
         const auto& cr = result.gcode_result.conflict_result.value();
         std::string obj1 = cr._obj1 ? cr._objName1 : "Wipe Tower";
         std::string obj2 = cr._obj2 ? cr._objName2 : "Wipe Tower";
-        log_plate_message("[Post-processing]", "ERROR", plate_id,
+        log_plate_message("[Post-processing]", "WARNING", plate_id,
             "Toolpath conflict detected between \"" + obj1 + "\" and \"" + obj2
             + "\" at Z=" + std::to_string(cr._height) + "mm.");
-        has_postprocess_error = true;
-        Issue conflict = make_error(plate_id, "TOOLPATH_CONFLICT",
+        has_postprocess_warning = true;
+        Issue conflict = make_warning(plate_id, "TOOLPATH_CONFLICT",
             "Toolpath conflict detected between \"" + obj1 + "\" and \"" + obj2
             + "\" at Z=" + std::to_string(cr._height) + "mm",
-            obj1 + " vs " + obj2);
+            obj1 + " vs " + obj2,
+            "The print can proceed but inspect the first layer for surface defects where toolpaths overlap. Consider adjusting the model or wipe tower position in the desktop slicer.");
         conflict.z_height = cr._height;
         result.issues.push_back(conflict);
     }

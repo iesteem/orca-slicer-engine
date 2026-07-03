@@ -77,7 +77,7 @@ void print_usage(const char* program_name) {
     std::cout << "  4  Slicing error (incl. timeout)" << std::endl;
     std::cout << "  5  G-code export error" << std::endl;
     std::cout << "  6  Pre-processing validation error (collision, invalid config, geometry defects)" << std::endl;
-    std::cout << "  7  Post-processing warning (toolpath outside print volume)" << std::endl;
+    std::cout << "  7  Post-processing warning (toolpath conflict, toolpath outside, bed/filament mismatch, etc.)" << std::endl;
     std::cout << std::endl;
     std::cout << "Output:" << std::endl;
     std::cout << "  On success, outputs JSON with slicing statistics including:" << std::endl;
