@@ -122,8 +122,7 @@ SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp
 }
 
 bool SliceEngine::run() {
-    bool load_ok = load_3mf();
-    if (!load_ok) {
+    if (!load_3mf()) {
         build_statistics();
         return false;
     }
@@ -164,9 +163,7 @@ bool SliceEngine::run() {
     // Non-blocking: missing preset is a warning, not a fatal error.
     apply_process_official_preset();
 
-    bool validate_ok = validate_input();
-
-    if (load_ok && validate_ok) {
+    if (validate_input()) {
         // --- Setup timeout deadline ---
         m_has_timeout = (m_cfg.timeout_seconds > 0);
         if (m_has_timeout) {
