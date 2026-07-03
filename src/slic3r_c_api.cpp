@@ -25,6 +25,7 @@
 #include <boost/log/expressions.hpp>
 #include <boost/log/utility/setup/file.hpp>
 #include <boost/log/utility/setup/common_attributes.hpp>
+#include <boost/log/utility/setup/console.hpp>
 #include <boost/log/support/date_time.hpp>
 
 #include "Types.hpp"
@@ -52,7 +53,7 @@ struct slic3r_ctx_s {
 
 static void set_error(slic3r_ctx_t* ctx, const std::string& msg) {
     if (ctx) ctx->last_error = msg;
-    fprintf(stderr, "[slic3r] ERROR: %s\n", msg.c_str());
+    BOOST_LOG_TRIVIAL(error) << msg;
 }
 
 // Add a Boost.Log file sink writing to the exact path (no g_data_dir prefix).
@@ -114,7 +115,7 @@ static bool parse_params(const char* json_str, EngineConfig& cfg) {
             cfg.json_output_path = j["json_output_path"].get<std::string>();
         return true;
     } catch (const std::exception& e) {
-        fprintf(stderr, "[slic3r] params parse error: %s\n", e.what());
+        BOOST_LOG_TRIVIAL(error) << "params parse error: " << e.what();
         return false;
     }
 }
@@ -134,6 +135,19 @@ SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir) {
     Slic3r::set_data_dir(ctx->resources_dir + "/profiles");
 
     ctx->initialized = true;
+
+    // Console sink so BOOST_LOG_TRIVIAL messages reach stderr even
+    // without --log. Format matches the file sink for consistency.
+    boost::log::add_console_log(
+        std::cerr,
+        boost::log::keywords::format =
+        (
+            boost::log::expressions::stream
+            << "[" << boost::log::trivial::severity << "]\t"
+            << boost::log::expressions::smessage
+        )
+    );
+
     return ctx;
 }
 

@@ -18,9 +18,6 @@ void log_plate_message(const char* stage, const char* level, int plate, const st
         BOOST_LOG_TRIVIAL(warning) << full;
     else
         BOOST_LOG_TRIVIAL(info) << full;
-
-    if (std::strcmp(level, "TIP") != 0)
-        std::cerr << "[" << level << "] Plate " << plate << ": " << msg << std::endl;
 }
 
 std::pair<std::string, std::string> format_exception_context(const Slic3r::StringObjectException& ex)

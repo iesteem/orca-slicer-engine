@@ -11,7 +11,7 @@
 
 #include "Types.hpp"
 
-// Emit a structured log line to both boost-log and stderr.
+// Emit a structured log line via Boost.Log.
 void log_plate_message(const char* stage, const char* level, int plate, const std::string& msg);
 
 // Extract human-readable object name and config hint from a StringObjectException

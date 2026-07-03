@@ -228,14 +228,12 @@ bool SliceEngine::run() {
 
         } catch (const std::exception& e) {
             BOOST_LOG_TRIVIAL(error) << "Unhandled exception in slicing pipeline: " << e.what();
-            std::cerr << "[ERROR] An unexpected internal error occurred during slicing." << std::endl;
             m_any_error = true;
             set_error_type(EXIT_SLICING_ERROR);
             m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
                 "An unexpected internal error occurred during slicing. Please try again or contact support."));
         } catch (...) {
             BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in slicing pipeline";
-            std::cerr << "[ERROR] An unexpected internal error occurred." << std::endl;
             m_any_error = true;
             set_error_type(EXIT_SLICING_ERROR);
             m_stats.issues.push_back(make_error(-1, "INTERNAL_ERROR",
@@ -912,12 +910,15 @@ bool SliceEngine::validate_input() {
         }
         if (!plate_found) {
             BOOST_LOG_TRIVIAL(error) << "Plate " << m_cfg.plate_id << " not found in 3MF file";
-            std::cerr << "Available plates: ";
-            for (size_t i = 0; i < m_plate_data.size(); ++i) {
-                if (i > 0) std::cerr << ", ";
-                std::cerr << m_plate_data[i]->plate_index + 1;
+            {
+                std::ostringstream oss;
+                oss << "Available plates: ";
+                for (size_t i = 0; i < m_plate_data.size(); ++i) {
+                    if (i > 0) oss << ", ";
+                    oss << m_plate_data[i]->plate_index + 1;
+                }
+                BOOST_LOG_TRIVIAL(warning) << oss.str();
             }
-            std::cerr << std::endl;
             m_any_error = true;
             set_error_type(EXIT_VALIDATION_ERROR);
             m_stats.error_message = "Requested plate " + std::to_string(m_cfg.plate_id) + " not found in 3MF file";
@@ -1467,7 +1468,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print) {
 
     if (!warning.string.empty()) {
         auto [obj_name, opt_hint] = format_exception_context(warning);
-        std::cerr << "[WARNING] Plate " << plate_id << ": " << warning.string << obj_name << opt_hint << std::endl;
+        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
         std::string wcode;
         switch (warning.type) {
             case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:  wcode = "PRINT_VALIDATE_WARNING_FILAMENT_BED_MISMATCH"; break;
@@ -1483,7 +1484,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print) {
 
     if (!err.string.empty()) {
         auto [obj_name, opt_hint] = format_exception_context(err);
-        std::cerr << "[ERROR] Plate " << plate_id << ": " << err.string << obj_name << opt_hint << std::endl;
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
         std::string ecode;
         switch (err.type) {
             case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:  ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH"; break;
@@ -1511,7 +1512,6 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
     catch (const SlicingErrors& exs) {
         for (const auto& ex : exs.errors_) {
             BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-            std::cerr << "[ERROR] Plate " << plate_id << ": slicing failed" << std::endl;
             m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
                 "Slicing failed for this plate. The model may contain geometry that cannot be sliced."));
         }
@@ -1521,7 +1521,6 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
     }
     catch (const SlicingError& ex) {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-        std::cerr << "[ERROR] Plate " << plate_id << ": slicing failed" << std::endl;
         m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
             "Slicing failed for this plate. The model may contain geometry that cannot be sliced."));
         m_any_error = true;
@@ -1529,7 +1528,7 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
         return false;
     }
     catch (const CanceledException&) {
-        std::cerr << "[ERROR] Plate " << plate_id << ": Slicing was cancelled." << std::endl;
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": Slicing was cancelled.";
         m_stats.issues.push_back(make_error(plate_id, "SLICING_CANCELLED",
             "Slicing was cancelled"));
         m_any_error = true;
@@ -1538,7 +1537,6 @@ bool SliceEngine::run_slicing(int plate_id, Print& print) {
     }
     catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing exception: " << e.what();
-        std::cerr << "[ERROR] Plate " << plate_id << ": slicing failed due to an internal error" << std::endl;
         m_stats.issues.push_back(make_error(plate_id, "SLICING_EXCEPTION",
             "Slicing failed due to an internal error. Please try again."));
         m_any_error = true;
