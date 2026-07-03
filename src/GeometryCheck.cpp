@@ -9,16 +9,13 @@
 
 namespace {
 
-// Helper: build a defect Issue for a given volume (delegates to factories in Types.hpp)
-Issue make_issue(const std::string& level, int plate_id,
+// Helper: build a warning Issue for a given volume (delegates to make_warning in Types.hpp)
+Issue make_issue(int plate_id,
                  const std::string& object_name, const std::string& code,
                  const std::string& message,
                  const std::string& suggestion = "")
 {
-    if (level == "error")
-        return make_error(plate_id, code, message, object_name, suggestion);
-    else
-        return make_warning(plate_id, code, message, object_name, suggestion);
+    return make_warning(plate_id, code, message, object_name, suggestion);
 }
 
 void check_non_manifold(const Slic3r::ModelVolume& volume,
@@ -31,8 +28,7 @@ void check_non_manifold(const Slic3r::ModelVolume& volume,
         double pct = total_edges > 0 ? 100.0 * open_edges / total_edges : 100.0;
         char pct_buf[16];
         snprintf(pct_buf, sizeof(pct_buf), "%.1f", pct);
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_NON_MANIFOLD",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_NON_MANIFOLD",
             "Non-manifold mesh: " + std::to_string(open_edges) +
                 " open edge(s) out of " + std::to_string(total_edges) +
                 " total edges (" + pct_buf + "%). "
@@ -54,8 +50,7 @@ void check_degenerate_faces(const Slic3r::ModelVolume& volume,
         double pct = total_faces > 0 ? 100.0 * removed / total_faces : 0;
         char pct_buf[16];
         snprintf(pct_buf, sizeof(pct_buf), "%.1f", pct);
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_DEGENERATE",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_DEGENERATE",
             "Degenerate faces: " + std::to_string(removed) +
                 " zero-area triangle(s) removed (" + pct_buf + "% of " +
                 std::to_string(total_faces) + " total faces). "
@@ -95,8 +90,7 @@ bool check_self_intersect(const Slic3r::ModelVolume& volume,
             << "GeometryCheck: CGAL self-intersect check crashed (SEH) for \""
             << obj_name << "\" — skipping";
     } else if (self_intersects) {
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_SELF_INTERSECT",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_SELF_INTERSECT",
             "Self-intersecting mesh: faces penetrate each other. "
             "This will cause incorrect slicing results.",
             "Repair with Netfabb (autodesk.com/netfabb) or Blender 3D Print Toolbox. "
@@ -108,8 +102,7 @@ bool check_self_intersect(const Slic3r::ModelVolume& volume,
 #else
     try {
         if (Slic3r::MeshBoolean::cgal::does_self_intersect(volume.mesh())) {
-            out.push_back(make_issue(
-                "warning", plate_id, obj_name, "GEOM_SELF_INTERSECT",
+            out.push_back(make_issue(plate_id, obj_name, "GEOM_SELF_INTERSECT",
                 "Self-intersecting mesh: faces penetrate each other. "
                 "This will cause incorrect slicing results.",
                 "Repair with Netfabb (autodesk.com/netfabb) or Blender 3D Print Toolbox. "
@@ -136,8 +129,7 @@ void check_multi_component(const Slic3r::ModelVolume& volume,
 {
     size_t patches = Slic3r::its_number_of_patches(volume.mesh().its);
     if (patches > 1) {
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_MULTI_COMPONENT",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_MULTI_COMPONENT",
             "Disconnected mesh: " + std::to_string(patches) +
                 " separate component(s). Consider splitting the model for "
                 "better orientation and support control per component.",
@@ -153,8 +145,7 @@ void check_inverted_normals(const Slic3r::ModelVolume& volume,
 {
     double vol = Slic3r::its_volume(volume.mesh().its);
     if (vol < 0.0) {
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_INVERTED",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_INVERTED",
             "Inverted normals: mesh volume is negative (" +
                 std::to_string(vol) + " mm³). Face winding (inside/outside) "
                 "may be reversed, causing incorrect perimeter generation.",
@@ -169,8 +160,7 @@ void check_empty(const Slic3r::ModelVolume& volume,
                  std::vector<Issue>& out)
 {
     if (volume.mesh().its.indices.empty()) {
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_EMPTY",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_EMPTY",
             "Empty mesh: no triangles in model volume. "
             "The object has no geometry and cannot be sliced.",
             "Remove the empty object from the project. "
@@ -186,8 +176,7 @@ void check_zero_volume(const Slic3r::ModelVolume& volume,
     double vol = Slic3r::its_volume(volume.mesh().its);
     // Threshold matching Model::removed_objects_with_zero_volume (1e-10)
     if (!volume.mesh().its.indices.empty() && std::abs(vol) < 1e-10) {
-        out.push_back(make_issue(
-            "warning", plate_id, obj_name, "GEOM_ZERO_VOLUME",
+        out.push_back(make_issue(plate_id, obj_name, "GEOM_ZERO_VOLUME",
             "Zero-volume mesh: the computed volume (" +
                 std::to_string(vol) + " mm³) is effectively zero. "
                 "This object cannot produce any extrusion.",

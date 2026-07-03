@@ -175,19 +175,8 @@ bool SliceEngine::run() {
         // --- Geometry defect detection (once for entire model, before per-plate loop) ---
         {
             auto geom_issues = run_geometry_checks(m_model);
-            bool has_geom_error = false;
             for (auto& issue : geom_issues) {
-                if (issue.level == "error")
-                    has_geom_error = true;
                 m_stats.issues.push_back(std::move(issue));
-            }
-            if (has_geom_error) {
-                m_any_error = true;
-                set_error_type(EXIT_VALIDATION_ERROR);
-                m_stats.error_message = "Geometric defects detected in the model (non-manifold / self-intersecting / zero-volume). Please repair the model and re-upload.";
-                BOOST_LOG_TRIVIAL(error) << m_stats.error_message;
-                build_statistics();
-                return false;
             }
         }
 
