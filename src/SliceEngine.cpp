@@ -712,35 +712,20 @@ bool SliceEngine::apply_printer_official_preset()
 
     // Determine nozzle diameter from the first extruder (default 0.4).
     double nozzle = 0.4;
-    if (auto* nd = m_config.option<ConfigOptionFloats>("nozzle_diameter");
-        nd && !nd->values.empty() && nd->values[0] > 0)
+    const ConfigOptionFloats* nd = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+    if (nd && !nd->values.empty())
         nozzle = nd->values[0];
 
+    // Look up the official preset in the loaded bundle. find_preset returns
+    // nullptr when not found (first_visible_if_not_found = false).
     auto fmt_nozzle = [](double d) {
         std::array<char, 8> buf;
         const int precision = (std::abs(d - std::round(d)) < NOZZLE_FORMAT_EPSILON) ? 0 : 1;
         snprintf(buf.data(), buf.size(), "%.*f", precision, d);
         return std::string(buf.data());
     };
-
     std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
-
-    // Look up the official preset in the loaded bundle. find_preset returns
-    // nullptr when not found (first_visible_if_not_found = false).
     const Preset* official = m_preset_bundle->printers.find_preset(preset_name, false);
-    if (!official) {
-        // Fall back to the known supported nozzle variants.
-        static const char* known[] = {"0.2", "0.4", "0.6", "0.8"};
-        for (const char* n : known) {
-            std::string candidate = "Snapmaker U1 (" + std::string(n) + " nozzle)";
-            if (const Preset* p = m_preset_bundle->printers.find_preset(candidate, false)) {
-                official = p;
-                preset_name = candidate;
-                break;
-            }
-        }
-    }
-
     if (!official) {
         std::string msg = "Official printer preset not found for nozzle "
             + fmt_nozzle(nozzle) + " mm (looked for \"" + preset_name + "\").";
@@ -755,12 +740,6 @@ bool SliceEngine::apply_printer_official_preset()
     // Wholesale overwrite: every key in the official config replaces the
     // user's value (machine G-code keys included).
     overwrite_all_keys_from(m_config, official->config);
-
-    // Set the preset identity to the official one.
-    m_config.set_key_value("printer_settings_id", new ConfigOptionString(preset_name));
-    if (auto* pm = official->config.option<ConfigOptionString>("printer_model");
-        pm && m_config.has("printer_model"))
-        m_config.set_key_value("printer_model", new ConfigOptionString(pm->value));
 
     // Verify the official preset actually took effect: printable_area must be
     // a 4-point rectangle that differs from the library default, and
