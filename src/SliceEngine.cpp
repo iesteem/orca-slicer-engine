@@ -324,11 +324,40 @@ bool SliceEngine::load_3mf()
     }
     catch (const std::exception& e)
     {
-        BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << e.what();
+        std::string what = e.what();
+        BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << what;
+
+        // Detect gcode.3mf output files (no geometry, only pre-sliced G-code).
+        // Model::read_from_file() throws "The supplied file couldn't be read
+        // because it's empty" when the 3MF has valid XML metadata but zero
+        // model objects — typical of a .gcode.3mf slicing result being
+        // mistakenly re-submitted as input.
+        bool is_empty = (what.find("empty") != std::string::npos);
+
         m_any_error = true;
         set_error_type(EXIT_LOAD_ERROR);
-        m_stats.error_message = "Failed to load 3MF file. The file may be corrupted or in an unsupported format.";
-        m_stats.issues.push_back(make_error(-1, "LOAD_3MF_ERROR", m_stats.error_message));
+
+        if (is_empty)
+        {
+            m_stats.error_message =
+                "This 3MF file contains no 3D model objects. "
+                "It appears to be a gcode.3mf slicing output file, not a project file. "
+                "Please upload the original .3mf project file instead.";
+            m_stats.issues.push_back(make_error(-1, "LOAD_3MF_ERROR", m_stats.error_message));
+        }
+        else
+        {
+            m_stats.error_message =
+                "Failed to load 3MF file. The file may be corrupted or in an unsupported format.";
+            m_stats.issues.push_back(make_error(-1, "LOAD_3MF_ERROR", m_stats.error_message));
+        }
+
+        // Model::read_from_file() may have partially populated output parameters
+        // (plate data, project presets) before throwing.  Clear them to prevent
+        // downstream code from accessing invalid state.
+        m_plate_data.clear();
+        m_project_presets.clear();
+
         return false;
     }
 
@@ -1099,6 +1128,18 @@ void SliceEngine::process_plate(int plate_id)
     }
 
     run_postprocessing(plate_id, slice_result);
+
+    // Free G-code visualization data that the cloud engine never uses.
+    // GCodeProcessorResult::moves and lines_ends store every G-code move
+    // vertex for the desktop GUI — hundreds of MB per plate.  Retaining
+    // them across plates causes std::bad_alloc on complex multi-plate
+    // projects (e.g. Mochi Makes plate 3 with 10 instances after plates
+    // 1+2 already consumed 500+ MB for their moves vectors).
+    slice_result.gcode_result.moves.clear();
+    slice_result.gcode_result.moves.shrink_to_fit();
+    slice_result.gcode_result.lines_ends.clear();
+    slice_result.gcode_result.lines_ends.shrink_to_fit();
+
     m_plate_results[plate_id] = slice_result;
 }
 
