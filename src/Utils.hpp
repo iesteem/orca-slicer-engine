@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cmath>
 #include <string>
@@ -6,7 +6,9 @@
 
 #include <boost/filesystem.hpp>
 
+#include "libslic3r/Config.hpp"
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Print.hpp"
 
 #include "Types.hpp"
@@ -19,6 +21,10 @@ std::pair<std::string, std::string> format_exception_context(const Slic3r::Strin
 
 // Print CLI usage information
 void print_usage(const char* program_name);
+
+// Dump all config option definitions (key, type, min, max, enum values) as JSON.
+// Used by preprocessing layers to clamp/delete incompatible config keys.
+std::string dump_config_schema(const Slic3r::ConfigDef& config_def);
 
 // Simple progress callback for cloud environment.
 // When print and cancel_file are provided, the callback periodically checks
@@ -39,9 +45,24 @@ std::string generate_output_path(
     OutputFormat format,
     bool single_plate);
 
-// Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic)
-inline int compute_column_count(int count) {
-    float value = sqrt((float)count);
-    float round_value = round(value);
-    return (value > round_value) ? (round_value + 1) : round_value;
+/// Bilinear-interpolation resize of an RGBA thumbnail to target dimensions.
+Slic3r::ThumbnailData resize_thumbnail(
+    const Slic3r::ThumbnailData& src,
+    unsigned int target_width,
+    unsigned int target_height);
+
+/**
+ * Compute column count for plate grid layout (matches GUI's PartPlate.hpp logic).
+ *
+ * @param count Number of items to arrange in the grid.
+ * @return Optimal column count (minimum 1).
+ */
+inline int compute_column_count(int count)
+{
+    if (count <= 0)
+        return 1;
+
+    const float value = std::sqrt(static_cast<float>(count));
+    const float round_value = std::round(value);
+    return static_cast<int>((value > round_value) ? (round_value + 1.0f) : round_value);
 }
