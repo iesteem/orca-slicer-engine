@@ -1894,15 +1894,45 @@ void SliceEngine::package_output() {
                      SaveStrategy::WithGcode | SaveStrategy::SkipModel |
                      SaveStrategy::Zip64;
 
+    // Thumbnail data vectors: one default-constructed (reset) ThumbnailData
+    // per plate, making every pointer non-NULL but is_valid() == false.
+    // This prevents NULL-pointer dereference in headless environments where
+    // thumbnail rendering is unavailable (no GPU / Mesa / EGL), while still
+    // allowing the fallback path in _BBS_3MF_Exporter to pick up PNG files
+    // extracted from the input 3MF on disk (plate_data->thumbnail_file etc.).
+    size_t plate_count = m_plate_data.size();
     std::vector<ThumbnailData*> thumbnail_data;
     std::vector<ThumbnailData*> no_light_thumbnail_data;
     std::vector<ThumbnailData*> top_thumbnail_data;
     std::vector<ThumbnailData*> pick_thumbnail_data;
     std::vector<ThumbnailData*> calibration_thumbnail_data;
+    std::vector<std::unique_ptr<ThumbnailData>> thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> no_light_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> top_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> pick_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> calibration_thumbnail_owned;
+    thumbnail_owned.reserve(plate_count);
+    no_light_thumbnail_owned.reserve(plate_count);
+    top_thumbnail_owned.reserve(plate_count);
+    pick_thumbnail_owned.reserve(plate_count);
+    calibration_thumbnail_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i) {
+        thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        no_light_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        top_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        pick_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        calibration_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        thumbnail_data.push_back(thumbnail_owned.back().get());
+        no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
+        top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
+        pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
+        calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
+    }
+
     std::vector<PlateBBoxData*> id_bboxes;
     std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
-    id_bboxes_owned.reserve(m_plate_data.size());
-    for (size_t i = 0; i < m_plate_data.size(); ++i) {
+    id_bboxes_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i) {
         id_bboxes_owned.push_back(std::make_unique<PlateBBoxData>());
         id_bboxes.push_back(id_bboxes_owned.back().get());
     }
