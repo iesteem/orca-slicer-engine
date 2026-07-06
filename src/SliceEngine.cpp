@@ -1894,18 +1894,11 @@ void SliceEngine::package_output() {
                      SaveStrategy::WithGcode | SaveStrategy::SkipModel |
                      SaveStrategy::Zip64;
 
-    // Thumbnail data vectors: one default-constructed (reset) ThumbnailData
-    // per plate, making every pointer non-NULL but is_valid() == false.
-    // This prevents NULL-pointer dereference in headless environments where
-    // thumbnail rendering is unavailable (no GPU / Mesa / EGL), while still
-    // allowing the fallback path in _BBS_3MF_Exporter to pick up PNG files
-    // extracted from the input 3MF on disk (plate_data->thumbnail_file etc.).
+    // Thumbnail data: one default-constructed (reset) ThumbnailData per plate,
+    // every pointer non-NULL but is_valid() == false.  Prevents NULL deref in
+    // headless environments (no GPU / Mesa / EGL) while the fallback path in
+    // _BBS_3MF_Exporter still picks up PNG files from plate_data on disk.
     size_t plate_count = m_plate_data.size();
-    std::vector<ThumbnailData*> thumbnail_data;
-    std::vector<ThumbnailData*> no_light_thumbnail_data;
-    std::vector<ThumbnailData*> top_thumbnail_data;
-    std::vector<ThumbnailData*> pick_thumbnail_data;
-    std::vector<ThumbnailData*> calibration_thumbnail_data;
     std::vector<std::unique_ptr<ThumbnailData>> thumbnail_owned;
     std::vector<std::unique_ptr<ThumbnailData>> no_light_thumbnail_owned;
     std::vector<std::unique_ptr<ThumbnailData>> top_thumbnail_owned;
@@ -1922,11 +1915,11 @@ void SliceEngine::package_output() {
         top_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
         pick_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
         calibration_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
-        thumbnail_data.push_back(thumbnail_owned.back().get());
-        no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
-        top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
-        pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
-        calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
+        params.thumbnail_data.push_back(thumbnail_owned.back().get());
+        params.no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
+        params.top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
+        params.pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
+        params.calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
     }
 
     std::vector<PlateBBoxData*> id_bboxes;
@@ -1936,13 +1929,8 @@ void SliceEngine::package_output() {
         id_bboxes_owned.push_back(std::make_unique<PlateBBoxData>());
         id_bboxes.push_back(id_bboxes_owned.back().get());
     }
-
-    params.thumbnail_data = thumbnail_data;
-    params.no_light_thumbnail_data = no_light_thumbnail_data;
-    params.top_thumbnail_data = top_thumbnail_data;
-    params.pick_thumbnail_data = pick_thumbnail_data;
-    params.calibration_thumbnail_data = calibration_thumbnail_data;
     params.id_bboxes = id_bboxes;
+
     params.project = nullptr;
     params.profile = nullptr;
 
