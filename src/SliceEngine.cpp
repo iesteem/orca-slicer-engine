@@ -172,7 +172,7 @@ bool SliceEngine::run()
     // different printer profile in the 3MF don't leak through. User-explicit
     // overrides (different_settings_to_system) are preserved.
     // Non-blocking: substitution failure is a warning, not a fatal error.
-    handle_process_substitution();
+    apply_process_official_preset();
 
     if (validate_input())
     {
@@ -865,21 +865,134 @@ bool SliceEngine::apply_printer_official_preset()
     return true;
 }
 
-void SliceEngine::handle_process_substitution()
+void SliceEngine::apply_process_official_preset()
 {
+    // Non-blocking: if system presets are unavailable, the existing process
+    // config from the 3MF is used as a fallback. Printer config is already
+    // correct at this point, so geometry is safe.
+    if (!m_presets_available || !m_preset_bundle) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "System presets not available; cannot apply official process preset.";
+        return;
+    }
+
+    // The official printer preset (already applied) sets default_print_profile
+    // to the matching Snapmaker U1 process preset name, e.g.
+    // "0.20 Standard @Snapmaker U1 (0.4 nozzle)".
+    auto* dpp = m_config.option<ConfigOptionString>("print_settings_id", false);
+    if (!dpp || dpp->value.empty()) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "default_print_profile not set; cannot determine process preset.";
+        return;
+    }
+    const std::string preset_name = dpp->value;
+
+    // Look up a process preset by name: system presets first, then project
+    // embedded. Follows the same pattern as validate_filament_official().
+    auto find_in_system = [this](const std::string& name) -> const Preset* {
+        const Preset* p = m_preset_bundle->prints.find_preset(name, false);
+        if (p && p->name == name) return p;
+        return nullptr;
+    };
+
+    auto find_in_project = [this](const std::string& name) -> const Preset* {
+        for (auto* pp : m_project_presets) {
+            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINT)
+                return pp;
+        }
+        return nullptr;
+    };
+
+    const Preset* official = nullptr;
+
+    // Case 1: Direct system preset match
+    if (const Preset* sys = find_in_system(preset_name)) {
+        official = sys;
+    } else {
+        // Case 2: Not a direct system match — walk the inheritance chain
+        // to find a system preset ancestor.
+        const Preset* current = find_in_project(preset_name);
+        std::set<std::string> visited;
+        while (current) {
+            std::string inherits_name = current->inherits();
+            if (inherits_name.empty()) break;
+
+            if (!visited.insert(inherits_name).second) {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "Circular inheritance detected in process preset \""
+                    << preset_name << "\"";
+                break;
+            }
+
+            if (const Preset* parent = find_in_system(inherits_name)) {
+                official = parent;
+                break;
+            }
+
+            const Preset* project_parent = find_in_project(inherits_name);
+            if (project_parent) {
+                current = project_parent;
+                continue;
+            }
+            break; // unknown ancestor
+        }
+    }
+
+    if (official) {
+        // Parse different_settings_to_system[0] — the set of process keys the
+        // user explicitly changed from the original printer's system defaults.
+        // These are preserved to honour the user's intent.
+        std::set<std::string> user_overrides;
+        {
+            auto* diff_opt = m_config.option<ConfigOptionStrings>(
+                "different_settings_to_system", false);
+            if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty()) {
+                std::istringstream ss(diff_opt->values[0]);
+                std::string key;
+                while (std::getline(ss, key, ';')) {
+                    // Trim leading/trailing whitespace.
+                    size_t start = key.find_first_not_of(" \t");
+                    size_t end   = key.find_last_not_of(" \t");
+                    if (start != std::string::npos && end != std::string::npos)
+                        key = key.substr(start, end - start + 1);
+                    if (!key.empty())
+                        user_overrides.insert(key);
+                }
+            }
+        }
+
+        BOOST_LOG_TRIVIAL(info)
+            << "Applying official process preset \"" << official->name
+            << "\" (" << user_overrides.size() << " user overrides preserved)";
+
+        // Apply every key from the official process preset, except keys the
+        // user explicitly overrode and keys that don't exist in the current
+        // config.
+        overwrite_all_keys_from_except(m_config, official->config, user_overrides);
+
+        m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
+            "Process preset replaced with official preset \"" + official->name
+            + "\" for cloud consistency"));
+    } else {
+        BOOST_LOG_TRIVIAL(warning)
+            << "No system process preset found for \"" << preset_name
+            << "\" (not in system presets and no system ancestor in"
+            << " inheritance chain); process settings not updated.";
+    }
+
     // When brim_type is auto_brim, set brim_width to 0 so that the
     // fallback path (when the algorithm decides no brim is needed)
     // doesn't generate unwanted brim. The algorithm still sets its
     // own computed width when it determines brim IS needed.
-    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
-    if (bt && bt->value == btAutoBrim)
+    // Always executed, regardless of whether an official preset was found.
     {
-        m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
+        auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+        if (bt && bt->value == btAutoBrim) {
+            m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
+            BOOST_LOG_TRIVIAL(info)
+                << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
+        }
     }
-
-    m_stats.issues.push_back(
-        make_warning(-1, "PROCESS_SUBSTITUTED",
-                     "Process preset replaced with official preset \"" + preset_name + "\" for cloud consistency"));
 }
 
 // ============================================================================
