@@ -2095,8 +2095,7 @@ void SliceEngine::package_output()
             ss << std::fixed << std::setprecision(2);
             for (size_t i = 0; i < nozzle_opt->values.size(); ++i)
             {
-                if (i > 0)
-                    ss << ",";
+                if (i > 0) ss << ",";
                 ss << nozzle_opt->values[i];
             }
             nozzle_diameters_str = ss.str();
@@ -2117,8 +2116,7 @@ void SliceEngine::package_output()
     for (auto& pd : m_plate_data)
     {
         auto it = m_plate_results.find(pd->plate_index);
-        if (it == m_plate_results.end())
-            continue;
+        if (it == m_plate_results.end()) continue;
 
         PlateSliceResult& result = it->second;
         pd->gcode_file = result.gcode_path;
@@ -2168,7 +2166,9 @@ void SliceEngine::package_output()
             {
                 const ModelInstance* inst = obj->instances[inst_idx];
                 if (plate_identify_ids.count(static_cast<int>(inst->loaded_id)))
-                    pd->objects_and_instances.emplace_back(static_cast<int>(obj_idx), static_cast<int>(inst_idx));
+                    pd->objects_and_instances.emplace_back(
+                        static_cast<int>(obj_idx),
+                        static_cast<int>(inst_idx));
             }
         }
     }
@@ -2185,39 +2185,49 @@ void SliceEngine::package_output()
     else
         params.export_plate_idx = -1;
 
-    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode |
-                      SaveStrategy::SkipModel | SaveStrategy::Zip64;
+    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel |
+                      SaveStrategy::WithGcode | SaveStrategy::SkipModel |
+                      SaveStrategy::Zip64;
 
-    std::vector<ThumbnailData*> thumbnail_data;
-    std::vector<ThumbnailData*> no_light_thumbnail_data;
-    std::vector<ThumbnailData*> top_thumbnail_data;
-    std::vector<ThumbnailData*> pick_thumbnail_data;
-    std::vector<ThumbnailData*> calibration_thumbnail_data;
-
-    for (const auto& pd : m_plate_data)
+    // Thumbnail data: one default-constructed (reset) ThumbnailData per plate,
+    // every pointer non-NULL but is_valid() == false.  Prevents NULL deref in
+    // headless environments (no GPU / Mesa / EGL) while the fallback path in
+    // _BBS_3MF_Exporter still picks up PNG files from plate_data on disk.
+    size_t plate_count = m_plate_data.size();
+    std::vector<std::unique_ptr<ThumbnailData>> thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> no_light_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> top_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> pick_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> calibration_thumbnail_owned;
+    thumbnail_owned.reserve(plate_count);
+    no_light_thumbnail_owned.reserve(plate_count);
+    top_thumbnail_owned.reserve(plate_count);
+    pick_thumbnail_owned.reserve(plate_count);
+    calibration_thumbnail_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i)
     {
-        thumbnail_data.push_back(pd->plate_thumbnail.is_valid() ? &pd->plate_thumbnail : nullptr);
-        no_light_thumbnail_data.push_back(nullptr);
-        top_thumbnail_data.push_back(nullptr);
-        pick_thumbnail_data.push_back(nullptr);
-        calibration_thumbnail_data.push_back(nullptr);
+        thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        no_light_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        top_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        pick_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        calibration_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        params.thumbnail_data.push_back(thumbnail_owned.back().get());
+        params.no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
+        params.top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
+        params.pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
+        params.calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
     }
 
     std::vector<PlateBBoxData*> id_bboxes;
     std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
-    id_bboxes_owned.reserve(m_plate_data.size());
-    for (size_t i = 0; i < m_plate_data.size(); ++i)
+    id_bboxes_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i)
     {
         id_bboxes_owned.push_back(std::make_unique<PlateBBoxData>());
         id_bboxes.push_back(id_bboxes_owned.back().get());
     }
-
-    params.thumbnail_data = thumbnail_data;
-    params.no_light_thumbnail_data = no_light_thumbnail_data;
-    params.top_thumbnail_data = top_thumbnail_data;
-    params.pick_thumbnail_data = pick_thumbnail_data;
-    params.calibration_thumbnail_data = calibration_thumbnail_data;
     params.id_bboxes = id_bboxes;
+
     params.project = nullptr;
     params.profile = nullptr;
 
@@ -2235,13 +2245,14 @@ void SliceEngine::package_output()
                 m_stats.error_message = msg;
             return;
         }
+        BOOST_LOG_TRIVIAL(info) << "gcode.3mf package created: " << m_output_path;
     }
     catch (const std::exception& e)
     {
         BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package: " << e.what();
         m_any_error = true;
         set_error_type(EXIT_EXPORT_ERROR);
-        std::string msg = "Failed to create output package: an internal error occurred while writing the .3mf archive.";
+        std::string msg = "Failed to create output package due to an internal error.";
         m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
         if (m_stats.error_message.empty())
             m_stats.error_message = msg;
