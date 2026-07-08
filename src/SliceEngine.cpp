@@ -144,10 +144,14 @@ bool SliceEngine::run()
         return false;
     }
 
-    // Config & preset validation (desktop parity — non-blocking)
+    // Config & preset validation
     validate_config();
     load_system_presets();
-    validate_presets();
+    if (!validate_presets())
+    {
+        build_statistics();
+        return false;
+    }
 
     // Apply the official Snapmaker U1 printer preset — clears custom G-code,
     // then wholesale-replaces printer config (printable_area, machine G-code,
@@ -477,12 +481,12 @@ void SliceEngine::load_system_presets()
     }
 }
 
-void SliceEngine::validate_presets()
+bool SliceEngine::validate_presets()
 {
     if (!m_presets_available || !m_preset_bundle)
     {
         BOOST_LOG_TRIVIAL(info) << "Preset validation skipped (system presets not available)";
-        return;
+        return true;
     }
 
     // B2: Load project embedded presets
@@ -531,8 +535,12 @@ void SliceEngine::validate_presets()
             std::string msg = "Custom printer preset not found in system presets";
             if (!details.empty())
                 msg += ": " + details;
-            m_stats.issues.push_back(make_warning(-1, "PRESET_PRINTER_NOT_FOUND", msg));
-            break;
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_PREPROCESS_ERROR);
+            m_stats.error_message = msg;
+            m_stats.issues.push_back(make_error(-1, "PRESET_PRINTER_NOT_FOUND", msg));
+            return false;
         }
 
         case VALIDATE_PRESETS_FILAMENTS_NOT_FOUND:
@@ -559,10 +567,15 @@ void SliceEngine::validate_presets()
             break;
         }
         }
+        return true;
     }
     catch (const std::exception& e)
     {
-        BOOST_LOG_TRIVIAL(warning) << "Preset validation error: " << e.what();
+        BOOST_LOG_TRIVIAL(error) << "Preset validation error: " << e.what();
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = std::string("Preset validation failed: ") + e.what();
+        return false;
     }
 }
 

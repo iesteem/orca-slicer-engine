@@ -85,7 +85,7 @@ private:
     bool load_3mf();
     void validate_config();
     void load_system_presets();
-    void validate_presets();
+    bool validate_presets();
     bool apply_printer_official_preset();
     bool apply_filament_official_preset();
     void apply_process_official_preset();
