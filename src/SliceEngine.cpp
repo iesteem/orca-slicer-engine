@@ -153,30 +153,33 @@ bool SliceEngine::run()
         return false;
     }
 
-    // Apply the official Snapmaker U1 printer preset — clears custom G-code,
-    // then wholesale-replaces printer config (printable_area, machine G-code,
-    // nozzle_diameter, etc.) with official values.
-    if (!apply_printer_official_preset())
+    if (!m_cfg.skip_preset_substitution)
     {
-        build_statistics();
-        return false;
-    }
+        // Apply the official Snapmaker U1 printer preset — clears custom G-code,
+        // then wholesale-replaces printer config (printable_area, machine G-code,
+        // nozzle_diameter, etc.) with official values.
+        if (!apply_printer_official_preset())
+        {
+            build_statistics();
+            return false;
+        }
 
-    // Filament official compliance check & substitution (always enforced).
-    // Runs after printer preset so PresetRollback reads the corrected
-    // nozzle_diameter from the official config, not the user's 3MF value.
-    if (!apply_filament_official_preset())
-    {
-        build_statistics();
-        return false;
-    }
+        // Filament official compliance check & substitution (always enforced).
+        // Runs after printer preset so PresetRollback reads the corrected
+        // nozzle_diameter from the official config, not the user's 3MF value.
+        if (!apply_filament_official_preset())
+        {
+            build_statistics();
+            return false;
+        }
 
-    // Substitute the process preset with the official Snapmaker U1 preset
-    // so that process-level settings (skirt_loops, brim_type, etc.) from a
-    // different printer profile in the 3MF don't leak through. User-explicit
-    // overrides (different_settings_to_system) are preserved.
-    // Non-blocking: substitution failure is a warning, not a fatal error.
-    apply_process_official_preset();
+        // Substitute the process preset with the official Snapmaker U1 preset
+        // so that process-level settings (skirt_loops, brim_type, etc.) from a
+        // different printer profile in the 3MF don't leak through. User-explicit
+        // overrides (different_settings_to_system) are preserved.
+        // Non-blocking: substitution failure is a warning, not a fatal error.
+        apply_process_official_preset();
+    }
 
     if (validate_input())
     {

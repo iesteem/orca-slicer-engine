@@ -30,6 +30,7 @@ struct EngineConfig
     std::string log_path; // log file path (empty = no file logging)
     bool log_enabled = false; // --log or --log-file was specified
     std::string json_output_path; // -j/--json: path for JSON output file (empty = don't write)
+    bool skip_preset_substitution = false; // --skip-preset-substitution
 };
 
 // Intermediate result for a single plate during the pipeline

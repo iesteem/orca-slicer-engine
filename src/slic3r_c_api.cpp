@@ -138,6 +138,8 @@ static bool parse_params(const char* json_str, EngineConfig& cfg)
         }
         if (j.contains("json_output_path"))
             cfg.json_output_path = j["json_output_path"].get<std::string>();
+        if (j.contains("skip_preset_substitution"))
+            cfg.skip_preset_substitution = j["skip_preset_substitution"].get<bool>();
         return true;
     }
     catch (const std::exception& e)
