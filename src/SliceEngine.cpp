@@ -270,7 +270,7 @@ bool SliceEngine::run()
 }
 
 // ============================================================================
-// Stage 1: Load 3MF
+// Stage 0: Load 3MF
 // ============================================================================
 
 bool SliceEngine::load_3mf()
@@ -389,7 +389,40 @@ bool SliceEngine::load_3mf()
 }
 
 // ============================================================================
-// Stage 2: Config & preset validation (desktop parity)
+// Stage 1.1: Printer model validation (fail-fast, before preset loading)
+// ============================================================================
+
+bool SliceEngine::validate_printer_model()
+{
+    auto fail_model = [&](const std::string& code, const std::string& msg)
+    {
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, code, msg));
+        return false;
+    };
+
+    constexpr const char* ALLOWED_PRINTER_MODEL = DEFAULT_PRINTER_MODEL;
+
+    if (!m_config.has("printer_model"))
+    {
+        return fail_model("PRINTER_MODEL_MISSING", "Printer model is missing. Only the Snapmaker U1 is supported.");
+    }
+
+    std::string printer_model = m_config.opt_string("printer_model");
+    if (printer_model != ALLOWED_PRINTER_MODEL)
+    {
+        return fail_model("PRINTER_MODEL_UNSUPPORTED",
+                          "Unsupported printer model: \"" + printer_model + "\". Only the Snapmaker U1 is supported.");
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Stage 1.2: Config validation
 // ============================================================================
 
 void SliceEngine::validate_config()
@@ -420,6 +453,10 @@ void SliceEngine::validate_config()
         }
     }
 }
+
+// ============================================================================
+// Stage 1.3: Load system presets from vendor JSON files
+// ============================================================================
 
 void SliceEngine::load_system_presets()
 {
@@ -483,6 +520,10 @@ void SliceEngine::load_system_presets()
         m_presets_available = false;
     }
 }
+
+// ============================================================================
+// Stage 1.4: Validate presets against system profiles
+// ============================================================================
 
 bool SliceEngine::validate_presets()
 {
@@ -581,6 +622,132 @@ bool SliceEngine::validate_presets()
         return false;
     }
 }
+
+// ============================================================================
+// Stage 1.5a: Printer preset substitution (official Snapmaker U1)
+// ============================================================================
+
+bool SliceEngine::apply_printer_official_preset()
+{
+    // 1. Strip all custom G-code blocks — cloud slicing must not execute
+    //    or embed user-supplied G-code for safety and consistency.
+    {
+        constexpr const char* gcode_keys[] = {
+            "start_gcode",           "end_gcode",         "layer_gcode",
+            "machine_start_gcode",   "machine_end_gcode", "before_layer_change_gcode",
+            "between_objects_gcode", "toolchange_gcode",  "print_host",
+        };
+        for (const char* key : gcode_keys)
+        {
+            if (m_config.has(key))
+            {
+                m_config.set_key_value(key, new ConfigOptionString(""));
+                m_stats.issues.push_back(
+                    make_tip(-1, "GCODE_CLEARED", std::string("Custom G-code '") + key + "' cleared for cloud safety"));
+            }
+        }
+    }
+
+    // 2. Replace the user's printer configuration wholesale with the official
+    //    Snapmaker U1 preset matching the requested nozzle diameter. No user
+    //    printer value (printable area, machine G-code, kinematics, …) is kept.
+    //    The official machine G-code overwrites the cleared values above.
+    //    The official preset config is sourced from the already-loaded
+    //    PresetBundle, whose system presets carry a fully inherits-expanded
+    //    config (fdm_U1 -> fdm_toolchanger merged in at load time).
+    if (!m_presets_available || !m_preset_bundle)
+    {
+        std::string msg = "System presets not available; cannot apply official printer preset.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
+        return false;
+    }
+
+    // Determine nozzle diameter from the first extruder (default 0.4).
+    double nozzle = 0.4;
+    const ConfigOptionFloats* nd = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+    if (nd && !nd->values.empty())
+        nozzle = nd->values[0];
+
+    // Look up the official preset in the loaded bundle. find_preset returns
+    // nullptr when not found (first_visible_if_not_found = false).
+    auto fmt_nozzle = [](double d)
+    {
+        std::array<char, 8> buf;
+        const int precision = (std::abs(d - std::round(d)) < NOZZLE_FORMAT_EPSILON) ? 0 : 1;
+        snprintf(buf.data(), buf.size(), "%.*f", precision, d);
+        return std::string(buf.data());
+    };
+    std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
+    const Preset* official = m_preset_bundle->printers.find_preset(preset_name, false);
+    if (!official)
+    {
+        std::string msg = "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
+                          preset_name + "\").";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
+        return false;
+    }
+
+    // Wholesale overwrite: every key in the official config replaces the
+    // user's value (machine G-code keys included).
+    overwrite_all_keys_from(m_config, official->config);
+
+    // Verify the official preset actually took effect: printable_area must be
+    // a 4-point rectangle that differs from the library default, and
+    // printable_height must differ from the default.
+    auto fail = [&](const std::string& detail)
+    {
+        std::string msg = "Printer configuration incomplete: " + detail +
+                          ". The official U1 printer preset was not applied correctly.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+    };
+    auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.size() != 4)
+    {
+        fail("printable_area missing or wrong format");
+        return false;
+    }
+    auto near = [](double a, double b)
+    {
+        return std::abs(a - b) < PLATE_DIM_EPSILON;
+    };
+    bool is_default_area =
+        (near(pa->values[0].x(), 0.0) && near(pa->values[0].y(), 0.0)) &&
+        (near(pa->values[1].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[1].y(), 0.0)) &&
+        (near(pa->values[2].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[2].y(), DEFAULT_PLATE_DEPTH)) &&
+        (near(pa->values[3].x(), 0.0) && near(pa->values[3].y(), DEFAULT_PLATE_DEPTH));
+    if (is_default_area)
+    {
+        fail("printable_area is still the default");
+        return false;
+    }
+    auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
+    if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT))
+    {
+        fail("printable_height is still the default");
+        return false;
+    }
+
+    m_stats.issues.push_back(
+        make_warning(-1, "PRINTER_SUBSTITUTED",
+                     "Printer preset replaced with official preset \"" + preset_name + "\" for cloud safety"));
+    return true;
+}
+
+// ============================================================================
+// Stage 1.5b: Filament preset substitution (official compliance check)
+// ============================================================================
 
 bool SliceEngine::apply_filament_official_preset()
 {
@@ -734,152 +901,9 @@ void SliceEngine::substitute_filament_params(ConfigOptionStrings* filament_ids, 
                                               "\" substituted with official preset \"" + official_parent.name + "\""));
 }
 
-bool SliceEngine::validate_printer_model()
-{
-    auto fail_model = [&](const std::string& code, const std::string& msg)
-    {
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, code, msg));
-        return false;
-    };
-
-    constexpr const char* ALLOWED_PRINTER_MODEL = DEFAULT_PRINTER_MODEL;
-
-    if (!m_config.has("printer_model"))
-    {
-        return fail_model("PRINTER_MODEL_MISSING", "Printer model is missing. Only the Snapmaker U1 is supported.");
-    }
-
-    std::string printer_model = m_config.opt_string("printer_model");
-    if (printer_model != ALLOWED_PRINTER_MODEL)
-    {
-        return fail_model("PRINTER_MODEL_UNSUPPORTED",
-                          "Unsupported printer model: \"" + printer_model + "\". Only the Snapmaker U1 is supported.");
-    }
-
-    return true;
-}
-
-bool SliceEngine::apply_printer_official_preset()
-{
-    // 1. Strip all custom G-code blocks — cloud slicing must not execute
-    //    or embed user-supplied G-code for safety and consistency.
-    {
-        constexpr const char* gcode_keys[] = {
-            "start_gcode",           "end_gcode",         "layer_gcode",
-            "machine_start_gcode",   "machine_end_gcode", "before_layer_change_gcode",
-            "between_objects_gcode", "toolchange_gcode",  "print_host",
-        };
-        for (const char* key : gcode_keys)
-        {
-            if (m_config.has(key))
-            {
-                m_config.set_key_value(key, new ConfigOptionString(""));
-                m_stats.issues.push_back(
-                    make_tip(-1, "GCODE_CLEARED", std::string("Custom G-code '") + key + "' cleared for cloud safety"));
-            }
-        }
-    }
-
-    // 2. Replace the user's printer configuration wholesale with the official
-    //    Snapmaker U1 preset matching the requested nozzle diameter. No user
-    //    printer value (printable area, machine G-code, kinematics, …) is kept.
-    //    The official machine G-code overwrites the cleared values above.
-    //    The official preset config is sourced from the already-loaded
-    //    PresetBundle, whose system presets carry a fully inherits-expanded
-    //    config (fdm_U1 -> fdm_toolchanger merged in at load time).
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        std::string msg = "System presets not available; cannot apply official printer preset.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
-        return false;
-    }
-
-    // Determine nozzle diameter from the first extruder (default 0.4).
-    double nozzle = 0.4;
-    const ConfigOptionFloats* nd = m_config.option<ConfigOptionFloats>("nozzle_diameter");
-    if (nd && !nd->values.empty())
-        nozzle = nd->values[0];
-
-    // Look up the official preset in the loaded bundle. find_preset returns
-    // nullptr when not found (first_visible_if_not_found = false).
-    auto fmt_nozzle = [](double d)
-    {
-        std::array<char, 8> buf;
-        const int precision = (std::abs(d - std::round(d)) < NOZZLE_FORMAT_EPSILON) ? 0 : 1;
-        snprintf(buf.data(), buf.size(), "%.*f", precision, d);
-        return std::string(buf.data());
-    };
-    std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
-    const Preset* official = m_preset_bundle->printers.find_preset(preset_name, false);
-    if (!official)
-    {
-        std::string msg = "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
-                          preset_name + "\").";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
-        return false;
-    }
-
-    // Wholesale overwrite: every key in the official config replaces the
-    // user's value (machine G-code keys included).
-    overwrite_all_keys_from(m_config, official->config);
-
-    // Verify the official preset actually took effect: printable_area must be
-    // a 4-point rectangle that differs from the library default, and
-    // printable_height must differ from the default.
-    auto fail = [&](const std::string& detail)
-    {
-        std::string msg = "Printer configuration incomplete: " + detail +
-                          ". The official U1 printer preset was not applied correctly.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
-    };
-    auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
-    if (!pa || pa->values.size() != 4)
-    {
-        fail("printable_area missing or wrong format");
-        return false;
-    }
-    auto near = [](double a, double b)
-    {
-        return std::abs(a - b) < PLATE_DIM_EPSILON;
-    };
-    bool is_default_area =
-        (near(pa->values[0].x(), 0.0) && near(pa->values[0].y(), 0.0)) &&
-        (near(pa->values[1].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[1].y(), 0.0)) &&
-        (near(pa->values[2].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[2].y(), DEFAULT_PLATE_DEPTH)) &&
-        (near(pa->values[3].x(), 0.0) && near(pa->values[3].y(), DEFAULT_PLATE_DEPTH));
-    if (is_default_area)
-    {
-        fail("printable_area is still the default");
-        return false;
-    }
-    auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
-    if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT))
-    {
-        fail("printable_height is still the default");
-        return false;
-    }
-
-    m_stats.issues.push_back(
-        make_warning(-1, "PRINTER_SUBSTITUTED",
-                     "Printer preset replaced with official preset \"" + preset_name + "\" for cloud safety"));
-    return true;
-}
+// ============================================================================
+// Stage 1.5c: Process preset substitution (official, preserves user overrides)
+// ============================================================================
 
 void SliceEngine::apply_process_official_preset()
 {
@@ -1012,7 +1036,7 @@ void SliceEngine::apply_process_official_preset()
 }
 
 // ============================================================================
-// Stage 3: Validate input
+// Stage 2: Validate input (plate availability)
 // ============================================================================
 
 bool SliceEngine::validate_input()
@@ -1065,7 +1089,144 @@ bool SliceEngine::validate_input()
 }
 
 // ============================================================================
-// Stage 3: Process a single plate
+// Stage 3: Global preprocessing (ensure on bed)
+// ============================================================================
+
+void SliceEngine::ensure_models_on_bed()
+{
+    // Seat every object flat on the bed before slicing.
+    //
+    // The desktop app, when opening a 3MF project, calls
+    // ModelObject::ensure_on_bed(allow_negative_z=true) (Plater.cpp), which
+    // PRESERVES intentional sinking — a model stored below the bed stays sunk
+    // and is sliced clipped at z=0. That is correct for an interactive editor
+    // (sinking is a deliberate tool, e.g. flattening a base against the bed),
+    // but wrong for cloud slicing: the user uploads a model expecting the whole
+    // thing printed and has no way to reposition it. A stored Z that sinks the
+    // model would silently drop the bottom of the G-code.
+    //
+    // So we pass allow_negative_z=false (the same path the Snapmaker CLI takes
+    // when its `ensure_on_bed` option is enabled): each object's lowest point is
+    // snapped to z=0. Partly-sunk, fully-sunk and floating objects are all
+    // corrected. We deliberately diverge from the desktop *default* here; this
+    // matches the desktop's force-on-bed behaviour.
+    for (ModelObject* obj : m_model.objects)
+    {
+        if (obj->instances.empty())
+            continue;
+        // Force fresh bounding-box computation. The cache may be stale from
+        // 3MF import before instance transforms were finalized.
+        obj->invalidate_bounding_box();
+
+        // Print::apply zeroes the Z component of the instance transform
+        // matrix (PrintApply.cpp:155 — "Z offset is discarded to ensure
+        // first layer starts at Z=0").  Any Z in the instance offset is
+        // silently dropped, which clips objects that rely on it.
+        //
+        // Fix: bake the instance Z offset into mesh vertices, zero the
+        // instance Z offset, then apply ensure_on_bed to the corrected
+        // geometry.  The Z survives Print::apply because it lives in
+        // mesh-vertex space.
+        //
+        // translate() moves mesh vertices in LOCAL space, but the instance
+        // rotation may flip or reorient the local Z axis.  We must convert
+        // the world-space Z shift to local coordinates via the inverse of
+        // the instance rotation (matrix without offset).
+
+        // --- Step 1: bake existing instance Z offset into mesh vertices ---
+        double inst_z = 0.0;
+        for (ModelInstance* inst : obj->instances)
+        {
+            inst_z = inst->get_offset().z();
+            if (std::abs(inst_z) > 1e-4)
+                break;
+        }
+
+        if (std::abs(inst_z) > 1e-4)
+        {
+            // Convert world-space (0,0,inst_z) to local space using the
+            // inverse of the instance rotation (no offset).
+            auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
+            Vec3d world_shift(0, 0, inst_z);
+            Vec3d local_shift = rot_no_off.inverse() * world_shift;
+            obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
+            // Zero all instance Z offsets.
+            for (ModelInstance* inst : obj->instances)
+            {
+                Vec3d off = inst->get_offset();
+                inst->set_offset(Vec3d(off.x(), off.y(), 0.0));
+            }
+        }
+
+        // --- Step 2: correct any remaining sinking ---
+        {
+            obj->invalidate_bounding_box();
+            double before = obj->min_z();
+            obj->ensure_on_bed(false);
+            double after = obj->min_z();
+            double z_shift = after - before;
+
+            if (std::abs(z_shift) > 1e-4)
+            {
+                // Convert world-space z_shift to local (same as step 1).
+                auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
+                Vec3d world_shift(0, 0, z_shift);
+                Vec3d local_shift = rot_no_off.inverse() * world_shift;
+                obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
+                // Undo the instance-offset change ensure_on_bed just made.
+                for (ModelInstance* inst : obj->instances)
+                {
+                    Vec3d off = inst->get_offset();
+                    inst->set_offset(Vec3d(off.x(), off.y(), off.z() - z_shift));
+                }
+            }
+
+            obj->invalidate_bounding_box();
+            double verify = obj->min_z();
+            BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
+                                    << " before=" << before << " after=" << after << " z_shift=" << z_shift
+                                    << " verify=" << verify;
+        }
+    }
+}
+
+// ============================================================================
+// Stage 3: Global preprocessing (decode plate thumbnails)
+// ============================================================================
+
+void SliceEngine::decode_plate_thumbnails()
+{
+    for (auto& pd : m_plate_data)
+    {
+        if (pd->plate_thumbnail.pixels.empty())
+            continue;
+
+        Slic3r::png::ReadBuf buf{pd->plate_thumbnail.pixels.data(), pd->plate_thumbnail.pixels.size()};
+
+        Slic3r::png::ImageColorscale img;
+        if (!Slic3r::png::decode_colored_png(buf, img))
+            continue;
+
+        pd->plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
+
+        const size_t src_bpp = static_cast<size_t>(img.bytes_per_pixel);
+        for (size_t y = 0; y < img.rows; ++y)
+        {
+            for (size_t x = 0; x < img.cols; ++x)
+            {
+                size_t src_idx = (y * img.cols + x) * src_bpp;
+                size_t dst_idx = (y * img.cols + x) * 4;
+                pd->plate_thumbnail.pixels[dst_idx + 0] = img.buf[src_idx + 0];
+                pd->plate_thumbnail.pixels[dst_idx + 1] = img.buf[src_idx + 1];
+                pd->plate_thumbnail.pixels[dst_idx + 2] = img.buf[src_idx + 2];
+                pd->plate_thumbnail.pixels[dst_idx + 3] = (src_bpp >= 4) ? img.buf[src_idx + 3] : 255;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Stage 4: Process a single plate
 // ============================================================================
 
 void SliceEngine::process_plate(int plate_id)
@@ -1222,7 +1383,7 @@ void SliceEngine::process_plate(int plate_id)
 }
 
 // ============================================================================
-// Per-plate sub-stages
+// Per-plate sub-stages (in call order)
 // ============================================================================
 
 bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids)
@@ -1262,133 +1423,21 @@ bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids)
     return true;
 }
 
-void SliceEngine::ensure_models_on_bed()
+Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id, double plate_width, double plate_depth)
 {
-    // Seat every object flat on the bed before slicing.
-    //
-    // The desktop app, when opening a 3MF project, calls
-    // ModelObject::ensure_on_bed(allow_negative_z=true) (Plater.cpp), which
-    // PRESERVES intentional sinking — a model stored below the bed stays sunk
-    // and is sliced clipped at z=0. That is correct for an interactive editor
-    // (sinking is a deliberate tool, e.g. flattening a base against the bed),
-    // but wrong for cloud slicing: the user uploads a model expecting the whole
-    // thing printed and has no way to reposition it. A stored Z that sinks the
-    // model would silently drop the bottom of the G-code.
-    //
-    // So we pass allow_negative_z=false (the same path the Snapmaker CLI takes
-    // when its `ensure_on_bed` option is enabled): each object's lowest point is
-    // snapped to z=0. Partly-sunk, fully-sunk and floating objects are all
-    // corrected. We deliberately diverge from the desktop *default* here; this
-    // matches the desktop's force-on-bed behaviour.
-    for (ModelObject* obj : m_model.objects)
-    {
-        if (obj->instances.empty())
-            continue;
-        // Force fresh bounding-box computation. The cache may be stale from
-        // 3MF import before instance transforms were finalized.
-        obj->invalidate_bounding_box();
+    // Compute plate origin using the same grid layout formula as the desktop GUI
+    // (PartPlate::update_plate_layout_arrange). Each plate occupies a cell in a
+    // row-major grid with LOGICAL_PART_PLATE_GAP spacing between plates.
+    int total_plates = static_cast<int>(m_plate_data.size());
+    int cols = compute_column_count(total_plates);
+    int row = plate_id / cols;
+    int col = plate_id % cols;
 
-        // Print::apply zeroes the Z component of the instance transform
-        // matrix (PrintApply.cpp:155 — "Z offset is discarded to ensure
-        // first layer starts at Z=0").  Any Z in the instance offset is
-        // silently dropped, which clips objects that rely on it.
-        //
-        // Fix: bake the instance Z offset into mesh vertices, zero the
-        // instance Z offset, then apply ensure_on_bed to the corrected
-        // geometry.  The Z survives Print::apply because it lives in
-        // mesh-vertex space.
-        //
-        // translate() moves mesh vertices in LOCAL space, but the instance
-        // rotation may flip or reorient the local Z axis.  We must convert
-        // the world-space Z shift to local coordinates via the inverse of
-        // the instance rotation (matrix without offset).
+    double origin_x = col * (plate_width * (1.0 + LOGICAL_PART_PLATE_GAP));
+    double origin_y = -row * (plate_depth * (1.0 + LOGICAL_PART_PLATE_GAP));
 
-        // --- Step 1: bake existing instance Z offset into mesh vertices ---
-        double inst_z = 0.0;
-        for (ModelInstance* inst : obj->instances)
-        {
-            inst_z = inst->get_offset().z();
-            if (std::abs(inst_z) > 1e-4)
-                break;
-        }
-
-        if (std::abs(inst_z) > 1e-4)
-        {
-            // Convert world-space (0,0,inst_z) to local space using the
-            // inverse of the instance rotation (no offset).
-            auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
-            Vec3d world_shift(0, 0, inst_z);
-            Vec3d local_shift = rot_no_off.inverse() * world_shift;
-            obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
-            // Zero all instance Z offsets.
-            for (ModelInstance* inst : obj->instances)
-            {
-                Vec3d off = inst->get_offset();
-                inst->set_offset(Vec3d(off.x(), off.y(), 0.0));
-            }
-        }
-
-        // --- Step 2: correct any remaining sinking ---
-        {
-            obj->invalidate_bounding_box();
-            double before = obj->min_z();
-            obj->ensure_on_bed(false);
-            double after = obj->min_z();
-            double z_shift = after - before;
-
-            if (std::abs(z_shift) > 1e-4)
-            {
-                // Convert world-space z_shift to local (same as step 1).
-                auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
-                Vec3d world_shift(0, 0, z_shift);
-                Vec3d local_shift = rot_no_off.inverse() * world_shift;
-                obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
-                // Undo the instance-offset change ensure_on_bed just made.
-                for (ModelInstance* inst : obj->instances)
-                {
-                    Vec3d off = inst->get_offset();
-                    inst->set_offset(Vec3d(off.x(), off.y(), off.z() - z_shift));
-                }
-            }
-
-            obj->invalidate_bounding_box();
-            double verify = obj->min_z();
-            BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
-                                    << " before=" << before << " after=" << after << " z_shift=" << z_shift
-                                    << " verify=" << verify;
-        }
-    }
-}
-
-void SliceEngine::decode_plate_thumbnails()
-{
-    for (auto& pd : m_plate_data)
-    {
-        if (pd->plate_thumbnail.pixels.empty())
-            continue;
-
-        Slic3r::png::ReadBuf buf{pd->plate_thumbnail.pixels.data(), pd->plate_thumbnail.pixels.size()};
-
-        Slic3r::png::ImageColorscale img;
-        if (!Slic3r::png::decode_colored_png(buf, img))
-            continue;
-
-        pd->plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
-
-        const size_t src_bpp = static_cast<size_t>(img.bytes_per_pixel);
-        for (size_t y = 0; y < img.rows; ++y)
-        {
-            for (size_t x = 0; x < img.cols; ++x)
-            {
-                size_t src_idx = (y * img.cols + x) * src_bpp;
-                size_t dst_idx = (y * img.cols + x) * 4;
-                pd->plate_thumbnail.pixels[dst_idx + 0] = img.buf[src_idx + 0];
-                pd->plate_thumbnail.pixels[dst_idx + 1] = img.buf[src_idx + 1];
-                pd->plate_thumbnail.pixels[dst_idx + 2] = img.buf[src_idx + 2];
-                pd->plate_thumbnail.pixels[dst_idx + 3] = (src_bpp >= 4) ? img.buf[src_idx + 3] : 255;
-            }
-        }
-    }
+    Vec3d origin(origin_x, origin_y, 0.0);
+    return origin;
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)
@@ -1546,23 +1595,6 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         return false;
     }
     return true;
-}
-
-Vec3d SliceEngine::setup_print_origin(int plate_id, double plate_width, double plate_depth)
-{
-    // Compute plate origin using the same grid layout formula as the desktop GUI
-    // (PartPlate::update_plate_layout_arrange). Each plate occupies a cell in a
-    // row-major grid with LOGICAL_PART_PLATE_GAP spacing between plates.
-    int total_plates = static_cast<int>(m_plate_data.size());
-    int cols = compute_column_count(total_plates);
-    int row = plate_id / cols;
-    int col = plate_id % cols;
-
-    double origin_x = col * (plate_width * (1.0 + LOGICAL_PART_PLATE_GAP));
-    double origin_y = -row * (plate_depth * (1.0 + LOGICAL_PART_PLATE_GAP));
-
-    Vec3d origin(origin_x, origin_y, 0.0);
-    return origin;
 }
 
 bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
@@ -1800,6 +1832,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
 
     return true;
 }
+
 bool SliceEngine::run_slicing(int plate_id, Print& print)
 {
     BOOST_LOG_TRIVIAL(info) << "Starting slicing process for plate " << plate_id << "...";
@@ -2113,7 +2146,7 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
 }
 
 // ============================================================================
-// Stage 4: Package output as gcode.3mf
+// Stage 5: Package output as gcode.3mf
 // ============================================================================
 
 void SliceEngine::package_output()
@@ -2323,7 +2356,7 @@ int SliceEngine::exit_code() const
 }
 
 // ============================================================================
-// Stage 5: Build statistics for JSON output
+// Stage 6: Build statistics for JSON output
 // ============================================================================
 
 void SliceEngine::build_statistics()
