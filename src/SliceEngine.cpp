@@ -2016,10 +2016,34 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
     if (result.gcode_result.conflict_result.has_value())
     {
         const auto& cr = result.gcode_result.conflict_result.value();
+
+        // Build sorted, unique list of layer print-Z values from extrusion moves,
+        // replicating the desktop GCodeViewer::load logic (GCodeViewer.cpp:3011-3018).
+        // Only EMoveType::Extrude moves define layer boundaries, deduplicated within
+        // EPSILON tolerance (libslic3r.h:52: static constexpr double EPSILON = 1e-4).
+        std::vector<double> layer_zs;
+        {
+            constexpr double LAYER_Z_EPSILON = 1e-4;
+            for (const auto& move : result.gcode_result.moves) {
+                if (move.type != EMoveType::Extrude)
+                    continue;
+                const double z = static_cast<double>(move.position.z());
+                if (layer_zs.empty() || z < layer_zs.back() - LAYER_Z_EPSILON || layer_zs.back() + LAYER_Z_EPSILON < z)
+                    layer_zs.push_back(z);
+            }
+        }
+
+        // Compute layer number matching desktop's Layers::get_l_at (GCodeViewer.hpp:492-496)
+        int computed_layer = 0;
+        if (!layer_zs.empty()) {
+            auto iter = std::upper_bound(layer_zs.begin(), layer_zs.end(), cr._height);
+            computed_layer = static_cast<int>(std::distance(layer_zs.begin(), iter));
+        }
+
         std::string obj1 = cr._obj1 ? cr._objName1 : "Wipe Tower";
         std::string obj2 = cr._obj2 ? cr._objName2 : "Wipe Tower";
         std::string conflict_msg = "Conflicts of G-code paths have been found at layer "
-            + std::to_string(cr.layer) + ", z = "
+            + std::to_string(computed_layer) + ", z = "
             + std::to_string(cr._height) + " mm. Please separate the conflicted objects farther ("
             + obj1 + " <-> " + obj2 + ").";
         log_plate_message("[Post-processing]", "WARNING", plate_id, conflict_msg);
