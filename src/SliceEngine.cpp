@@ -1182,10 +1182,11 @@ void SliceEngine::ensure_models_on_bed()
             }
 
             obj->invalidate_bounding_box();
-            double verify = obj->min_z();
-            BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
-                                    << " before=" << before << " after=" << after << " z_shift=" << z_shift
-                                    << " verify=" << verify;
+            if (std::abs(z_shift) > 1e-6 || std::abs(before) > 1e-6)
+            {
+                BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
+                                        << " z_shift=" << z_shift;
+            }
         }
     }
 }
