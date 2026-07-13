@@ -1,4 +1,4 @@
-/**
+﻿/**
  * slic3r_c_api.h — Pure C boundary for libslic3r shared library
  *
  * This header contains NO C++ types, NO STL, NO templates.
@@ -7,8 +7,7 @@
  * SPIKE 001: Minimum Viable C API — "Slice This File"
  */
 
-#ifndef SLIC3R_C_API_H
-#define SLIC3R_C_API_H
+#pragma once
 
 #include <stddef.h> /* size_t */
 
@@ -27,8 +26,8 @@ extern "C"
 #define SLIC3R_API __attribute__((visibility("default")))
 #endif
 
-    /* ---- Opaque handle ---- */
-    typedef struct slic3r_ctx_s slic3r_ctx_t;
+/* ---- Opaque handle ---- */
+typedef struct slic3r_ctx_s slic3r_ctx_t;
 
 /* ---- Status codes ----
  * Values 0-7 match the C++ EXIT_* constants in Types.hpp exactly;
@@ -71,8 +70,8 @@ extern "C"
  * @param ctx           Slicer context from slic3r_create()
  * @param input_3mf     Path to input .3mf file
  * @param output_base   Output path WITHOUT extension (e.g. "result")
- * @param params_json   JSON parameters (see below). NULL = defaults.
- * @param stats_out     Buffer for JSON statistics output. NULL = skip.
+ * @param params_json   JSON parameters (see below). Null = defaults.
+ * @param stats_out     Buffer for JSON statistics output. Null = skip.
  * @param stats_size    Size of stats_out buffer (including null terminator)
  *
  * @return SLIC3R_OK on success, error code on failure.
@@ -128,4 +127,3 @@ extern "C"
 }
 #endif
 
-#endif /* SLIC3R_C_API_H */

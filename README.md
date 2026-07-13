@@ -2,6 +2,29 @@
 
 Pure C consumer of `slic3r.dll` — no C++ dependencies, no libslic3r headers.
 
+## Changelog
+
+### v02.01.11 (2026-06-12)
+
+- **新增 `--threads <N>` 参数**：限制 TBB 并行线程数，用于避免资源耗尽。
+  通过 `tbb::global_control::max_allowed_parallelism` 实现，默认 0 表示使用全部核心。
+  (ebcae02, 219b4f7)
+
+- **新增 G-code 导出内存风险评估**：引入逐层评分机制，在执行 G-code 导出前评估内存风险。
+  优化 `model_complexity.py`、`batch_benchmark.py`、`3mf_score.py` 工具脚本，
+  基于 k3s 切片验证数据重新校准 `memory_risk` 阈值。
+  (34a3373, fe6526b)
+
+### v02.01.10 (2026-06-11)
+
+- **JSON 字段重命名**：`plates[].filaments[].filament_id` → `plates[].filaments[].id`，
+  同时将 `SliceOutputStats::FilamentDetail::filament_id` 成员变量同步改为 `id`。
+  注意：libslic3r 的 `FilamentInfo::filament_id`（`std::string` 类型）保持不变。
+  (fca9ee3, f685137)
+
+- **基础版本**：UTF-8 BOM、C++ 风格转换、安全函数替换等代码规范修复。
+  (1e6a69c, 8fccaef)
+
 **Architecture:**
 ```
 orca-slice-engine (14 KB, C)

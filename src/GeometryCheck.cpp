@@ -1,4 +1,4 @@
-#include "GeometryCheck.hpp"
+﻿#include "GeometryCheck.hpp"
 #include "Types.hpp"
 
 #include <boost/log/trivial.hpp>
@@ -41,7 +41,11 @@ void check_non_manifold(const Slic3r::ModelVolume& volume, const std::string& ob
 void check_degenerate_faces(const Slic3r::ModelVolume& volume, const std::string& obj_name, int plate_id,
                             std::vector<Issue>& out)
 {
-    size_t total_faces = volume.mesh().its.indices.size();
+    const size_t total_faces = volume.mesh().its.indices.size();
+    // FIXME: Copying the entire mesh to count degenerate faces is expensive
+    // for large models. Replace with its_count_degenerate_faces() once
+    // available in libslic3r, or iterate indices directly counting zero-area
+    // triangles (vertices with equal indices).
     indexed_triangle_set its_copy = volume.mesh().its;
     size_t removed = Slic3r::its_remove_degenerate_faces(its_copy);
     if (removed > 0)
@@ -177,7 +181,7 @@ void check_empty(const Slic3r::ModelVolume& volume, const std::string& obj_name,
 void check_zero_volume(const Slic3r::ModelVolume& volume, const std::string& obj_name, int plate_id,
                        std::vector<Issue>& out)
 {
-    double vol = Slic3r::its_volume(volume.mesh().its);
+    const double vol = Slic3r::its_volume(volume.mesh().its);
     // Threshold matching Model::removed_objects_with_zero_volume (1e-10)
     if (!volume.mesh().its.indices.empty() && std::abs(vol) < 1e-10)
     {

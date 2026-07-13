@@ -1,4 +1,4 @@
-// nanosvg implementation for headless build
+﻿// nanosvg implementation for headless build
 // This file provides the nanosvg implementation when GUI is not built
 
 #define NANOSVG_IMPLEMENTATION

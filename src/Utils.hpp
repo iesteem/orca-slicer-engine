@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cmath>
 #include <string>
@@ -6,6 +6,7 @@
 
 #include <boost/filesystem.hpp>
 
+#include "libslic3r/Config.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Print.hpp"
