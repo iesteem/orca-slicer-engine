@@ -326,6 +326,8 @@ bool SliceEngine::load_3mf()
     {
         std::string what = e.what();
         BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << what;
+        m_any_error = true;
+        set_error_type(EXIT_LOAD_ERROR);
 
         // Detect gcode.3mf output files (no geometry, only pre-sliced G-code).
         // Model::read_from_file() throws "The supplied file couldn't be read
@@ -333,10 +335,6 @@ bool SliceEngine::load_3mf()
         // model objects — typical of a .gcode.3mf slicing result being
         // mistakenly re-submitted as input.
         bool is_empty = (what.find("empty") != std::string::npos);
-
-        m_any_error = true;
-        set_error_type(EXIT_LOAD_ERROR);
-
         if (is_empty)
         {
             m_stats.error_message =
@@ -404,15 +402,13 @@ bool SliceEngine::validate_printer_model()
         return false;
     };
 
-    constexpr const char* ALLOWED_PRINTER_MODEL = DEFAULT_PRINTER_MODEL;
-
     if (!m_config.has("printer_model"))
     {
         return fail_model("PRINTER_MODEL_MISSING", "Printer model is missing. Only the Snapmaker U1 is supported.");
     }
 
     std::string printer_model = m_config.opt_string("printer_model");
-    if (printer_model != ALLOWED_PRINTER_MODEL)
+    if (printer_model != DEFAULT_PRINTER_MODEL)
     {
         return fail_model("PRINTER_MODEL_UNSUPPORTED",
                           "Unsupported printer model: \"" + printer_model + "\". Only the Snapmaker U1 is supported.");
@@ -476,7 +472,7 @@ void SliceEngine::load_system_presets()
 
     // Collect vendor JSON files
     std::vector<std::string> vendor_names;
-    for (auto& entry : boost::filesystem::directory_iterator(profiles_dir))
+    for (const auto& entry : boost::filesystem::directory_iterator(profiles_dir))
     {
         std::string file = entry.path().string();
         if (!Slic3r::is_json_file(file))
@@ -500,7 +496,6 @@ void SliceEngine::load_system_presets()
         // into this PresetBundle. We load all vendors directly (no merge_presets
         // needed — duplicate detection is not critical for cloud validation).
         const auto rule = ForwardCompatibilitySubstitutionRule::EnableSilent;
-
         for (size_t i = 0; i < vendor_names.size(); ++i)
         {
             const std::string& vendor = vendor_names[i];
@@ -939,7 +934,8 @@ void SliceEngine::apply_process_official_preset()
     // Non-blocking: if system presets are unavailable, the existing process
     // config from the 3MF is used as a fallback. Printer config is already
     // correct at this point, so geometry is safe.
-    if (!m_presets_available || !m_preset_bundle) {
+    if (!m_presets_available || !m_preset_bundle)
+    {
         BOOST_LOG_TRIVIAL(warning)
             << "System presets not available; cannot apply official process preset.";
         return;
@@ -949,23 +945,26 @@ void SliceEngine::apply_process_official_preset()
     // to the matching Snapmaker U1 process preset name, e.g.
     // "0.20 Standard @Snapmaker U1 (0.4 nozzle)".
     auto* dpp = m_config.option<ConfigOptionString>("print_settings_id", false);
-    if (!dpp || dpp->value.empty()) {
+    if (!dpp || dpp->value.empty()) 
+    {
         BOOST_LOG_TRIVIAL(warning)
             << "default_print_profile not set; cannot determine process preset.";
         return;
     }
-    const std::string preset_name = dpp->value;
 
     // Look up a process preset by name: system presets first, then project
     // embedded. Follows the same pattern as validate_filament_official().
-    auto find_in_system = [this](const std::string& name) -> const Preset* {
+    auto find_in_system = [this](const std::string& name) -> const Preset* 
+    {
         const Preset* p = m_preset_bundle->prints.find_preset(name, false);
         if (p && p->name == name) return p;
         return nullptr;
     };
 
-    auto find_in_project = [this](const std::string& name) -> const Preset* {
-        for (auto* pp : m_project_presets) {
+    auto find_in_project = [this](const std::string& name) -> const Preset* 
+    {
+        for (auto* pp : m_project_presets)
+        {
             if (pp && pp->name == name && pp->type == Preset::TYPE_PRINT)
                 return pp;
         }
@@ -973,33 +972,40 @@ void SliceEngine::apply_process_official_preset()
     };
 
     const Preset* official = nullptr;
-
+    const std::string preset_name = dpp->value;
     // Case 1: Direct system preset match
-    if (const Preset* sys = find_in_system(preset_name)) {
+    if (const Preset* sys = find_in_system(preset_name)) 
+    {
         official = sys;
-    } else {
+    } 
+    else 
+    {
         // Case 2: Not a direct system match — walk the inheritance chain
         // to find a system preset ancestor.
         const Preset* current = find_in_project(preset_name);
         std::set<std::string> visited;
-        while (current) {
+        while (current) 
+        {
             std::string inherits_name = current->inherits();
             if (inherits_name.empty()) break;
 
-            if (!visited.insert(inherits_name).second) {
+            if (!visited.insert(inherits_name).second) 
+            {
                 BOOST_LOG_TRIVIAL(warning)
                     << "Circular inheritance detected in process preset \""
                     << preset_name << "\"";
                 break;
             }
 
-            if (const Preset* parent = find_in_system(inherits_name)) {
+            if (const Preset* parent = find_in_system(inherits_name)) 
+            {
                 official = parent;
                 break;
             }
 
             const Preset* project_parent = find_in_project(inherits_name);
-            if (project_parent) {
+            if (project_parent)
+            {
                 current = project_parent;
                 continue;
             }
@@ -1007,7 +1013,8 @@ void SliceEngine::apply_process_official_preset()
         }
     }
 
-    if (official) {
+    if (official)
+    {
         // Parse different_settings_to_system[0] — the set of process keys the
         // user explicitly changed from the original printer's system defaults.
         // These are preserved to honour the user's intent.
@@ -1015,10 +1022,12 @@ void SliceEngine::apply_process_official_preset()
         {
             auto* diff_opt = m_config.option<ConfigOptionStrings>(
                 "different_settings_to_system", false);
-            if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty()) {
+            if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty())
+            {
                 std::istringstream ss(diff_opt->values[0]);
                 std::string key;
-                while (std::getline(ss, key, ';')) {
+                while (std::getline(ss, key, ';'))
+                {
                     // Trim leading/trailing whitespace.
                     size_t start = key.find_first_not_of(" \t");
                     size_t end   = key.find_last_not_of(" \t");
@@ -1042,7 +1051,9 @@ void SliceEngine::apply_process_official_preset()
         m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
             "Process preset replaced with official preset \"" + official->name
             + "\" for cloud consistency"));
-    } else {
+    } 
+    else 
+    {
         BOOST_LOG_TRIVIAL(warning)
             << "No system process preset found for \"" << preset_name
             << "\" (not in system presets and no system ancestor in"
@@ -1056,7 +1067,8 @@ void SliceEngine::apply_process_official_preset()
     // Always executed, regardless of whether an official preset was found.
     {
         auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
-        if (bt && bt->value == btAutoBrim) {
+        if (bt && bt->value == btAutoBrim)
+        {
             m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
             BOOST_LOG_TRIVIAL(info)
                 << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
@@ -2087,7 +2099,8 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
         std::vector<double> layer_zs;
         {
             constexpr double LAYER_Z_EPSILON = 1e-4;
-            for (const auto& move : result.gcode_result.moves) {
+            for (const auto& move : result.gcode_result.moves)
+            {
                 if (move.type != EMoveType::Extrude)
                     continue;
                 const double z = static_cast<double>(move.position.z());
@@ -2098,7 +2111,8 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
 
         // Compute layer number matching desktop's Layers::get_l_at (GCodeViewer.hpp:492-496)
         int computed_layer = 0;
-        if (!layer_zs.empty()) {
+        if (!layer_zs.empty())
+        {
             auto iter = std::upper_bound(layer_zs.begin(), layer_zs.end(), cr._height);
             computed_layer = static_cast<int>(std::distance(layer_zs.begin(), iter));
         }
