@@ -858,7 +858,7 @@ void SliceEngine::apply_process_official_preset()
     // The official printer preset (already applied) sets default_print_profile
     // to the matching Snapmaker U1 process preset name, e.g.
     // "0.20 Standard @Snapmaker U1 (0.4 nozzle)".
-    auto* dpp = m_config.option<ConfigOptionString>("default_print_profile", false);
+    auto* dpp = m_config.option<ConfigOptionString>("print_settings_id", false);
     if (!dpp || dpp->value.empty()) {
         BOOST_LOG_TRIVIAL(warning)
             << "default_print_profile not set; cannot determine process preset.";
@@ -866,48 +866,104 @@ void SliceEngine::apply_process_official_preset()
     }
     const std::string preset_name = dpp->value;
 
-    const Preset* official = m_preset_bundle->prints.find_preset(preset_name, false);
-    if (!official) {
-        BOOST_LOG_TRIVIAL(warning)
-            << "Official process preset \"" << preset_name
-            << "\" not found in system presets; process settings not updated.";
-        return;
-    }
+    // Look up a process preset by name: system presets first, then project
+    // embedded. Follows the same pattern as validate_filament_official().
+    auto find_in_system = [this](const std::string& name) -> const Preset* {
+        const Preset* p = m_preset_bundle->prints.find_preset(name, false);
+        if (p && p->name == name) return p;
+        return nullptr;
+    };
 
-    // Parse different_settings_to_system[0] — the set of process keys the
-    // user explicitly changed from the original printer's system defaults.
-    // These are preserved to honour the user's intent.
-    std::set<std::string> user_overrides;
-    {
-        auto* diff_opt = m_config.option<ConfigOptionStrings>(
-            "different_settings_to_system", false);
-        if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty()) {
-            std::istringstream ss(diff_opt->values[0]);
-            std::string key;
-            while (std::getline(ss, key, ';')) {
-                // Trim leading/trailing whitespace.
-                size_t start = key.find_first_not_of(" \t");
-                size_t end   = key.find_last_not_of(" \t");
-                if (start != std::string::npos && end != std::string::npos)
-                    key = key.substr(start, end - start + 1);
-                if (!key.empty())
-                    user_overrides.insert(key);
+    auto find_in_project = [this](const std::string& name) -> const Preset* {
+        for (auto* pp : m_project_presets) {
+            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINT)
+                return pp;
+        }
+        return nullptr;
+    };
+
+    const Preset* official = nullptr;
+
+    // Case 1: Direct system preset match
+    if (const Preset* sys = find_in_system(preset_name)) {
+        official = sys;
+    } else {
+        // Case 2: Not a direct system match — walk the inheritance chain
+        // to find a system preset ancestor.
+        const Preset* current = find_in_project(preset_name);
+        std::set<std::string> visited;
+        while (current) {
+            std::string inherits_name = current->inherits();
+            if (inherits_name.empty()) break;
+
+            if (!visited.insert(inherits_name).second) {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "Circular inheritance detected in process preset \""
+                    << preset_name << "\"";
+                break;
             }
+
+            if (const Preset* parent = find_in_system(inherits_name)) {
+                official = parent;
+                break;
+            }
+
+            const Preset* project_parent = find_in_project(inherits_name);
+            if (project_parent) {
+                current = project_parent;
+                continue;
+            }
+            break; // unknown ancestor
         }
     }
 
-    BOOST_LOG_TRIVIAL(info)
-        << "Applying official process preset \"" << preset_name
-        << "\" (" << user_overrides.size() << " user overrides preserved)";
+    if (official) {
+        // Parse different_settings_to_system[0] — the set of process keys the
+        // user explicitly changed from the original printer's system defaults.
+        // These are preserved to honour the user's intent.
+        std::set<std::string> user_overrides;
+        {
+            auto* diff_opt = m_config.option<ConfigOptionStrings>(
+                "different_settings_to_system", false);
+            if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty()) {
+                std::istringstream ss(diff_opt->values[0]);
+                std::string key;
+                while (std::getline(ss, key, ';')) {
+                    // Trim leading/trailing whitespace.
+                    size_t start = key.find_first_not_of(" \t");
+                    size_t end   = key.find_last_not_of(" \t");
+                    if (start != std::string::npos && end != std::string::npos)
+                        key = key.substr(start, end - start + 1);
+                    if (!key.empty())
+                        user_overrides.insert(key);
+                }
+            }
+        }
 
-    // Apply every key from the official process preset, except keys the user
-    // explicitly overrode and keys that don't exist in the current config.
-    overwrite_all_keys_from_except(m_config, official->config, user_overrides);
+        BOOST_LOG_TRIVIAL(info)
+            << "Applying official process preset \"" << official->name
+            << "\" (" << user_overrides.size() << " user overrides preserved)";
+
+        // Apply every key from the official process preset, except keys the
+        // user explicitly overrode and keys that don't exist in the current
+        // config.
+        overwrite_all_keys_from_except(m_config, official->config, user_overrides);
+
+        m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
+            "Process preset replaced with official preset \"" + official->name
+            + "\" for cloud consistency"));
+    } else {
+        BOOST_LOG_TRIVIAL(warning)
+            << "No system process preset found for \"" << preset_name
+            << "\" (not in system presets and no system ancestor in"
+            << " inheritance chain); process settings not updated.";
+    }
 
     // When brim_type is auto_brim, set brim_width to 0 so that the
     // fallback path (when the algorithm decides no brim is needed)
     // doesn't generate unwanted brim. The algorithm still sets its
     // own computed width when it determines brim IS needed.
+    // Always executed, regardless of whether an official preset was found.
     {
         auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
         if (bt && bt->value == btAutoBrim) {
@@ -916,14 +972,6 @@ void SliceEngine::apply_process_official_preset()
                 << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
         }
     }
-
-    // Update the preset identity to reflect what was applied.
-    m_config.set_key_value("print_settings_id",
-                           new ConfigOptionString(preset_name));
-
-    m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
-        "Process preset replaced with official preset \"" + preset_name
-        + "\" for cloud consistency"));
 }
 
 // ============================================================================
@@ -1846,25 +1894,43 @@ void SliceEngine::package_output() {
                      SaveStrategy::WithGcode | SaveStrategy::SkipModel |
                      SaveStrategy::Zip64;
 
-    std::vector<ThumbnailData*> thumbnail_data;
-    std::vector<ThumbnailData*> no_light_thumbnail_data;
-    std::vector<ThumbnailData*> top_thumbnail_data;
-    std::vector<ThumbnailData*> pick_thumbnail_data;
-    std::vector<ThumbnailData*> calibration_thumbnail_data;
+    // Thumbnail data: one default-constructed (reset) ThumbnailData per plate,
+    // every pointer non-NULL but is_valid() == false.  Prevents NULL deref in
+    // headless environments (no GPU / Mesa / EGL) while the fallback path in
+    // _BBS_3MF_Exporter still picks up PNG files from plate_data on disk.
+    size_t plate_count = m_plate_data.size();
+    std::vector<std::unique_ptr<ThumbnailData>> thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> no_light_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> top_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> pick_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> calibration_thumbnail_owned;
+    thumbnail_owned.reserve(plate_count);
+    no_light_thumbnail_owned.reserve(plate_count);
+    top_thumbnail_owned.reserve(plate_count);
+    pick_thumbnail_owned.reserve(plate_count);
+    calibration_thumbnail_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i) {
+        thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        no_light_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        top_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        pick_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        calibration_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        params.thumbnail_data.push_back(thumbnail_owned.back().get());
+        params.no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
+        params.top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
+        params.pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
+        params.calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
+    }
+
     std::vector<PlateBBoxData*> id_bboxes;
     std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
-    id_bboxes_owned.reserve(m_plate_data.size());
-    for (size_t i = 0; i < m_plate_data.size(); ++i) {
+    id_bboxes_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i) {
         id_bboxes_owned.push_back(std::make_unique<PlateBBoxData>());
         id_bboxes.push_back(id_bboxes_owned.back().get());
     }
-
-    params.thumbnail_data = thumbnail_data;
-    params.no_light_thumbnail_data = no_light_thumbnail_data;
-    params.top_thumbnail_data = top_thumbnail_data;
-    params.pick_thumbnail_data = pick_thumbnail_data;
-    params.calibration_thumbnail_data = calibration_thumbnail_data;
     params.id_bboxes = id_bboxes;
+
     params.project = nullptr;
     params.profile = nullptr;
 
