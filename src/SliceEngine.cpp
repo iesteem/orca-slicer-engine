@@ -631,11 +631,40 @@ bool SliceEngine::apply_printer_official_preset()
 {
     // 1. Strip all custom G-code blocks — cloud slicing must not execute
     //    or embed user-supplied G-code for safety and consistency.
+    //
+    //    Coverage: all known machine-level (printer) and process-level G-code
+    //    keys in the OrcaSlicer PrintConfig system. Filament-level keys
+    //    (filament_start_gcode, filament_end_gcode) are handled separately by
+    //    apply_filament_official_preset().
+    //
+    //    After clearing, official values are restored by the three-stage
+    //    enforcement pipeline:
+    //      overwrite_all_keys_from (printer) → official machine G-code
+    //      apply_filament_official_preset     → official filament G-code
+    //      apply_process_official_preset      → official process G-code
+    //    Keys not defined in any official U1 preset remain blank — the U1
+    //    runs Klipper firmware and does not use Marlin-era process-level
+    //    G-code macros (start_gcode, end_gcode, etc.).
     {
         constexpr const char* gcode_keys[] = {
-            "start_gcode",           "end_gcode",         "layer_gcode",
-            "machine_start_gcode",   "machine_end_gcode", "before_layer_change_gcode",
-            "between_objects_gcode", "toolchange_gcode",  "print_host",
+            // Printer (machine) level
+            "machine_start_gcode",
+            "machine_end_gcode",
+            "before_layer_change_gcode",
+            "layer_change_gcode",
+            "change_filament_gcode",
+            "machine_pause_gcode",
+            // Process level
+            "start_gcode",
+            "end_gcode",
+            "layer_gcode",
+            "between_objects_gcode",
+            "toolchange_gcode",
+            "template_custom_gcode",
+            "printing_by_object_gcode",
+            "time_lapse_gcode",
+            // Connectivity
+            "print_host",
         };
         for (const char* key : gcode_keys)
         {
