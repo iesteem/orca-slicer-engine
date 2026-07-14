@@ -5,7 +5,6 @@
  * Usage: orca-slice-engine input.3mf [OPTIONS]
  */
 
-#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -21,10 +20,8 @@
 #include <boost/nowide/args.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/log/utility/setup/console.hpp>
-#include <boost/log/utility/setup/file.hpp>
 #include <boost/log/utility/setup/common_attributes.hpp>
 #include <boost/log/expressions.hpp>
-#include <boost/log/support/date_time.hpp>
 
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/PrintConfig.hpp"
@@ -135,14 +132,40 @@ extern "C" void crash_signal_handler(int sig)
     std::abort();
 }
 
+void print_usage(const char* prog_name)
+{
+    std::cout << "orca-slice-engine v" << CLOUD_SLICER_ENGINE_VERSION << "\n"
+              << "Usage: " << prog_name << " <input.3mf> [options]\n"
+              << "\n"
+              << "Input:\n"
+              << "  <input.3mf>                   Input 3MF file path\n"
+              << "\n"
+              << "Output:\n"
+              << "  -o, --output <path>           Output path (without extension, auto-derived from input if omitted)\n"
+              << "  -f, --format <fmt>            Output format: gcode | gcode.3mf (default: gcode.3mf)\n"
+              << "  -p, --plate <id>              Plate ID (1-N, or \"all\"/0 for all plates, default: all)\n"
+              << "\n"
+              << "Resources:\n"
+              << "  -r, --resources <dir>         Resources directory (or set ORCA_RESOURCES env var)\n"
+              << "\n"
+              << "Logging:\n"
+              << "  --log [file]                  Log file path (without .log extension, auto-derived from output if omitted)\n"
+              << "  -j, --json [file]             JSON statistics output path (without .json extension, auto-derived if omitted)\n"
+              << "\n"
+              << "Slicing:\n"
+              << "  -t, --timeout <sec>           Slicing timeout in seconds (0 = no limit, default: 0)\n"
+              << "  --max-size <mb>               Maximum input file size in MB (0 = no limit, default: 200)\n"
+              << "  --cancel-file <file>          Watchdog file path for external cancellation\n"
+              << "\n"
+              << "Help:\n"
+              << "  -h, --help                    Show this help message and exit\n";
+}
+
 struct CliArgs {
     EngineConfig engine_cfg;
     std::string  resources_dir;
     std::string  json_output_path;
-    bool         json_enabled = false;
-    bool         log_enabled  = false;
     std::string  log_file_path;
-    bool         verbose      = false;
 };
 
 CliArgs parse_args(int argc, char* argv[]) {
@@ -156,18 +179,11 @@ CliArgs parse_args(int argc, char* argv[]) {
             BOOST_LOG_TRIVIAL(info) << "Exiting with code " << EXIT_OK;
             std::exit(EXIT_OK);
         }
-        else if (arg == "--dump-config-schema") {
-            std::cout << dump_config_schema(Slic3r::print_config_def);
-            std::exit(EXIT_OK);
-        }
-        else if (arg == "-v" || arg == "--verbose") {
-            args.verbose = true;
-        }
         else if (arg == "--log") {
-            args.log_enabled = true;
+            if (i + 1 < argc && argv[i+1][0] != '-')
+                args.log_file_path = argv[++i];
         }
         else if (arg == "--log-file" && i + 1 < argc) {
-            args.log_enabled  = true;
             args.log_file_path = argv[++i];
         }
         else if ((arg == "-o" || arg == "--output") && i + 1 < argc) {
@@ -177,7 +193,6 @@ CliArgs parse_args(int argc, char* argv[]) {
             args.resources_dir = argv[++i];
         }
         else if (arg == "-j" || arg == "--json") {
-            args.json_enabled = true;
             if (i + 1 < argc && argv[i+1][0] != '-')
                 args.json_output_path = argv[++i];
         }
@@ -223,26 +238,6 @@ CliArgs parse_args(int argc, char* argv[]) {
         }
         else if (arg == "--cancel-file" && i + 1 < argc) {
             args.engine_cfg.cancel_file = argv[++i];
-        }
-        else if (arg == "--allow-custom-presets") {
-            args.engine_cfg.substitute_printer  = false;
-            args.engine_cfg.substitute_filaments = false;
-        }
-        else if (arg == "--allow-custom-printer-presets") {
-            args.engine_cfg.substitute_printer = false;
-        }
-        else if (arg == "--allow-custom-filament-presets") {
-            args.engine_cfg.substitute_filaments = false;
-        }
-        else if (arg == "--threads" && i + 1 < argc) {
-            try {
-                int val = std::stoi(argv[++i]);
-                args.engine_cfg.thread_count = (val < 0) ? 0 : val;
-            } catch (...) {
-                std::cerr << "Error: Invalid thread count." << std::endl;
-                BOOST_LOG_TRIVIAL(info) << "Exiting with code " << EXIT_INVALID_ARGS;
-                std::exit(EXIT_INVALID_ARGS);
-            }
         }
         else if ((arg == "-f" || arg == "--format") && i + 1 < argc) {
             std::string fmt = argv[++i];
@@ -294,7 +289,11 @@ int main(int argc, char* argv[])
     boost::nowide::args a(argc, argv);
 
     // --- Setup console logging early so exit codes are always printed ---
-    boost::log::add_console_log(std::cout, boost::log::keywords::format = "[%Severity%] %Message%");
+    // Format matches slic3r_c_api.cpp for cross-entry-point consistency.
+    boost::log::add_console_log(std::cerr,
+        boost::log::keywords::format = (
+            boost::log::expressions::stream << "[" << boost::log::trivial::severity << "]\t"
+                                            << boost::log::expressions::smessage));
     boost::log::add_common_attributes();
     boost::log::core::get()->set_filter(boost::log::trivial::severity >= boost::log::trivial::info);
 
@@ -303,9 +302,7 @@ int main(int argc, char* argv[])
     EngineConfig& cfg = cli.engine_cfg;
     std::string& resources_dir = cli.resources_dir;
     std::string& json_output_path = cli.json_output_path;
-    bool log_enabled   = cli.log_enabled;
     std::string& log_file_path = cli.log_file_path;
-    bool verbose       = cli.verbose;
 
     if (!boost::filesystem::exists(cfg.input_file)) {
         std::cerr << "Error: Input file not found: " << cfg.input_file << std::endl;
@@ -319,38 +316,24 @@ int main(int argc, char* argv[])
         cfg.format = OutputFormat::GCODE_3MF;
 
     // --- Pre-compute expected output path (used for auto-derived log/json paths) ---
-    std::string expected_output;
-    if (log_enabled && log_file_path.empty()) {
-        expected_output = generate_output_path(
-            cfg.input_file, cfg.output_base, cfg.plate_id, cfg.format, cfg.single_plate);
-    }
+    std::string expected_output = generate_output_path(
+        cfg.input_file, cfg.output_base, cfg.plate_id, cfg.format, cfg.single_plate);
 
-    // --- Setup file logging if enabled ---
-    if (log_enabled) {
-        namespace expr = boost::log::expressions;
+    // --- Setup file logging (always enabled, shared format with C API) ---
+    {
         if (log_file_path.empty()) {
             boost::filesystem::path out(expected_output);
             log_file_path = (out.parent_path() / out.stem().stem()).string() + ".log";
+        } else {
+            log_file_path = ensure_extension(log_file_path, ".log");
         }
         {
             boost::filesystem::path log_parent = boost::filesystem::path(log_file_path).parent_path();
             if (!log_parent.empty() && !boost::filesystem::exists(log_parent))
                 boost::filesystem::create_directories(log_parent);
         }
-        boost::log::add_file_log(
-            boost::log::keywords::file_name = log_file_path,
-            boost::log::keywords::auto_flush = true,
-            boost::log::keywords::format = (
-                expr::stream
-                    << "[" << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S")
-                    << "] [" << boost::log::trivial::severity << "] " << expr::smessage
-            )
-        );
+        add_log_file_sink(log_file_path, 3); // level 3 = info
     }
-
-    // Apply verbose filter override after parsing (console may already be set up)
-    if (verbose)
-        boost::log::core::get()->set_filter(boost::log::trivial::severity >= boost::log::trivial::trace);
 
     BOOST_LOG_TRIVIAL(info) << "OrcaSlicer Cloud Engine v" << CLOUD_SLICER_ENGINE_VERSION;
     BOOST_LOG_TRIVIAL(info) << "Input file: " << cfg.input_file;
@@ -393,12 +376,9 @@ int main(int argc, char* argv[])
 
     // --- Setup temporary directory (process-isolated to avoid multi-process collisions) ---
     {
-        int pid = get_current_pid();
-        long long ts = std::chrono::system_clock::now()
-            .time_since_epoch().count();
-        boost::filesystem::path unique_dir =
+        auto unique_dir =
             boost::filesystem::temp_directory_path()
-            / (std::string("orca_slice_") + std::to_string(pid) + "_" + std::to_string(ts));
+            / boost::filesystem::unique_path("orca_slice_%%%%-%%%%-%%%%-%%%%");
         boost::filesystem::create_directories(unique_dir);
         cfg.temp_dir = unique_dir.string();
     }
@@ -462,10 +442,12 @@ int main(int argc, char* argv[])
             "Engine internal error: unknown exception", true);
     }
 
-    // --- Output JSON ---
+    // --- Output JSON (always generated) ---
     if (json_output_path.empty()) {
         boost::filesystem::path out_path(engine.output_path());
         json_output_path = (out_path.parent_path() / out_path.stem().stem()).string() + ".json";
+    } else {
+        json_output_path = ensure_extension(json_output_path, ".json");
     }
 
     try {

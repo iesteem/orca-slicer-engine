@@ -17,7 +17,6 @@ int main(int argc, char* argv[])
     const char* output      = NULL;
     const char* resources   = NULL;
     const char* log_file    = NULL;
-    int         log_enabled = 0;
     const char* json_output = NULL;
     int         plate_id    = 0;
     const char* format      = "gcode.3mf";
@@ -38,10 +37,10 @@ int main(int argc, char* argv[])
             printf("  -p, --plate <id>      Plate ID (0=all, default: 0)\n");
             printf("  -f, --format <fmt>    gcode | gcode.3mf (default: gcode.3mf)\n");
             printf("  -r, --resources <dir> Resources directory\n");
-            printf("  --log                 Enable log file output\n");
-            printf("  --log-file <file>     Specify log file path (implies --log)\n");
-            printf("  -j, --json [file]     Output slice statistics as JSON\n");
-            printf("                        If not specified, auto-saved next to output\n");
+            printf("  --log [file]         Log file path (without .log extension)\n");
+            printf("                        Default: auto-derived from output path\n");
+            printf("  -j, --json [file]    JSON statistics output path (without .json extension)\n");
+            printf("                        Default: auto-derived from output path\n");
             printf("  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit)\n");
             printf("  --max-size <mb>       Max input file size in MB (0 = no limit)\n");
             printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
@@ -89,16 +88,13 @@ int main(int argc, char* argv[])
         else if (!strcmp(argv[i], "--log-file"))
         {
             if (++i < argc)
-            {
                 log_file = argv[i];
-                log_enabled = 1;
-            }
         }
         else if (!strcmp(argv[i], "--log"))
         {
-            /* --log without --log-file: auto-generate log path later */
-            verbose = 1;
-            log_enabled = 1;
+            /* --log [path]: optional custom log path (without .log) */
+            if (i + 1 < argc && argv[i+1][0] != '-')
+                log_file = argv[++i];
         }
         else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json"))
         {
@@ -139,21 +135,25 @@ int main(int argc, char* argv[])
         output = output_default;
     }
 
-    /* Auto-generate log file path when --log is given without --log-file.
-     * Log lands beside the output file, e.g. -o /tmp/foo -> /tmp/foo.log */
-    char log_auto_path[1024] = {0};
-    if (log_enabled && !log_file)
+    /* Log and JSON files are always generated.
+     * Paths default to <output>.log and <output>.json when not specified.
+     * The slic3r_slice engine also auto-derives these internally, but we
+     * pass them explicitly so the caller (main.c) retains control. */
+    char log_auto_path[1060] = {0};
+    if (!log_file)
     {
-        snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
+        int n = snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
+        if (n < 0 || (size_t)n >= sizeof(log_auto_path))
+            log_auto_path[sizeof(log_auto_path) - 1] = '\0';
         log_file = log_auto_path;
     }
 
-    /* Auto-generate JSON output path when -j is given without a value.
-     * JSON lands beside the output file, e.g. -o /tmp/foo -> /tmp/foo.json */
-    char json_auto_path[1024] = {0};
-    if (json_output && !json_output[0])
+    char json_auto_path[1060] = {0};
+    if (!json_output)
     {
-        snprintf(json_auto_path, sizeof(json_auto_path), "%s.json", output);
+        int n = snprintf(json_auto_path, sizeof(json_auto_path), "%s.json", output);
+        if (n < 0 || (size_t)n >= sizeof(json_auto_path))
+            json_auto_path[sizeof(json_auto_path) - 1] = '\0';
         json_output = json_auto_path;
     }
 
@@ -182,12 +182,10 @@ int main(int argc, char* argv[])
     char params[2048];
     int pos = snprintf(params, sizeof(params),
         "{\"plate_id\":%d,\"format\":\"%s\"", plate_id, format);
-    if (log_file && log_file[0])
-        pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"log_path\":\"%s\"", log_file);
-    if (json_output && json_output[0])
-        pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"json_output_path\":\"%s\"", json_output);
+    pos += snprintf(params + pos, sizeof(params) - pos,
+        ",\"log_path\":\"%s\"", log_file ? log_file : "");
+    pos += snprintf(params + pos, sizeof(params) - pos,
+        ",\"json_output_path\":\"%s\"", json_output ? json_output : "");
     if (timeout_sec > 0)
         pos += snprintf(params + pos, sizeof(params) - pos,
             ",\"timeout_seconds\":%d", timeout_sec);

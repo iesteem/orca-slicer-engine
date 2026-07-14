@@ -5,7 +5,13 @@
 #include <cstring>
 #include <iostream>
 
+#include <boost/log/core.hpp>
+#include <boost/log/expressions.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
+#include <boost/log/utility/setup/file.hpp>
+#include <boost/log/attributes.hpp>
+#include <boost/log/support/date_time.hpp>
 
 #include "libslic3r/libslic3r.h"
 
@@ -73,6 +79,20 @@ std::string format_time_hhmmss(float seconds)
     char buf[32];
     snprintf(buf, sizeof(buf), "%02d:%02d:%02d", hours, mins, secs);
     return std::string(buf);
+}
+
+std::string ensure_extension(const std::string& path, const std::string& ext)
+{
+    if (path.empty())
+    {
+        return path;
+    }
+    boost::filesystem::path p(path);
+    if (p.extension() == ext)
+    {
+        return path;
+    }
+    return path + ext;
 }
 
 std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
@@ -186,4 +206,37 @@ Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigne
         }
     }
     return dst;
+}
+
+void add_log_file_sink(const std::string& file_path, unsigned int level)
+{
+    namespace logging = boost::log;
+    namespace keywords = boost::log::keywords;
+    namespace expr = boost::log::expressions;
+    namespace attrs = boost::log::attributes;
+
+    logging::add_file_log(
+        keywords::file_name = file_path,
+        keywords::format =
+            (expr::stream << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
+                          << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
+                          << "[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
+                          << ":" << expr::smessage));
+    logging::add_common_attributes();
+
+    // Map libslic3r integer level (0=fatal..5=trace) to Boost severity enum.
+    // Boost.Log enum values: trace=0, debug=1, info=2, warning=3, error=4, fatal=5.
+    // libslic3r mapping: 0=fatal, 1=error, 2=warning, 3=info, 4=debug, 5=trace.
+    boost::log::trivial::severity_level sev;
+    switch (level)
+    {
+    case 0: sev = boost::log::trivial::fatal;   break;
+    case 1: sev = boost::log::trivial::error;   break;
+    case 2: sev = boost::log::trivial::warning; break;
+    case 3: sev = boost::log::trivial::info;    break;
+    case 4: sev = boost::log::trivial::debug;   break;
+    case 5: sev = boost::log::trivial::trace;   break;
+    default: sev = boost::log::trivial::info;   break;
+    }
+    logging::core::get()->set_filter(logging::trivial::severity >= sev);
 }

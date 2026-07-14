@@ -32,6 +32,16 @@ std::string format_time_hhmmss(float seconds);
 std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
                                  OutputFormat format, bool single_plate);
 
+// Ensure a path ends with the given extension (e.g. ".json", ".log").
+// If the path already has that extension, it is returned unchanged.
+// Otherwise the extension is appended.
+std::string ensure_extension(const std::string& path, const std::string& ext);
+
+// Setup a Boost.Log file sink using the canonical format shared by
+// main.cpp and slic3r_c_api.cpp (cross-entry-point consistency).
+// level: 0=fatal..5=trace (matches libslic3r convention).
+void add_log_file_sink(const std::string& file_path, unsigned int level);
+
 // Bilinear resize of RGBA thumbnail data to target dimensions
 Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigned int target_width,
                                        unsigned int target_height);

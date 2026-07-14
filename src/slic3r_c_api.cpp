@@ -19,14 +19,11 @@
 #include "libslic3r/libslic3r.h"
 #include "nlohmann/json.hpp"
 #include <boost/filesystem.hpp>
+#include "Utils.hpp"
 
-#include <boost/log/core.hpp>
 #include <boost/log/expressions.hpp>
-#include <boost/log/support/date_time.hpp>
 #include <boost/log/trivial.hpp>
-#include <boost/log/utility/setup/common_attributes.hpp>
 #include <boost/log/utility/setup/console.hpp>
-#include <boost/log/utility/setup/file.hpp>
 
 #include "JsonReport.hpp"
 #include "SliceEngine.hpp"
@@ -59,55 +56,6 @@ static void set_error(slic3r_ctx_t* ctx, const std::string& msg)
     BOOST_LOG_TRIVIAL(error) << msg;
 }
 
-// Add a Boost.Log file sink writing to the exact path (no g_data_dir prefix).
-// Uses the same format as libslic3r's set_log_path_and_level for consistency.
-static void add_log_file_sink(const std::string& file_path, unsigned int level)
-{
-    namespace logging = boost::log;
-    namespace keywords = boost::log::keywords;
-    namespace expr = boost::log::expressions;
-    namespace attrs = boost::log::attributes;
-
-    auto sink = logging::add_file_log(
-        keywords::file_name = file_path,
-        keywords::format =
-            (expr::stream << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
-                          << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
-                          << "[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
-                          << ":" << expr::smessage));
-    logging::add_common_attributes();
-
-    // Map libslic3r integer level (0=fatal..5=trace) to Boost severity enum.
-    // Boost.Log enum values: trace=0, debug=1, info=2, warning=3, error=4, fatal=5.
-    // libslic3r mapping: 0=fatal, 1=error, 2=warning, 3=info, 4=debug, 5=trace.
-    boost::log::trivial::severity_level sev;
-    switch (level)
-    {
-    case 0:
-        sev = boost::log::trivial::fatal;
-        break;
-    case 1:
-        sev = boost::log::trivial::error;
-        break;
-    case 2:
-        sev = boost::log::trivial::warning;
-        break;
-    case 3:
-        sev = boost::log::trivial::info;
-        break;
-    case 4:
-        sev = boost::log::trivial::debug;
-        break;
-    case 5:
-        sev = boost::log::trivial::trace;
-        break;
-    default:
-        sev = boost::log::trivial::info;
-        break;
-    }
-    logging::core::get()->set_filter(logging::trivial::severity >= sev);
-}
-
 // Parse CLI params JSON into EngineConfig
 static bool parse_params(const char* json_str, EngineConfig& cfg)
 {
@@ -131,11 +79,7 @@ static bool parse_params(const char* json_str, EngineConfig& cfg)
         if (j.contains("cancel_file"))
             cfg.cancel_file = j["cancel_file"].get<std::string>();
         if (j.contains("log_path"))
-        {
             cfg.log_path = j["log_path"].get<std::string>();
-            if (!cfg.log_path.empty())
-                cfg.log_enabled = true;
-        }
         if (j.contains("json_output_path"))
             cfg.json_output_path = j["json_output_path"].get<std::string>();
         if (j.contains("skip_preset_substitution"))
@@ -214,10 +158,23 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
             return SLIC3R_ERR_ARGS;
         }
 
-        // Wire up Boost.Log file sink before any engine logging
-        if (cfg.log_enabled && !cfg.log_path.empty())
+        // Wire up Boost.Log file sink (always enabled, auto-derive if path empty)
         {
-            add_log_file_sink(cfg.log_path, 3); // level 3 = info
+            std::string log_path = cfg.log_path;
+            if (log_path.empty())
+            {
+                // Auto-derive from output: <output_stem>.log
+                std::string out = generate_output_path(cfg.input_file, cfg.output_base,
+                                                       cfg.plate_id, cfg.format,
+                                                       cfg.plate_id > 0);
+                boost::filesystem::path out_p(out);
+                log_path = (out_p.parent_path() / out_p.stem().stem()).string() + ".log";
+            }
+            else
+            {
+                log_path = ensure_extension(log_path, ".log");
+            }
+            add_log_file_sink(log_path, 3); // level 3 = info
         }
 
         // Run the full pipeline
@@ -231,10 +188,19 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
         const auto& stats = engine.stats();
         std::string json_str = build_statistics_json(stats, engine.output_path());
 
-        // Write JSON statistics to file if enabled
-        if (!cfg.json_output_path.empty())
+        // Write JSON statistics to file (always enabled)
         {
-            output_slice_statistics(stats, cfg.json_output_path, engine.output_path());
+            std::string json_path = cfg.json_output_path;
+            if (json_path.empty())
+            {
+                boost::filesystem::path out_p(engine.output_path());
+                json_path = (out_p.parent_path() / out_p.stem().stem()).string() + ".json";
+            }
+            else
+            {
+                json_path = ensure_extension(json_path, ".json");
+            }
+            output_slice_statistics(stats, json_path, engine.output_path());
         }
 
         if (stats_out && stats_size > 0)
