@@ -49,6 +49,7 @@ struct Issue
     std::string code; // error code (e.g. from SliceWarning), empty if N/A
     std::string message; // human-readable description
     std::string suggestion; // actionable repair suggestion, empty if N/A
+    int layer = -1; // 0-based layer index, -1 if N/A
 };
 
 // Factory functions — set sensible defaults (z_height=-1, correct level)

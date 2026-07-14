@@ -71,6 +71,8 @@ static ordered_json issue_to_json(const Issue& issue)
     j["plate_id"] = issue.plate_id >= 0 ? issue.plate_id + 1 : issue.plate_id;
     j["object_name"] = issue.object_name;
     j["z_height"] = issue.z_height;
+    if (issue.layer >= 0)
+        j["layer"] = issue.layer;
     j["code"] = issue.code;
     j["message"] = issue.message;
     if (!issue.suggestion.empty())

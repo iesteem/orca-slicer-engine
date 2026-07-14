@@ -2111,6 +2111,7 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
 
         // Compute layer number matching desktop's Layers::get_l_at (GCodeViewer.hpp:492-496)
         int computed_layer = 0;
+        int total_layers = static_cast<int>(layer_zs.size());
         if (!layer_zs.empty())
         {
             auto iter = std::upper_bound(layer_zs.begin(), layer_zs.end(), cr._height);
@@ -2120,8 +2121,9 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
         std::string obj1 = cr._obj1 ? cr._objName1 : "Wipe Tower";
         std::string obj2 = cr._obj2 ? cr._objName2 : "Wipe Tower";
         std::string conflict_msg = "Conflicts of G-code paths have been found at layer "
-            + std::to_string(computed_layer) + ", z = "
-            + std::to_string(cr._height) + " mm. Please separate the conflicted objects farther ("
+            + std::to_string(computed_layer) + "/" + std::to_string(total_layers)
+            + ", z = " + std::to_string(cr._height) + " mm."
+            + " Please separate the conflicted objects farther ("
             + obj1 + " <-> " + obj2 + ").";
         log_plate_message("[Post-processing]", "WARNING", plate_id, conflict_msg);
         has_postprocess_warning = true;
@@ -2129,6 +2131,7 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
                                     conflict_msg,
                                     obj1 + " vs " + obj2);
         conflict.z_height = cr._height;
+        conflict.layer = computed_layer;
         result.issues.push_back(conflict);
     }
 
