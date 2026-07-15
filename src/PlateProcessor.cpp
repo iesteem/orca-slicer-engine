@@ -24,6 +24,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/FilamentHotBedNozzleRules.hpp"
 
 constexpr int MAX_RETRIES = 3;
 
@@ -776,6 +777,10 @@ bool PlateProcessor::run_validation(int plate_id, Print& print) {
     StringObjectException warning;
     StringObjectException err = print.validate(&warning, nullptr, nullptr);
 
+    // TODO(#6): Refine bed mismatch error/warning messages with filament names.
+    // Requires PresetBundle access (not yet available via EngineContext).
+    // Once available, apply refine_bed_mismatch_message() as in SliceEngine::run_validation().
+
     if (!warning.string.empty()) {
         auto [obj_name, opt_hint] = format_exception_context(warning);
         std::cerr << "[WARNING] Plate " << plate_id << ": " << warning.string << obj_name << opt_hint << std::endl;
@@ -810,6 +815,82 @@ bool PlateProcessor::run_validation(int plate_id, Print& print) {
             }
             m_ctx.stats.issues.push_back(make_error(plate_id, ecode,
                 err.string + opt_hint, obj_name));
+            m_ctx.any_error = true;
+            set_error_type(EXIT_PREPROCESS_ERROR);
+            return false;
+        }
+    }
+
+    // --- #1: Snapmaker U1 + Print By Object caution (desktop parity) ---
+    if (print.config().print_sequence.value == PrintSequence::ByObject) {
+        m_ctx.stats.issues.push_back(make_warning(
+            plate_id, "PRINT_BY_OBJECT_CAUTION",
+            "Printing by object with caution. This function may cause the print head "
+            "to collide with printed parts during switching."));
+    }
+
+    // --- #2: Filament/nozzle/bed compatibility checks (desktop parity) ---
+    // PresetBundle not yet available via EngineContext; pass nullptr.
+    // Filament preset names in nozzle mismatch messages will be empty.
+    {
+        NozzleFilamentRuleMismatch nozzle_mismatch;
+        bool is_gesp = false, is_pei_not_pla = false, is_pei_tpu = false;
+
+        print.filament_rule_mismatch_flags(nozzle_mismatch, is_gesp,
+                                           is_pei_not_pla, is_pei_tpu,
+                                           nullptr);
+
+        if (nozzle_mismatch.has_mismatch) {
+            std::string msg = "Using a " + nozzle_mismatch.nozzle_diameter_mm
+                            + " mm " + nozzle_mismatch.nozzle_type_key
+                            + " nozzle for "
+                            + (nozzle_mismatch.filament_preset_name.empty()
+                                   ? "(unknown)"
+                                   : nozzle_mismatch.filament_preset_name)
+                            + " is not recommended.";
+            m_ctx.stats.issues.push_back(make_warning(
+                plate_id, "FILAMENT_NOZZLE_MISMATCH", msg));
+        }
+
+        if (is_pei_tpu) {
+            m_ctx.stats.issues.push_back(make_warning(
+                plate_id, "FILAMENT_BED_PEI_TPU_STICKING",
+                "Filament may stick too strongly to the smooth PEI plate. "
+                "Apply glue to protect the plate and ease part removal."));
+        }
+
+        if (is_pei_not_pla && !is_pei_tpu) {
+            m_ctx.stats.issues.push_back(make_warning(
+                plate_id, "FILAMENT_BED_PEI_ADHESION",
+                "Filament may not adhere well to the smooth PEI plate on "
+                "the first layer. Apply glue before printing."));
+        }
+
+        if (is_gesp) {
+            m_ctx.stats.issues.push_back(make_warning(
+                plate_id, "FILAMENT_BED_GESP_ADHESION",
+                "Low adhesion to the graphic effect plate may cause failure. "
+                "Use a different filament instead."));
+        }
+    }
+
+    // --- #3: High/low temperature filament mixing check (desktop parity) ---
+    {
+        bool has_high = false, has_low = false;
+        for (unsigned int extruder : print.extruders()) {
+            if (print.config().filament_is_high_temperature.get_at(extruder))
+                has_high = true;
+            else
+                has_low = true;
+        }
+        if (has_high && has_low) {
+            std::string msg =
+                "Cannot print multiple filaments which have large difference of "
+                "temperature together. Otherwise, the extruder and nozzle may be "
+                "blocked or damaged during printing.";
+            std::cerr << "[ERROR] Plate " << plate_id << ": " << msg << std::endl;
+            m_ctx.stats.issues.push_back(make_error(
+                plate_id, "FILAMENT_TEMP_MIXING", msg));
             m_ctx.any_error = true;
             set_error_type(EXIT_PREPROCESS_ERROR);
             return false;
