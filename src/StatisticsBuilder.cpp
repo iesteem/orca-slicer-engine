@@ -270,8 +270,8 @@ void StatisticsBuilder::build_statistics() {
         bool plate_has_error = false;
         bool plate_has_warning = false;
         for (const auto& issue : result.issues) {
-            if (issue.level == "error") plate_has_error = true;
-            if (issue.level == "warning") plate_has_warning = true;
+            if (issue.level == "error" || issue.level == "serious_warning") plate_has_error = true;
+            if (issue.level == "warning" || issue.level == "serious_warning") plate_has_warning = true;
             m_ctx.stats.issues.push_back(issue);
         }
 

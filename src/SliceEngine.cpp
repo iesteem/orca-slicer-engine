@@ -2540,7 +2540,7 @@ void SliceEngine::build_statistics()
         bool plate_has_warning = false;
         for (const auto& issue : result.issues)
         {
-            if (issue.level == IssueLevel::error)
+            if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
                 plate_has_error = true;
             if (issue.level == IssueLevel::warning || issue.level == IssueLevel::serious_warning)
                 plate_has_warning = true;
