@@ -825,9 +825,9 @@ bool PlateProcessor::run_validation(int plate_id, Print& print) {
     if (print.config().print_sequence.value == PrintSequence::ByObject) {
         m_ctx.stats.issues.push_back(make_error(
             plate_id, "PRINT_BY_OBJECT_CAUTION",
-            "谨慎使用逐件打印，该功能可能会导致打印头切换时与打印件碰撞。",
+            "Print-by-object may cause the print head to collide with printed parts during switching.",
             "" /*object_name*/,
-            "请在切片软件中关闭逐件打印（逐层打印），或确保模型之间的间距足够安全。"));
+            "In Snapmaker Orca, switch to print-by-layer or ensure sufficient clearance between objects."));
     }
 
     // --- #2: Filament/nozzle/bed compatibility checks (desktop parity) ---
