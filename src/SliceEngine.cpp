@@ -1915,13 +1915,16 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
         }
     }
 
-    // --- #1: Snapmaker U1 + Print By Object caution (desktop parity) ---
+    // --- #1: Snapmaker U1 + Print By Object blocks slicing (desktop parity) ---
     if (print.config().print_sequence.value == PrintSequence::ByObject) {
         m_stats.issues.push_back(make_error(
             plate_id, "PRINT_BY_OBJECT_CAUTION",
             "Print-by-object may cause the print head to collide with printed parts during switching.",
             "" /*object_name*/,
             "In Snapmaker Orca, switch to print-by-layer or ensure sufficient clearance between objects."));
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        return false;
     }
 
     // --- #2: Filament/nozzle/bed compatibility checks (desktop parity) ---
@@ -2778,6 +2781,8 @@ void SliceEngine::build_statistics()
             if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
             {
                 m_stats.success = false;
+                m_any_error = true;
+                set_error_type(EXIT_PREPROCESS_ERROR);
                 break;
             }
         }
