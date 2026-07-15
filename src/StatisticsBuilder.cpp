@@ -449,6 +449,15 @@ void StatisticsBuilder::build_statistics() {
             break;
         }
     }
+    // Also check global-level issues for errors/serious warnings that bypassed per-plate checks
+    if (m_ctx.stats.success) {
+        for (const auto& issue : m_ctx.stats.issues) {
+            if (issue.level == "error" || issue.level == "serious_warning") {
+                m_ctx.stats.success = false;
+                break;
+            }
+        }
+    }
     if (!m_ctx.stats.success && m_ctx.stats.error_message.empty()) {
         if (m_ctx.stats.plates.empty())
             m_ctx.stats.error_message = "No plates completed successfully";
@@ -458,8 +467,10 @@ void StatisticsBuilder::build_statistics() {
                 if (!p.success) ++failed_count;
             if (failed_count == static_cast<int>(m_ctx.stats.plates.size()))
                 m_ctx.stats.error_message = "All plates failed with errors";
-            else
+            else if (failed_count > 0)
                 m_ctx.stats.error_message = "Some plates failed with errors";
+            else
+                m_ctx.stats.error_message = "Global errors or serious warnings detected";
         }
     }
 }

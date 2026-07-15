@@ -2769,6 +2769,18 @@ void SliceEngine::build_statistics()
             break;
         }
     }
+    // Also check global-level issues for errors/serious warnings that bypassed per-plate checks
+    if (m_stats.success)
+    {
+        for (const auto& issue : m_stats.issues)
+        {
+            if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
+            {
+                m_stats.success = false;
+                break;
+            }
+        }
+    }
     if (!m_stats.success && m_stats.error_message.empty())
     {
         if (m_stats.plates.empty())
@@ -2781,8 +2793,10 @@ void SliceEngine::build_statistics()
                     ++failed_count;
             if (failed_count == static_cast<int>(m_stats.plates.size()))
                 m_stats.error_message = "All plates failed with errors";
-            else
+            else if (failed_count > 0)
                 m_stats.error_message = "Some plates failed with errors";
+            else
+                m_stats.error_message = "Global errors or serious warnings detected";
         }
     }
 }
