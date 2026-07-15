@@ -1293,7 +1293,10 @@ void SliceEngine::process_plate(int plate_id)
 
     // --- Build volume check (uses plate-local coordinates) ---
     if (!run_build_volume_check(plate_id, identify_ids, origin))
+    {
+        fprintf(stderr, "[DEBUG-SPIRAL] process_plate() returning early for plate %d\n", plate_id + 1);
         return;
+    }
 
     // --- Slicing + Export ---
     // Check timeout before slicing
@@ -1521,6 +1524,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     m_model.update_print_volume_state(build_volume);
 
     bool has_partly_outside = false;
+    bool has_spiral_lift_conflict = false;
     for (ModelObject* obj : m_model.objects)
     {
         for (ModelInstance* inst : obj->instances)
@@ -1604,7 +1608,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
                                              "Model too close to bed boundary. "
                                              "Disable spiral lifting or keep at least 3.5mm gap to avoid collision.",
                                              obj->name));
-                            m_any_postprocess_warning = true;
+                            has_spiral_lift_conflict = true;
                         }
                     }
                 }
@@ -1628,6 +1632,15 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
             if (on_plate)
                 inst->print_volume_state = ModelInstancePVS_Inside;
         }
+    }
+
+    if (has_spiral_lift_conflict)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects too close to bed boundary with spiral lift, skipping";
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        fprintf(stderr, "[DEBUG-SPIRAL] run_build_volume_check() returning false for plate %d\n", plate_id);
+        return false;
     }
 
     if (has_partly_outside)
