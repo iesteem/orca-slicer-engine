@@ -1864,12 +1864,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
         case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
             wcode = "PRINT_VALIDATE_WARNING_LAYER_HEIGHT_LIMIT";
             break;
-        default:
-            wcode = "PRINT_VALIDATE_WARNING";
-            break;
-        }
-        if (warning.string.find("Variable layer height is not supported with Organic supports") != std::string::npos)
-        {
+        case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
             m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
                 "Organic supports do not support variable layer height. "
                 "Please disable variable layer height or switch to non-organic support type.",
@@ -1877,11 +1872,13 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
                 "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
             m_any_error = true;
             set_error_type(EXIT_PREPROCESS_ERROR);
+            break;
+        default:
+            wcode = "PRINT_VALIDATE_WARNING";
+            break;
         }
-        else
-        {
+        if (!wcode.empty())
             m_stats.issues.push_back(make_warning(plate_id, wcode, warning.string + opt_hint, obj_name));
-        }
     }
 
     if (!err.string.empty())
@@ -1929,6 +1926,9 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
                 break;
             case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
                 ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
+                break;
+            case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
+                ecode = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
                 break;
             default:
                 ecode = "PRINT_VALIDATE_ERROR";
@@ -2152,16 +2152,6 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
                 result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
                                                      "G-code overlap detected: " + w.message));
                 m_any_postprocess_warning = true;
-            }
-            else if (w.message.find("Variable layer height is not supported with Organic supports") != std::string::npos)
-            {
-                result.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
-                    "Organic supports do not support variable layer height. "
-                    "Please disable variable layer height or switch to non-organic support type.",
-                    "" /*object_name*/,
-                    "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
-                m_any_error = true;
-                set_error_type(EXIT_PREPROCESS_ERROR);
             }
             else if (w.level == PrintStateBase::WarningLevel::CRITICAL)
             {
