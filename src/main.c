@@ -85,11 +85,6 @@ int main(int argc, char* argv[])
         {
             if (++i < argc) resources = argv[i];
         }
-        else if (!strcmp(argv[i], "--log-file"))
-        {
-            if (++i < argc)
-                log_file = argv[i];
-        }
         else if (!strcmp(argv[i], "--log"))
         {
             /* --log [path]: optional custom log path (without .log) */
@@ -105,8 +100,7 @@ int main(int argc, char* argv[])
         }
         else if (argv[i][0] != '-')
         {
-            /* Only accept as input file if it has a .3mf extension
-             * (prevents --log-file <path> value from being eaten as input) */
+            /* Only accept as input file if it has a .3mf extension */
             const char* dot = strrchr(argv[i], '.');
             if (dot && dot[1] == '3'
                 && (dot[2] == 'm' || dot[2] == 'M')
