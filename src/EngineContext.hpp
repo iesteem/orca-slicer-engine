@@ -16,7 +16,7 @@ struct PlateSliceResult;
 /**
  * @file EngineContext.hpp
  * @brief Shared mutable state bundle and transient storage for SliceEngine
- *        sub-components (PresetManager, PlateProcessor, StatisticsBuilder).
+ *        sub-components (PresetManager).
  *
  * EngineContext is owned by SliceEngine and passed by non-const reference
  * to sub-components so they can collaborate without holding references to
