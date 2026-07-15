@@ -2254,6 +2254,8 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
             + obj1 + " <-> " + obj2 + ").";
         log_plate_message("[Post-processing]", "WARNING", plate_id, conflict_msg);
         has_postprocess_warning = true;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
         Issue conflict = make_serious_warning(plate_id, "TOOLPATH_CONFLICT",
                                     conflict_msg,
                                     obj1 + " vs " + obj2);
