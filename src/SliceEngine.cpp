@@ -1293,10 +1293,7 @@ void SliceEngine::process_plate(int plate_id)
 
     // --- Build volume check (uses plate-local coordinates) ---
     if (!run_build_volume_check(plate_id, identify_ids, origin))
-    {
-        fprintf(stderr, "[DEBUG-SPIRAL] process_plate() returning early for plate %d\n", plate_id + 1);
         return;
-    }
 
     // --- Slicing + Export ---
     // Check timeout before slicing
@@ -1639,7 +1636,6 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects too close to bed boundary with spiral lift, skipping";
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
-        fprintf(stderr, "[DEBUG-SPIRAL] run_build_volume_check() returning false for plate %d\n", plate_id);
         return false;
     }
 
