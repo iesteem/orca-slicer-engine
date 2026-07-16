@@ -114,9 +114,13 @@ private:
      *   1. Path non-empty and ends in ".png"
      *   2. boost::filesystem::canonical succeeds (rejects non-existent
      *      and bogus paths, resolves symlinks and ".." components)
-     *   3. Canonical path starts with a known system temp prefix
+     *   3. Canonical path starts with a known Linux system temp prefix
      *      ({/tmp/, /var/tmp/, /private/tmp/}) — NOT temp_directory_path(),
-     *      because TMPDIR may differ from libslic3r's internal backup_path
+     *      because TMPDIR may differ from libslic3r's internal backup_path.
+     *      Linux-only: production engine runs on Linux (cloud server);
+     *      Windows dev builds will skip all thumbnails (prefixes don't
+     *      match %TEMP%). Add Windows prefixes here if Windows engine
+     *      deployment is introduced.
      *   4. file_size within [1, MAX_PNG_SIZE]
      *   5. gcount() == requested on read (replaces fragile !ifs / EOF check)
      *   6. PNG magic bytes (\x89PNG\r\n\x1a\n) verified
@@ -130,8 +134,9 @@ private:
      * (SliceEngine.cpp:212). At that point the backup_path temp directory
      * still exists.
      *
-     * @note May throw std::bad_alloc from internal allocations.
-     *       All validation failures route through early-continue.
+     * @note Does NOT throw. All allocation failures (std::bad_alloc from
+     *       PNG buffer allocation) and all validation failures route through
+     *       early-return, leaving prior successfully-decoded plates intact.
      * @note Does NOT handle the gcode.3mf load path (path 1 in libslic3r) --
      *       the engine never invokes load_gcode_3mf_from_stream, so
      *       plate_thumbnail.pixels is always empty here.

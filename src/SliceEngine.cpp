@@ -1251,13 +1251,20 @@ void SliceEngine::decode_plate_thumbnails()
     // to prevent OOM from a malicious oversized file.
     static constexpr size_t MAX_PNG_SIZE = 4u * 1024u * 1024u;
 
+    // All allocations (vector<unsigned char>, PNG decode buffers) live inside
+    // this try block. std::bad_alloc from a malformed/huge PNG is routed to
+    // an early function exit rather than propagating -- the engine's calling
+    // convention treats thumbnail decode as best-effort: a missing thumbnail
+    // is acceptable, an uncaught exception is not (Snapmaker no-throw policy).
+    try
+    {
     for (auto& pd : m_plate_data)
     {
         // Guard 1: path non-empty and ends in ".png".
         const std::string& raw_path = pd->thumbnail_file;
         if (raw_path.size() < 4 ||
             raw_path.compare(raw_path.size() - 4, 4, ".png") != 0) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", path not .png";
             continue;
         }
@@ -1272,7 +1279,7 @@ void SliceEngine::decode_plate_thumbnails()
         boost::system::error_code ec;
         const boost::filesystem::path resolved = boost::filesystem::canonical(raw_path, ec);
         if (ec) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", canonical failed (" << raw_path << ")";
             continue;
         }
@@ -1283,7 +1290,7 @@ void SliceEngine::decode_plate_thumbnails()
         for (const char* prefix : {"/tmp/", "/var/tmp/", "/private/tmp/"})
             if (resolved_str.find(prefix) == 0) { under_temp = true; break; }
         if (!under_temp) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", path outside temp dir (" << resolved_str << ")";
             continue;
         }
@@ -1291,7 +1298,7 @@ void SliceEngine::decode_plate_thumbnails()
         // Guard 3: file size in [1, MAX_PNG_SIZE].
         const boost::uintmax_t file_sz = boost::filesystem::file_size(resolved, ec);
         if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", bad size " << file_sz;
             continue;
         }
@@ -1301,7 +1308,7 @@ void SliceEngine::decode_plate_thumbnails()
         // (failbit on EOF makes "!ifs" unreliable).
         std::ifstream ifs(resolved.string(), std::ios::binary);
         if (!ifs.is_open()) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", cannot open";
             continue;
         }
@@ -1312,7 +1319,7 @@ void SliceEngine::decode_plate_thumbnails()
         // punning; char may alias any type, safe.
         ifs.read(reinterpret_cast<char*>(file_bytes.data()), static_cast<std::streamsize>(sz));
         if (ifs.gcount() != static_cast<std::streamsize>(sz)) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", short read";
             continue;
         }
@@ -1329,7 +1336,7 @@ void SliceEngine::decode_plate_thumbnails()
             }
         }
         if (!sig_ok) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", bad PNG magic";
             continue;
         }
@@ -1338,7 +1345,7 @@ void SliceEngine::decode_plate_thumbnails()
         Slic3r::png::ReadBuf buf{file_bytes.data(), file_bytes.size()};
         Slic3r::png::ImageColorscale img;
         if (!Slic3r::png::decode_colored_png(buf, img)) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+            BOOST_LOG_TRIVIAL(debug) << "decode_plate_thumbnails: skip plate " << pd->plate_index
                                     << ", PNG decode failed";
             continue;
         }
@@ -1362,6 +1369,18 @@ void SliceEngine::decode_plate_thumbnails()
                 pd->plate_thumbnail.pixels[dst_idx + 3] = (src_bpp >= 4) ? img.buf[src_idx + 3] : 255;
             }
         }
+    }
+    }
+    catch (const std::exception& e)
+    {
+        // Most likely std::bad_alloc from a PNG buffer allocation. Log and
+        // return normally -- partial progress (already-decoded plates) is
+        // retained; remaining plates simply get no thumbnail.
+        BOOST_LOG_TRIVIAL(error) << "decode_plate_thumbnails: aborted after exception: " << e.what();
+    }
+    catch (...)
+    {
+        BOOST_LOG_TRIVIAL(error) << "decode_plate_thumbnails: aborted after unknown exception";
     }
 }
 
