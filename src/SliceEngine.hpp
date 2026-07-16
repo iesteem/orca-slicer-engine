@@ -112,9 +112,11 @@ private:
      * Trust-boundary validation (thumbnail_file originates from .3mf XML,
      * an untrusted source in multi-tenant upload scenarios):
      *   1. Path non-empty and ends in ".png"
-     *   2. Path resides under the system temp directory (path-injection guard;
-     *      engine cannot read libslic3r's internal backup_path)
-     *   3. boost::filesystem::exists with error_code (no exceptions)
+     *   2. boost::filesystem::canonical succeeds (rejects non-existent
+     *      and bogus paths, resolves symlinks and ".." components)
+     *   3. Canonical path starts with a known system temp prefix
+     *      ({/tmp/, /var/tmp/, /private/tmp/}) — NOT temp_directory_path(),
+     *      because TMPDIR may differ from libslic3r's internal backup_path
      *   4. file_size within [1, MAX_PNG_SIZE]
      *   5. gcount() == requested on read (replaces fragile !ifs / EOF check)
      *   6. PNG magic bytes (\x89PNG\r\n\x1a\n) verified
@@ -128,7 +130,8 @@ private:
      * (SliceEngine.cpp:212). At that point the backup_path temp directory
      * still exists.
      *
-     * @note Does NOT throw. All failures route through early-continue.
+     * @note May throw std::bad_alloc from internal allocations.
+     *       All validation failures route through early-continue.
      * @note Does NOT handle the gcode.3mf load path (path 1 in libslic3r) --
      *       the engine never invokes load_gcode_3mf_from_stream, so
      *       plate_thumbnail.pixels is always empty here.

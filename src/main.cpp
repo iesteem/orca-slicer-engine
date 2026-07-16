@@ -334,8 +334,8 @@ int main(int argc, char* argv[])
                                             << boost::log::expressions::smessage));
     boost::log::add_common_attributes();
     boost::log::core::get()->set_filter(boost::log::trivial::severity >= boost::log::trivial::info);
-
     // --- Parse CLI (single pass) ---
+    // Called early so that -v can influence both console and file log filters below.
     CliArgs cli = parse_args(argc, argv);
     EngineConfig& cfg = cli.engine_cfg;
     std::string& resources_dir = cli.resources_dir;
@@ -374,7 +374,7 @@ int main(int argc, char* argv[])
             if (!log_parent.empty() && !boost::filesystem::exists(log_parent))
                 boost::filesystem::create_directories(log_parent);
         }
-        add_log_file_sink(log_file_path, 3); // level 3 = info
+        add_log_file_sink(log_file_path, 5); // level 5 = trace (captures all diagnostics)
     }
 
     BOOST_LOG_TRIVIAL(info) << "OrcaSlicer Cloud Engine v" << CLOUD_SLICER_ENGINE_VERSION;

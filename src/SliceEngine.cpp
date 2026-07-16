@@ -1251,53 +1251,74 @@ void SliceEngine::decode_plate_thumbnails()
     // to prevent OOM from a malicious oversized file.
     static constexpr size_t MAX_PNG_SIZE = 4u * 1024u * 1024u;
 
-    // Trust-boundary note: thumbnail_file originates from .3mf XML metadata
-    // (untrusted source). libslic3r concatenates it under its backup_path
-    // (which lives under the system temp dir), but the engine cannot read
-    // libslic3r's internal backup_path. Restrict reads to files that both
-    // (a) end in ".png" and (b) live under the system temp directory. This is
-    // defense-in-depth against path-injection in multi-tenant upload scenarios.
-    const std::string temp_prefix = boost::filesystem::temp_directory_path().string();
-
     for (auto& pd : m_plate_data)
     {
         // Guard 1: path non-empty and ends in ".png".
-        const std::string& path = pd->thumbnail_file;
-        if (path.size() < 4 ||
-            path.compare(path.size() - 4, 4, ".png") != 0)
+        const std::string& raw_path = pd->thumbnail_file;
+        if (raw_path.size() < 4 ||
+            raw_path.compare(raw_path.size() - 4, 4, ".png") != 0) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", path not .png";
             continue;
+        }
 
-        // Guard 2: path must reside under system temp dir (path-injection guard).
-        if (path.find(temp_prefix) != 0)
-            continue;
-
-        // Guard 3: file exists (error_code overload, no exceptions).
+        // Guard 2: canonicalise and verify path under system temp root.
+        // canonical() resolves symlinks and normalises ".." components,
+        // preventing path-traversal where the .3mf supplies a thumbnail_file
+        // like "backup/../../etc/passwd.png". The system-temp-root check is
+        // done against a known temp parent (e.g. "/tmp/") rather than
+        // temp_directory_path() because TMPDIR may point to a custom location
+        // that differs from libslic3r's own temp dir (backup_path).
         boost::system::error_code ec;
-        if (!boost::filesystem::exists(path, ec) || ec)
+        const boost::filesystem::path resolved = boost::filesystem::canonical(raw_path, ec);
+        if (ec) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", canonical failed (" << raw_path << ")";
             continue;
+        }
 
-        // Guard 4: file size in [1, MAX_PNG_SIZE].
-        const boost::uintmax_t file_sz = boost::filesystem::file_size(path, ec);
-        if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE)
+        // Verify the canonical path is under the system-wide temp root.
+        const std::string resolved_str = resolved.string();
+        bool under_temp = false;
+        for (const char* prefix : {"/tmp/", "/var/tmp/", "/private/tmp/"})
+            if (resolved_str.find(prefix) == 0) { under_temp = true; break; }
+        if (!under_temp) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", path outside temp dir (" << resolved_str << ")";
             continue;
+        }
+
+        // Guard 3: file size in [1, MAX_PNG_SIZE].
+        const boost::uintmax_t file_sz = boost::filesystem::file_size(resolved, ec);
+        if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", bad size " << file_sz;
+            continue;
+        }
         const size_t sz = static_cast<size_t>(file_sz);
 
-        // Guard 5: open and read full file. gcount() validates bytes read
+        // Guard 4: open and read full file. gcount() validates bytes read
         // (failbit on EOF makes "!ifs" unreliable).
-        std::ifstream ifs(path, std::ios::binary);
-        if (!ifs.is_open())
+        std::ifstream ifs(resolved.string(), std::ios::binary);
+        if (!ifs.is_open()) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", cannot open";
             continue;
+        }
 
         std::vector<unsigned char> file_bytes(sz);
         // reinterpret_cast is required: istream::read takes char*, PNG bytes
         // are unsigned char. This is an ifstream API constraint, not type
         // punning; char may alias any type, safe.
         ifs.read(reinterpret_cast<char*>(file_bytes.data()), static_cast<std::streamsize>(sz));
-        if (ifs.gcount() != static_cast<std::streamsize>(sz))
+        if (ifs.gcount() != static_cast<std::streamsize>(sz)) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", short read";
             continue;
+        }
         // ifs closes itself on destruction (RAII).
 
-        // Guard 6: PNG magic bytes.
+        // Guard 5: PNG magic bytes.
         bool sig_ok = true;
         for (size_t i = 0; i < static_cast<size_t>(PNG_SIGNATURE_LEN); ++i)
         {
@@ -1307,14 +1328,23 @@ void SliceEngine::decode_plate_thumbnails()
                 break;
             }
         }
-        if (!sig_ok)
+        if (!sig_ok) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", bad PNG magic";
             continue;
+        }
 
-        // Guard 7: PNG decode.
+        // Guard 6: PNG decode.
         Slic3r::png::ReadBuf buf{file_bytes.data(), file_bytes.size()};
         Slic3r::png::ImageColorscale img;
-        if (!Slic3r::png::decode_colored_png(buf, img))
+        if (!Slic3r::png::decode_colored_png(buf, img)) {
+            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
+                                    << ", PNG decode failed";
             continue;
+        }
+
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: success plate " << pd->plate_index
+                                << " (" << img.cols << "x" << img.rows << ")";
 
         // Populate plate_thumbnail only after successful decode (no half-state).
         pd->plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
