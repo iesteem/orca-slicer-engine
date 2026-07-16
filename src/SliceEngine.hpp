@@ -94,6 +94,45 @@ private:
     void apply_process_official_preset();
     bool validate_input();
     void ensure_models_on_bed();
+
+    /**
+     * @brief Load and decode plate thumbnails from disk for the current plate set.
+     *
+     * The input .3mf load path (_BBS_3MF_Importer::_load_model_from_file in
+     * libslic3r) only sets PlateData::thumbnail_file (an absolute disk path
+     * written under the backup_path temp directory) and never populates
+     * plate_thumbnail.pixels. The legacy `if (pixels.empty()) continue` guard
+     * was therefore a silent no-op for every plate, leaving the export_gcode
+     * thumbnail callback with no source and producing gcode without
+     * `; thumbnail begin` markers.
+     *
+     * This function reads PNG bytes from PlateData::thumbnail_file and decodes
+     * them via Slic3r::png::decode_colored_png.
+     *
+     * Trust-boundary validation (thumbnail_file originates from .3mf XML,
+     * an untrusted source in multi-tenant upload scenarios):
+     *   1. Path non-empty and ends in ".png"
+     *   2. Path resides under the system temp directory (path-injection guard;
+     *      engine cannot read libslic3r's internal backup_path)
+     *   3. boost::filesystem::exists with error_code (no exceptions)
+     *   4. file_size within [1, MAX_PNG_SIZE]
+     *   5. gcount() == requested on read (replaces fragile !ifs / EOF check)
+     *   6. PNG magic bytes (\x89PNG\r\n\x1a\n) verified
+     *   7. decode_colored_png succeeds
+     *
+     * On any error, the plate is silently skipped (continue) and
+     * plate_thumbnail is left in its prior empty state -- matching the .3mf
+     * output fallback behavior in bbs_3mf.cpp:5951.
+     *
+     * Called from run() after load_3mf and before process_plate
+     * (SliceEngine.cpp:212). At that point the backup_path temp directory
+     * still exists.
+     *
+     * @note Does NOT throw. All failures route through early-continue.
+     * @note Does NOT handle the gcode.3mf load path (path 1 in libslic3r) --
+     *       the engine never invokes load_gcode_3mf_from_stream, so
+     *       plate_thumbnail.pixels is always empty here.
+     */
     void decode_plate_thumbnails();
     void process_plate(int plate_id);
     void package_output();

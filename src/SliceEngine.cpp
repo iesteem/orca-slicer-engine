@@ -6,6 +6,7 @@
 #include <cmath>
 #include <array>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -1239,17 +1240,83 @@ void SliceEngine::ensure_models_on_bed()
 
 void SliceEngine::decode_plate_thumbnails()
 {
+    // PNG file signature (PNG spec section 5.2, first 8 bytes are fixed).
+    static constexpr unsigned char PNG_SIGNATURE[] =
+        {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    static constexpr std::streamsize PNG_SIGNATURE_LEN = 8;
+
+    // Max bytes accepted for a single plate thumbnail PNG.
+    // Derivation: U1 display renders 300x300; measured PNG ~30 KB. 4 MB gives
+    // ~130x headroom, covers future 600x600-class screens, still small enough
+    // to prevent OOM from a malicious oversized file.
+    static constexpr size_t MAX_PNG_SIZE = 4u * 1024u * 1024u;
+
+    // Trust-boundary note: thumbnail_file originates from .3mf XML metadata
+    // (untrusted source). libslic3r concatenates it under its backup_path
+    // (which lives under the system temp dir), but the engine cannot read
+    // libslic3r's internal backup_path. Restrict reads to files that both
+    // (a) end in ".png" and (b) live under the system temp directory. This is
+    // defense-in-depth against path-injection in multi-tenant upload scenarios.
+    const std::string temp_prefix = boost::filesystem::temp_directory_path().string();
+
     for (auto& pd : m_plate_data)
     {
-        if (pd->plate_thumbnail.pixels.empty())
+        // Guard 1: path non-empty and ends in ".png".
+        const std::string& path = pd->thumbnail_file;
+        if (path.size() < 4 ||
+            path.compare(path.size() - 4, 4, ".png") != 0)
             continue;
 
-        Slic3r::png::ReadBuf buf{pd->plate_thumbnail.pixels.data(), pd->plate_thumbnail.pixels.size()};
+        // Guard 2: path must reside under system temp dir (path-injection guard).
+        if (path.find(temp_prefix) != 0)
+            continue;
 
+        // Guard 3: file exists (error_code overload, no exceptions).
+        boost::system::error_code ec;
+        if (!boost::filesystem::exists(path, ec) || ec)
+            continue;
+
+        // Guard 4: file size in [1, MAX_PNG_SIZE].
+        const boost::uintmax_t file_sz = boost::filesystem::file_size(path, ec);
+        if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE)
+            continue;
+        const size_t sz = static_cast<size_t>(file_sz);
+
+        // Guard 5: open and read full file. gcount() validates bytes read
+        // (failbit on EOF makes "!ifs" unreliable).
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs.is_open())
+            continue;
+
+        std::vector<unsigned char> file_bytes(sz);
+        // reinterpret_cast is required: istream::read takes char*, PNG bytes
+        // are unsigned char. This is an ifstream API constraint, not type
+        // punning; char may alias any type, safe.
+        ifs.read(reinterpret_cast<char*>(file_bytes.data()), static_cast<std::streamsize>(sz));
+        if (ifs.gcount() != static_cast<std::streamsize>(sz))
+            continue;
+        // ifs closes itself on destruction (RAII).
+
+        // Guard 6: PNG magic bytes.
+        bool sig_ok = true;
+        for (size_t i = 0; i < static_cast<size_t>(PNG_SIGNATURE_LEN); ++i)
+        {
+            if (file_bytes[i] != PNG_SIGNATURE[i])
+            {
+                sig_ok = false;
+                break;
+            }
+        }
+        if (!sig_ok)
+            continue;
+
+        // Guard 7: PNG decode.
+        Slic3r::png::ReadBuf buf{file_bytes.data(), file_bytes.size()};
         Slic3r::png::ImageColorscale img;
         if (!Slic3r::png::decode_colored_png(buf, img))
             continue;
 
+        // Populate plate_thumbnail only after successful decode (no half-state).
         pd->plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
 
         const size_t src_bpp = static_cast<size_t>(img.bytes_per_pixel);
@@ -1257,8 +1324,8 @@ void SliceEngine::decode_plate_thumbnails()
         {
             for (size_t x = 0; x < img.cols; ++x)
             {
-                size_t src_idx = (y * img.cols + x) * src_bpp;
-                size_t dst_idx = (y * img.cols + x) * 4;
+                const size_t src_idx = (y * img.cols + x) * src_bpp;
+                const size_t dst_idx = (y * img.cols + x) * 4;
                 pd->plate_thumbnail.pixels[dst_idx + 0] = img.buf[src_idx + 0];
                 pd->plate_thumbnail.pixels[dst_idx + 1] = img.buf[src_idx + 1];
                 pd->plate_thumbnail.pixels[dst_idx + 2] = img.buf[src_idx + 2];
