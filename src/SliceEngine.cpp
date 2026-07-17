@@ -582,7 +582,7 @@ bool SliceEngine::validate_presets()
     //                            arbitrary user-defined printer onto U1.
     //   FILAMENTS_NOT_FOUND  -> warning, continue. apply_filament_official_preset
     //                            enforces official filament presets downstream.
-    //   MODIFIED_GCODES      -> warning, continue. clear_user_gcode_and_post_process
+    //   MODIFIED_GCODES      -> warning, continue. strip_user_content
     //                            + apply_printer_official_preset overwrite user
     //                            G-code with official values downstream.
     try
@@ -652,72 +652,122 @@ bool SliceEngine::validate_presets()
 // Stage 1.5a: Printer preset substitution (official Snapmaker U1)
 // ============================================================================
 
-void SliceEngine::clear_user_gcode_and_post_process()
+void SliceEngine::strip_user_content()
 {
-    // Strip all custom G-code blocks — cloud slicing must not execute
-    // or embed user-supplied G-code for safety and consistency.
+    // Strip user-supplied content from cloud slices for safety and consistency.
+    // A single USER_CONTENT_CLEARED tip is emitted if any field is cleared —
+    // callers see one summary line, not a noisy per-key stream.
     //
-    // Coverage: all known machine-level (printer) and process-level G-code
-    // keys in the OrcaSlicer PrintConfig system. Filament-level G-code keys
-    // (filament_start_gcode, filament_end_gcode) are intentionally NOT cleared
-    // here: apply_filament_official_preset only restores official filament
-    // G-code when substituting a non-official filament, so for an official
-    // filament the user value would be lost without any official replacement
-    // if cleared here. Filament G-code is therefore left for that function to
-    // handle on a case-by-case basis.
+    // Categories (config types differ, so each has its own clearing loop):
+    //   (1) Scalar G-code (ConfigOptionString): machine + process level.
+    //   (2) Per-extruder G-code (ConfigOptionStrings): filament_start/end_gcode.
+    //   (3) User-authored text (notes): printer_notes (scalar),
+    //       filament_notes (per-extruder).
+    //   (4) Shell-command RCE: post_process (list of commands).
+    //   (5) External file references: load_custom_gcodes / load_slicedata /
+    //       load_settings / load_assemble_list.
     //
-    // After clearing, official values are restored by the three-stage
-    // enforcement pipeline:
-    //   overwrite_all_keys_from (printer) → official machine G-code
-    //   apply_filament_official_preset     → official filament G-code (when substituting)
-    //   apply_process_official_preset      → official process G-code
-    // Keys not defined in any official U1 preset remain blank — the U1
-    // runs Klipper firmware and does not use Marlin-era process-level
-    // G-code macros (start_gcode, end_gcode, etc.).
-    constexpr const char* gcode_keys[] = {
-        // Printer (machine) level
+    // After (1) and (2), official values are restored by the three apply_*
+    // functions, all of which overwrite unconditionally (filament included,
+    // even when the user already picked an official preset). Categories (3)
+    // through (5) have no official counterpart to restore; the cleared state
+    // is the final state.
+
+    bool changed = false;
+
+    // Clears a scalar ConfigOptionString key. Returns true if the key existed
+    // and had non-empty content.
+    auto clear_scalar = [this](const char* key) -> bool
+    {
+        auto* opt = m_config.option<ConfigOptionString>(key, false);
+        if (!opt || opt->value.empty())
+            return false;
+        opt->value.clear();
+        return true;
+    };
+    // Clears all slots of a ConfigOptionStrings key (preserving vector length
+    // — per-extruder keys must keep one entry per extruder). Returns true if
+    // any slot was non-empty.
+    auto clear_vector = [this](const char* key) -> bool
+    {
+        auto* opt = m_config.option<ConfigOptionStrings>(key, false);
+        if (!opt)
+            return false;
+        bool any = false;
+        for (std::string& v : opt->values)
+        {
+            if (!v.empty())
+            {
+                v.clear();
+                any = true;
+            }
+        }
+        return any;
+    };
+
+    // (1) Scalar G-code. Canonical PrintConfig names only — Marlin-era bare
+    // variants (start_gcode, toolchange_gcode, …) are not registered keys and
+    // would be dead entries.
+    constexpr const char* scalar_gcode_keys[] = {
         "machine_start_gcode",
         "machine_end_gcode",
         "before_layer_change_gcode",
         "layer_change_gcode",
         "change_filament_gcode",
         "machine_pause_gcode",
-        // Process level
-        "start_gcode",
-        "end_gcode",
-        "layer_gcode",
-        "between_objects_gcode",
-        "toolchange_gcode",
+        "change_extrusion_role_gcode",
         "template_custom_gcode",
         "printing_by_object_gcode",
         "time_lapse_gcode",
-        // Connectivity
         "print_host",
     };
-    for (const char* key : gcode_keys)
+    for (const char* key : scalar_gcode_keys)
+        changed |= clear_scalar(key);
+
+    // (2) Per-extruder G-code
+    constexpr const char* vector_gcode_keys[] = {
+        "filament_start_gcode",
+        "filament_end_gcode",
+    };
+    for (const char* key : vector_gcode_keys)
+        changed |= clear_vector(key);
+
+    // (3) User-authored text
+    changed |= clear_scalar("printer_notes");
+    changed |= clear_vector("filament_notes");
+
+    // (4) post_process: ConfigOptionStrings (list of shell commands). Reset
+    // to an empty vector — unlike per-extruder keys, the slot count carries
+    // no semantic meaning here.
+    if (auto* pp = m_config.option<ConfigOptionStrings>("post_process", false))
     {
-        if (m_config.has(key))
+        if (!pp->values.empty())
         {
-            m_config.set_key_value(key, new ConfigOptionString(""));
-            m_stats.issues.push_back(
-                make_tip(-1, "GCODE_CLEARED", std::string("Custom G-code '") + key + "' cleared for cloud safety"));
+            m_config.set_key_value("post_process", new ConfigOptionStrings({}));
+            changed = true;
         }
     }
 
-    // post_process is handled separately because it is ConfigOptionStrings
-    // (a list of shell commands), not ConfigOptionString like the keys above.
-    // It represents a direct RCE vector (host-side arbitrary command execution
-    // after slicing) and is cleared at tip severity (POST_PROCESS_CLEARED),
-    // matching the G-code clearing policy: clear and report, do not block.
-    if (m_config.has("post_process"))
+    // (5) External file references. Scalar keys cleared via clear_scalar;
+    // vector keys (load_slicedata, load_settings) reset to empty vectors.
+    changed |= clear_scalar("load_custom_gcodes");
+    changed |= clear_scalar("load_assemble_list");
+    for (const char* key : {"load_slicedata", "load_settings"})
     {
-        auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
-        if (pp && !pp->values.empty())
+        auto* opt = m_config.option<ConfigOptionStrings>(key, false);
+        if (opt && !opt->values.empty())
         {
-            m_stats.issues.push_back(
-                make_tip(-1, "POST_PROCESS_CLEARED", "Custom post-processing scripts cleared for cloud safety."));
-            m_config.set_key_value("post_process", new ConfigOptionStrings({}));
+            m_config.set_key_value(key, new ConfigOptionStrings({}));
+            changed = true;
         }
+    }
+
+    if (changed)
+    {
+        m_stats.issues.push_back(make_tip(
+            -1, "USER_CONTENT_CLEARED",
+            "Custom user content (G-code, notes, post-processing scripts, external file references) "
+            "cleared for cloud safety."));
     }
 }
 
@@ -725,7 +775,7 @@ bool SliceEngine::apply_printer_official_preset()
 {
     // 1. Strip user-supplied G-code and post_process before applying the
     //    official preset (which restores official machine G-code values).
-    clear_user_gcode_and_post_process();
+    strip_user_content();
 
     // 2. Replace the user's printer configuration wholesale with the official
     //    Snapmaker U1 preset matching the requested nozzle diameter. No user
@@ -885,9 +935,16 @@ bool SliceEngine::apply_filament_official_preset()
         return false;
     };
 
-    // Resolve a single filament: official → true; unofficial → walk the
-    // inheritance chain to find an official ancestor (full substitution);
-    // on failure, rollback; if rollback also fails → emit error and return false.
+    // Resolve a single filament: official → full overwrite; unofficial →
+    // walk the inheritance chain to find an official ancestor (full
+    // substitution); on failure, rollback; if rollback also fails → emit
+    // error and return false.
+    //
+    // Even when the user already selected an official filament preset, we
+    // still overwrite_extruder_from its config. This guarantees the final
+    // slice uses the complete official preset values rather than user-modified
+    // copies of them (cloud safety guarantee). Symmetric with the printer
+    // and process apply paths, which always overwrite regardless of source.
     auto resolve_filament = [&](int i) -> bool
     {
         const std::string& name = filament_ids->values[i];
@@ -896,7 +953,15 @@ bool SliceEngine::apply_filament_official_preset()
         if (Preset* sys = find_in_system(name))
         {
             if (is_official_preset(*sys))
-                return true; // OK
+            {
+                // Official filament: full overwrite without warning. The
+                // user already chose an official preset; the overwrite is
+                // cloud-side hardening (drops user-modified copies of the
+                // official values), not a substitution. Stays silent to
+                // avoid noisy "X substituted with X" warnings.
+                PresetRollback::overwriteExtruderFrom(m_config, *sys, i, filament_ids);
+                return true;
+            }
             return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
                                 "Filament \"" + name + "\" belongs to unsupported vendor");
         }
