@@ -158,7 +158,8 @@ bool SliceEngine::run()
     load_project_presets();
 
     // Resolve printer/filament/process preset references in the loaded config
-    // against the system + project bundle. Blocks only on missing printer.
+    // against the system + project bundle. Never blocks — all preset lookup
+    // failures are warnings (apply_*_official_preset overwrites downstream).
     if (!validate_presets())
     {
         build_statistics();
@@ -575,15 +576,17 @@ bool SliceEngine::validate_presets()
     PresetBundle& preset_bundle = *m_preset_bundle;
 
     // Check that m_config's printer/filament/process preset references resolve
-    // in the bundle (system + project-embedded). Severity is decided by
-    // whether a downstream stage can substitute an official replacement:
-    //   PRINTER_NOT_FOUND    -> error, blocks. No fallback — apply_printer_official_preset
-    //                            looks up U1 by nozzle_diameter and cannot map an
-    //                            arbitrary user-defined printer onto U1.
-    //   FILAMENTS_NOT_FOUND  -> warning, continue. apply_filament_official_preset
-    //                            enforces official filament presets downstream.
-    //   MODIFIED_GCODES      -> warning, continue. strip_user_content
-    //                            + apply_printer_official_preset overwrite user
+    // in the bundle (system + project-embedded). All three branches are
+    // non-blocking warnings — apply_*_official_preset unconditionally
+    // overwrites with the official U1 / filament / process presets downstream,
+    // so a failed user-preset lookup has no effect on the final slice:
+    //   PRINTER_NOT_FOUND    -> warning. apply_printer_official_preset ignores
+    //                            printer_settings_id and looks up the official
+    //                            U1 by nozzle_diameter.
+    //   FILAMENTS_NOT_FOUND  -> warning. apply_filament_official_preset walks
+    //                            the inheritance chain / rolls back per extruder.
+    //   MODIFIED_GCODES      -> warning. strip_user_content +
+    //                            apply_printer_official_preset overwrite user
     //                            G-code with official values downstream.
     try
     {
@@ -604,12 +607,16 @@ bool SliceEngine::validate_presets()
             std::string msg = "Custom printer preset not found in system presets";
             if (!details.empty())
                 msg += ": " + details;
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-            m_stats.error_message = msg;
-            m_stats.issues.push_back(make_error(-1, "PRESET_PRINTER_NOT_FOUND", msg));
-            return false;
+            // Warning, not error: validate_presets only checks whether the
+            // user's printer_settings_id resolves in the bundle. Downstream
+            // apply_printer_official_preset does NOT use printer_settings_id —
+            // it looks up the official U1 preset by nozzle_diameter and
+            // overwrites unconditionally. So a failed user-preset lookup has
+            // no effect on the final slice. Real printer-config errors
+            // (system presets missing, official U1 not found) are reported
+            // separately by apply_printer_official_preset at error severity.
+            m_stats.issues.push_back(make_warning(-1, "PRESET_PRINTER_NOT_FOUND", msg));
+            break;
         }
 
         case VALIDATE_PRESETS_FILAMENTS_NOT_FOUND:
