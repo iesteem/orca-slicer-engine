@@ -96,10 +96,6 @@ private:
     // Note: empty-file detection currently relies on a substring match
     // ("empty") in the libslic3r exception message — fragile, see FIXME in cpp.
     bool read_3mf_model();
-    // Cloud-mode safety: clear any user-supplied post-processing scripts from
-    // the loaded config. Records a POST_PROCESS_REJECTED issue but does NOT
-    // fail the load (matches original behavior).
-    void sanitize_cloud_config();
     // Record a load-stage failure: log, set error flag, set exit code,
     // populate m_stats.error_message and issues. Does NOT throw and does NOT
     // return; the caller decides whether to propagate via return false.

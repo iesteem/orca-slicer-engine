@@ -281,7 +281,6 @@ bool SliceEngine::load_3mf()
 
     if (!validate_input_file()) return false;
     if (!read_3mf_model()) return false;
-    sanitize_cloud_config();
 
     BOOST_LOG_TRIVIAL(info) << "Loaded " << m_model.objects.size() << " object(s)";
     return true;
@@ -378,21 +377,6 @@ bool SliceEngine::read_3mf_model()
         return false;
     }
     return true;
-}
-
-void SliceEngine::sanitize_cloud_config()
-{
-    // Detect and reject post-processing scripts in cloud mode (RCE prevention).
-    // Records an issue but does NOT fail the load — matches original behavior.
-    if (!m_config.has("post_process")) return;
-
-    auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
-    if (!pp || pp->values.empty()) return;
-
-    m_stats.issues.push_back(
-        make_error(-1, "POST_PROCESS_REJECTED",
-                   "Custom post-processing scripts are not supported in cloud slicing."));
-    m_config.set_key_value("post_process", new ConfigOptionStrings({}));
 }
 
 // ============================================================================
@@ -677,6 +661,23 @@ bool SliceEngine::apply_printer_official_preset()
                 m_config.set_key_value(key, new ConfigOptionString(""));
                 m_stats.issues.push_back(
                     make_tip(-1, "GCODE_CLEARED", std::string("Custom G-code '") + key + "' cleared for cloud safety"));
+            }
+        }
+
+        // post_process is handled separately because (a) it is ConfigOptionStrings
+        // (a list of shell commands), not ConfigOptionString like the keys above,
+        // and (b) it represents a direct RCE vector (host-side arbitrary command
+        // execution after slicing), so the issue is reported at error severity
+        // (POST_PROCESS_REJECTED) rather than the tip severity used for G-code
+        // injection risks.
+        if (m_config.has("post_process"))
+        {
+            auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
+            if (pp && !pp->values.empty())
+            {
+                m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
+                                                    "Custom post-processing scripts are not supported in cloud slicing."));
+                m_config.set_key_value("post_process", new ConfigOptionStrings({}));
             }
         }
     }
