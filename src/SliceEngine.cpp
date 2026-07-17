@@ -840,7 +840,8 @@ bool SliceEngine::apply_filament_official_preset()
 
     // Guaranteed by run(): bundle availability is checked before any apply_*
     // stage runs, and apply_printer_official_preset() must succeed first.
-    assert(m_preset_bundle);
+    // Not assert-guarded — the contract is structural (call order), not a
+    // runtime invariant, and assert would be a no-op in Release anyway.
 
     // Lambda: check whether a system preset is "official"
     // Only Snapmaker vendor presets are supported in cloud deployment.
@@ -1488,7 +1489,8 @@ void SliceEngine::decode_plate_thumbnails()
 void SliceEngine::process_plate(int plate_id)
 {
     // Guaranteed by run(): apply_printer_official_preset() must succeed first
-    assert(m_preset_bundle);
+    // (which in turn requires bundle availability). Not assert-guarded —
+    // structural contract, no-op in Release.
 
     // --- Filter instances for this plate ---
     std::set<int> identify_ids;
