@@ -575,10 +575,16 @@ bool SliceEngine::validate_presets()
     PresetBundle& preset_bundle = *m_preset_bundle;
 
     // Check that m_config's printer/filament/process preset references resolve
-    // in the bundle (system + project-embedded). Result severity:
-    //   PRINTER_NOT_FOUND    -> error, blocks (no U1 fallback possible)
-    //   FILAMENTS_NOT_FOUND  -> warning, continue (apply_filament_official_preset will substitute)
-    //   MODIFIED_GCODES      -> warning, continue (cleared later by apply_printer_official_preset)
+    // in the bundle (system + project-embedded). Severity is decided by
+    // whether a downstream stage can substitute an official replacement:
+    //   PRINTER_NOT_FOUND    -> error, blocks. No fallback — apply_printer_official_preset
+    //                            looks up U1 by nozzle_diameter and cannot map an
+    //                            arbitrary user-defined printer onto U1.
+    //   FILAMENTS_NOT_FOUND  -> warning, continue. apply_filament_official_preset
+    //                            enforces official filament presets downstream.
+    //   MODIFIED_GCODES      -> warning, continue. clear_user_gcode_and_post_process
+    //                            + apply_printer_official_preset overwrite user
+    //                            G-code with official values downstream.
     try
     {
         std::set<std::string> modified_gcodes;
