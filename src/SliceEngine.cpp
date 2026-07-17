@@ -157,8 +157,8 @@ bool SliceEngine::run()
     // bundle so validate_presets can resolve references to them. Never blocks.
     load_project_presets();
 
-    // Validate that printer/filament/process presets referenced by the
-    // loaded config exist in the system + project bundle. Blocks on failure.
+    // Resolve printer/filament/process preset references in the loaded config
+    // against the system + project bundle. Blocks only on missing printer.
     if (!validate_presets())
     {
         build_statistics();
@@ -559,7 +559,7 @@ void SliceEngine::load_project_presets()
 }
 
 // ============================================================================
-// Stage 1.4: Validate presets against system profiles
+// Stage 1.4: Preset reference resolution
 // ============================================================================
 
 bool SliceEngine::validate_presets()
@@ -574,7 +574,11 @@ bool SliceEngine::validate_presets()
     // by load_project_presets(), so references to embedded presets resolve.
     PresetBundle& preset_bundle = *m_preset_bundle;
 
-    // Validate presets against system profiles
+    // Check that m_config's printer/filament/process preset references resolve
+    // in the bundle (system + project-embedded). Result severity:
+    //   PRINTER_NOT_FOUND    -> error, blocks (no U1 fallback possible)
+    //   FILAMENTS_NOT_FOUND  -> warning, continue (apply_filament_official_preset will substitute)
+    //   MODIFIED_GCODES      -> warning, continue (cleared later by apply_printer_official_preset)
     try
     {
         std::set<std::string> modified_gcodes;
