@@ -118,9 +118,6 @@ private:
     // replacement separately as PRINTER/FILAMENT/PROCESS_SUBSTITUTED). Emits
     // one USER_CONTENT_CLEARED tip only when notes or external file references
     // are cleared — those have no official counterpart. Never blocks.
-    // Also removes "post_process" from different_settings_to_system so the
-    // later apply_process_official_preset does not skip it (the user value is
-    // already gone; skipping would leave the official value unable to land).
     void strip_user_content();
     bool apply_printer_official_preset();
     bool apply_filament_official_preset();

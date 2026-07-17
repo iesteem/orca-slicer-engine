@@ -795,41 +795,6 @@ void SliceEngine::strip_user_content()
         }
     }
 
-    // (6) Remove "post_process" from different_settings_to_system. This
-    // ;-separated list records keys the user changed relative to the system
-    // preset, and apply_process_official_preset honours it by skipping those
-    // keys when overwriting from the official process preset (genuine user
-    // choices like layer height are preserved this way). The printer and
-    // filament apply paths use PresetRollback / overwrite_all_keys_from,
-    // which ignore this list entirely — so only post_process is at risk.
-    //
-    // We just cleared the user's post_process above; if we leave it in the
-    // list, apply_process_official_preset will skip it and the official
-    // value (currently "", so the bug is latent) will never land. Dropping
-    // the name lets the official preset take ownership of the key.
-    {
-        auto* diff = m_config.option<ConfigOptionStrings>("different_settings_to_system", false);
-        if (diff && !diff->values.empty())
-        {
-            std::istringstream ss(diff->values[0]);
-            std::string token;
-            std::string rebuilt;
-            bool first = true;
-            while (std::getline(ss, token, ';'))
-            {
-                size_t s = token.find_first_not_of(" \t");
-                size_t e = token.find_last_not_of(" \t");
-                std::string trimmed = (s == std::string::npos) ? std::string{} : token.substr(s, e - s + 1);
-                if (trimmed.empty() || trimmed == "post_process")
-                    continue;
-                if (!first) rebuilt += ';';
-                rebuilt += trimmed;
-                first = false;
-            }
-            diff->values[0] = std::move(rebuilt);
-        }
-    }
-
     if (user_only_content)
     {
         m_stats.issues.push_back(make_tip(
@@ -1253,6 +1218,14 @@ void SliceEngine::apply_process_official_preset()
         BOOST_LOG_TRIVIAL(info)
             << "Applying official process preset \"" << official->name
             << "\" (" << user_overrides.size() << " user overrides preserved)";
+
+        // post_process was cleared by strip_user_content (cloud safety: it is
+        // a list of shell commands). The user value is gone, so honouring the
+        // override would only block the official value from landing — leaving
+        // a vacuum where neither user nor official content lives. The official
+        // value is currently "" (latent bug), but drop the override anyway so
+        // the official preset owns the key.
+        user_overrides.erase("post_process");
 
         // Apply every key from the official process preset, except keys the
         // user explicitly overrode and keys that don't exist in the current
