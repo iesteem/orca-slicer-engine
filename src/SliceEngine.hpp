@@ -55,6 +55,11 @@ public:
 
     // Run the full pipeline. Returns true if at least one plate produced output.
     bool run();
+    // Apply official Snapmaker presets: bundle check, strip user content, then
+    // printer/filament/process substitution. Returns false on any fatal preset
+    // failure (caller should abort). Skipped entirely when
+    // m_cfg.skip_preset_substitution is set.
+    bool apply_preset_substitution();
 
     // Results after run()
     const SliceOutputStats& stats() const
@@ -206,16 +211,84 @@ private:
      *       plate_thumbnail.pixels is always empty here.
      */
     void decode_plate_thumbnails();
+    // Decode a single plate's thumbnail PNG from disk into
+    // PlateData::plate_thumbnail.pixels. Runs the full trust-boundary
+    // validation chain (path extension, canonicalisation under system temp
+    // root, size bounds, PNG magic, decode). On any failure, leaves
+    // plate_thumbnail in its prior empty state. Used by decode_plate_thumbnails.
+    void decode_one_plate_thumbnail(Slic3r::PlateData& pd);
     void process_plate(int plate_id);
+    // Detect the EmptyGcodeLayers condition on a slice result: the G-code file
+    // exists but contains no valid layers. On detection, removes the empty
+    // G-code file, drains the per-plate issues into m_stats, shrinks the
+    // moves/lines_ends buffers, stores the result, and returns true so the
+    // caller skips post-processing. Returns false for normal results.
+    bool handle_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result);
     void package_output();
+    // Push slice results back into PlateData: gcode path, prediction, weight,
+    // support/toolpath flags, filament info (overlaid with config-sourced
+    // type/colour/id), and the rebuilt objects_and_instances list. One pass
+    // over m_plate_data matching entries to m_plate_results.
+    void populate_plate_data_for_export(const std::string& printer_model_id,
+                                        const std::string& nozzle_diameters_str);
     void build_statistics();
+    // Assemble PlateStats from a single plate's slice result: issue aggregation,
+    // success/error flags, time/filament/cost/support fields, per-extruder
+    // filament usage, model-vs-support breakdown, nozzle list, filament
+    // details, and thumbnail path lookup. Called once per plate.
+    void assemble_plate_stats(int plate_id, const PlateSliceResult& result,
+                              SliceOutputStats::PlateStats& plate_stats);
+    // Add placeholder PlateStats for plates that have issues recorded against
+    // them but no entry in m_plate_results (e.g. validation failures that
+    // aborted before slicing). Also merges orphan issues into existing plates.
+    void patch_orphan_plate_issues();
+    // Sort plates and issues by severity/plate_id, compute the global success
+    // flag, and derive m_stats.error_message from whichever failure pattern
+    // occurred. Called after all per-plate stats are assembled.
+    void finalise_statistics();
 
     // --- Per-plate sub-stages (in call order) ---
     bool filter_instances(int plate_id, std::set<int>& identify_ids);
     Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);
     bool run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Slic3r::Vec3d& origin);
+    // SpiralLiftNearBoundary check (desktop 3DScene.cpp parity): when z_hop
+    // uses spiral/auto mode and bed is rectangular, flag any object whose
+    // bounding box sits within SPIRAL_LIFT_SAFETY_MARGIN of the bed edge.
+    // Returns true if any serious warning was emitted. Deduplicates by
+    // object name so multi-instance objects emit one warning.
+    bool check_spiral_lift_near_boundary(int plate_id, const Slic3r::BuildVolume& build_volume,
+                                         const std::set<int>& identify_ids);
     bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
+    // Build the per-plate merged DynamicPrintConfig consumed by print.apply().
+    // Starts from m_config, then trims filament arrays down to a single
+    // extruder when the model only uses one (avoids wipe-tower tool-change
+    // mismatch on multi-filament configs paired with single-extruder geometry),
+    // and finally layers per-plate config overrides (curr_bed_type,
+    // print_sequence, …) from PlateData on top.
+    Slic3r::DynamicPrintConfig prepare_merged_config_for_plate(int plate_id);
     bool run_validation(int plate_id, Slic3r::Print& print);
+    // Refine a StringObjectException of type FILAMENT_NOT_MATCH_BED_TYPE by
+    // substituting the user-friendly filament alias into the message text.
+    // No-op for other exception types or when the preset bundle is unavailable.
+    void refine_bed_mismatch_message(Slic3r::StringObjectException& ex);
+    // Classify a Print::validate warning into an issue code and push it to
+    // m_stats.issues. Some warning types (organic-support variable layer)
+    // escalate to error level.
+    void emit_validate_warning(int plate_id, const Slic3r::StringObjectException& warning);
+    // Classify a Print::validate error into an issue code and push it.
+    // STRING_EXCEPT_NOT_DEFINED is downgraded to a warning (desktop parity).
+    // Returns true if the caller should abort slicing (fatal error).
+    bool emit_validate_error(int plate_id, const Slic3r::StringObjectException& err);
+    // Check print_sequence=ByObject — U1 toolchanger blocks it as a collision
+    // risk. Returns false (with a fatal error pushed) when blocked.
+    bool check_print_by_object(int plate_id, Slic3r::Print& print);
+    // Run the filament/nozzle/bed compatibility rules (GESP, PEI adhesion,
+    // nozzle mismatch) and push any resulting warnings.
+    void check_filament_bed_rules(int plate_id, Slic3r::Print& print);
+    // Check for high+low temperature filament mixing — U1 toolchanger cannot
+    // handle the thermal difference. Returns false (with a fatal error pushed)
+    // when mixing is detected.
+    bool check_filament_temp_mixing(int plate_id, Slic3r::Print& print);
     bool run_slicing(int plate_id, Slic3r::Print& print);
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
     void run_postprocessing(int plate_id, PlateSliceResult& result);

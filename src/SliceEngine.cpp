@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <fstream>
@@ -160,57 +161,11 @@ bool SliceEngine::run()
 
     if (!m_cfg.skip_preset_substitution)
     {
-        // Bundle precondition for all three apply_*_official_preset stages.
-        // Without system presets we cannot look up official U1 / filament /
-        // process configurations, so the whole substitution block is aborted.
-        // (Previously each apply function checked this independently; the
-        // filament and process checks were effectively dead code given the
-        // printer stage already returned false on this condition.)
-        if (!m_presets_available || !m_preset_bundle)
-        {
-            std::string msg = "System presets not available; cannot apply official presets.";
-            BOOST_LOG_TRIVIAL(error) << msg;
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-            m_stats.error_message = msg;
-            m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
-            build_statistics();
-            return false;
-        }
-
-        // Strip user-supplied content (G-code, notes, post_process, external
-        // file refs) before any apply_*_official_preset stage. The three apply
-        // stages then restore official values for the keys each owns.
-        // Runs after the bundle check so the PRESETS_MISSING error path does
-        // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
-        // apply official presets, the user content stays untouched and the
-        // engine fails cleanly.
-        strip_user_content();
-
-        // Apply the official Snapmaker U1 printer preset — wholesale-replaces
-        // printer config (printable_area, machine G-code, nozzle_diameter,
-        // etc.) with official values.
-        if (!apply_printer_official_preset())
+        if (!apply_preset_substitution())
         {
             build_statistics();
             return false;
         }
-
-        // Filament official compliance check & substitution (always enforced).
-        // Runs after printer preset so PresetRollback reads the corrected
-        // nozzle_diameter from the official config, not the user's 3MF value.
-        if (!apply_filament_official_preset())
-        {
-            build_statistics();
-            return false;
-        }
-
-        // Substitute the process preset with the official Snapmaker U1 preset
-        // so that process-level settings (skirt_loops, brim_type, etc.) from a
-        // different printer profile in the 3MF don't leak through. User-explicit
-        // overrides (different_settings_to_system) are preserved.
-        // Non-blocking: substitution failure is a warning, not a fatal error.
-        apply_process_official_preset();
     }
 
     if (validate_input())
@@ -299,6 +254,52 @@ bool SliceEngine::run()
     build_statistics();
 
     return !m_plate_results.empty();
+}
+
+bool SliceEngine::apply_preset_substitution()
+{
+    // Bundle precondition for all three apply_*_official_preset stages.
+    // Without system presets we cannot look up official U1 / filament /
+    // process configurations, so the whole substitution block is aborted.
+    if (!m_presets_available || !m_preset_bundle)
+    {
+        std::string msg = "System presets not available; cannot apply official presets.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
+        return false;
+    }
+
+    // Strip user-supplied content (G-code, notes, post_process, external
+    // file refs) before any apply_*_official_preset stage. The three apply
+    // stages then restore official values for the keys each owns.
+    // Runs after the bundle check so the PRESETS_MISSING error path does
+    // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
+    // apply official presets, the user content stays untouched and the
+    // engine fails cleanly.
+    strip_user_content();
+
+    // Apply the official Snapmaker U1 printer preset — wholesale-replaces
+    // printer config (printable_area, machine G-code, nozzle_diameter,
+    // etc.) with official values.
+    if (!apply_printer_official_preset())
+        return false;
+
+    // Filament official compliance check & substitution (always enforced).
+    // Runs after printer preset so PresetRollback reads the corrected
+    // nozzle_diameter from the official config, not the user's 3MF value.
+    if (!apply_filament_official_preset())
+        return false;
+
+    // Substitute the process preset with the official Snapmaker U1 preset
+    // so that process-level settings (skirt_loops, brim_type, etc.) from a
+    // different printer profile in the 3MF don't leak through. User-explicit
+    // overrides (different_settings_to_system) are preserved.
+    // Non-blocking: substitution failure is a warning, not a fatal error.
+    apply_process_official_preset();
+    return true;
 }
 
 // ============================================================================
@@ -1368,137 +1369,16 @@ void SliceEngine::ensure_models_on_bed()
 
 void SliceEngine::decode_plate_thumbnails()
 {
-    // PNG file signature (PNG spec section 5.2, first 8 bytes are fixed).
-    static constexpr unsigned char PNG_SIGNATURE[] =
-        {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-    static constexpr std::streamsize PNG_SIGNATURE_LEN = 8;
-
-    // Max bytes accepted for a single plate thumbnail PNG.
-    // Derivation: U1 display renders 300x300; measured PNG ~30 KB. 4 MB gives
-    // ~130x headroom, covers future 600x600-class screens, still small enough
-    // to prevent OOM from a malicious oversized file.
-    static constexpr size_t MAX_PNG_SIZE = 4u * 1024u * 1024u;
-
     // All allocations (vector<unsigned char>, PNG decode buffers) live inside
     // this try block. std::bad_alloc from a malformed/huge PNG is routed to
     // an early function exit rather than propagating -- the engine's calling
     // convention treats thumbnail decode as best-effort: a missing thumbnail
     // is acceptable, an uncaught exception is not (Snapmaker no-throw policy).
+    BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: enter, plate_count=" << m_plate_data.size();
     try
     {
-        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: enter, plate_count=" << m_plate_data.size();
-    for (auto& pd : m_plate_data)
-    {
-        // Guard 1: path non-empty and ends in ".png".
-        const std::string& raw_path = pd->thumbnail_file;
-        if (raw_path.size() < 4 ||
-            raw_path.compare(raw_path.size() - 4, 4, ".png") != 0) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", path not .png";
-            continue;
-        }
-
-        // Guard 2: canonicalise and verify path under system temp root.
-        // canonical() resolves symlinks and normalises ".." components,
-        // preventing path-traversal where the .3mf supplies a thumbnail_file
-        // like "backup/../../etc/passwd.png". The system-temp-root check is
-        // done against a known temp parent (e.g. "/tmp/") rather than
-        // temp_directory_path() because TMPDIR may point to a custom location
-        // that differs from libslic3r's own temp dir (backup_path).
-        boost::system::error_code ec;
-        const boost::filesystem::path resolved = boost::filesystem::canonical(raw_path, ec);
-        if (ec) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", canonical failed (" << raw_path << ")";
-            continue;
-        }
-
-        // Verify the canonical path is under the system-wide temp root.
-        const std::string resolved_str = resolved.string();
-        bool under_temp = false;
-        for (const char* prefix : {"/tmp/", "/var/tmp/", "/private/tmp/"})
-            if (resolved_str.find(prefix) == 0) { under_temp = true; break; }
-        if (!under_temp) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", path outside temp dir (" << resolved_str << ")";
-            continue;
-        }
-
-        // Guard 3: file size in [1, MAX_PNG_SIZE].
-        const boost::uintmax_t file_sz = boost::filesystem::file_size(resolved, ec);
-        if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", bad size " << file_sz;
-            continue;
-        }
-        const size_t sz = static_cast<size_t>(file_sz);
-
-        // Guard 4: open and read full file. gcount() validates bytes read
-        // (failbit on EOF makes "!ifs" unreliable).
-        std::ifstream ifs(resolved.string(), std::ios::binary);
-        if (!ifs.is_open()) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", cannot open";
-            continue;
-        }
-
-        std::vector<unsigned char> file_bytes(sz);
-        // reinterpret_cast is required: istream::read takes char*, PNG bytes
-        // are unsigned char. This is an ifstream API constraint, not type
-        // punning; char may alias any type, safe.
-        ifs.read(reinterpret_cast<char*>(file_bytes.data()), static_cast<std::streamsize>(sz));
-        if (ifs.gcount() != static_cast<std::streamsize>(sz)) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", short read";
-            continue;
-        }
-        // ifs closes itself on destruction (RAII).
-
-        // Guard 5: PNG magic bytes.
-        bool sig_ok = true;
-        for (size_t i = 0; i < static_cast<size_t>(PNG_SIGNATURE_LEN); ++i)
-        {
-            if (file_bytes[i] != PNG_SIGNATURE[i])
-            {
-                sig_ok = false;
-                break;
-            }
-        }
-        if (!sig_ok) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", bad PNG magic";
-            continue;
-        }
-
-        // Guard 6: PNG decode.
-        Slic3r::png::ReadBuf buf{file_bytes.data(), file_bytes.size()};
-        Slic3r::png::ImageColorscale img;
-        if (!Slic3r::png::decode_colored_png(buf, img)) {
-            BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd->plate_index
-                                    << ", PNG decode failed";
-            continue;
-        }
-
-        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: success plate " << pd->plate_index
-                                << " (" << img.cols << "x" << img.rows << ")";
-
-        // Populate plate_thumbnail only after successful decode (no half-state).
-        pd->plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
-
-        const size_t src_bpp = static_cast<size_t>(img.bytes_per_pixel);
-        for (size_t y = 0; y < img.rows; ++y)
-        {
-            for (size_t x = 0; x < img.cols; ++x)
-            {
-                const size_t src_idx = (y * img.cols + x) * src_bpp;
-                const size_t dst_idx = (y * img.cols + x) * 4;
-                pd->plate_thumbnail.pixels[dst_idx + 0] = img.buf[src_idx + 0];
-                pd->plate_thumbnail.pixels[dst_idx + 1] = img.buf[src_idx + 1];
-                pd->plate_thumbnail.pixels[dst_idx + 2] = img.buf[src_idx + 2];
-                pd->plate_thumbnail.pixels[dst_idx + 3] = (src_bpp >= 4) ? img.buf[src_idx + 3] : 255;
-            }
-        }
-    }
+        for (auto& pd : m_plate_data)
+            decode_one_plate_thumbnail(*pd);
     }
     catch (const std::exception& e)
     {
@@ -1510,6 +1390,130 @@ void SliceEngine::decode_plate_thumbnails()
     catch (...)
     {
         BOOST_LOG_TRIVIAL(error) << "decode_plate_thumbnails: aborted after unknown exception";
+    }
+}
+
+void SliceEngine::decode_one_plate_thumbnail(PlateData& pd)
+{
+    // PNG file signature (PNG spec section 5.2, first 8 bytes are fixed).
+    static constexpr unsigned char PNG_SIGNATURE[] =
+        {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    static constexpr std::streamsize PNG_SIGNATURE_LEN = 8;
+
+    // Max bytes accepted for a single plate thumbnail PNG.
+    // Derivation: U1 display renders 300x300; measured PNG ~30 KB. 4 MB gives
+    // ~130x headroom, covers future 600x600-class screens, still small enough
+    // to prevent OOM from a malicious oversized file.
+    static constexpr size_t MAX_PNG_SIZE = 4u * 1024u * 1024u;
+
+    // Guard 1: path non-empty and ends in ".png".
+    const std::string& raw_path = pd.thumbnail_file;
+    if (raw_path.size() < 4 ||
+        raw_path.compare(raw_path.size() - 4, 4, ".png") != 0) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", path not .png";
+        return;
+    }
+
+    // Guard 2: canonicalise and verify path under system temp root.
+    // canonical() resolves symlinks and normalises ".." components,
+    // preventing path-traversal where the .3mf supplies a thumbnail_file
+    // like "backup/../../etc/passwd.png". The system-temp-root check is
+    // done against a known temp parent (e.g. "/tmp/") rather than
+    // temp_directory_path() because TMPDIR may point to a custom location
+    // that differs from libslic3r's own temp dir (backup_path).
+    boost::system::error_code ec;
+    const boost::filesystem::path resolved = boost::filesystem::canonical(raw_path, ec);
+    if (ec) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", canonical failed (" << raw_path << ")";
+        return;
+    }
+
+    // Verify the canonical path is under the system-wide temp root.
+    const std::string resolved_str = resolved.string();
+    bool under_temp = false;
+    for (const char* prefix : {"/tmp/", "/var/tmp/", "/private/tmp/"})
+        if (resolved_str.find(prefix) == 0) { under_temp = true; break; }
+    if (!under_temp) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", path outside temp dir (" << resolved_str << ")";
+        return;
+    }
+
+    // Guard 3: file size in [1, MAX_PNG_SIZE].
+    const boost::uintmax_t file_sz = boost::filesystem::file_size(resolved, ec);
+    if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", bad size " << file_sz;
+        return;
+    }
+    const size_t sz = static_cast<size_t>(file_sz);
+
+    // Guard 4: open and read full file. gcount() validates bytes read
+    // (failbit on EOF makes "!ifs" unreliable).
+    std::ifstream ifs(resolved.string(), std::ios::binary);
+    if (!ifs.is_open()) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", cannot open";
+        return;
+    }
+
+    std::vector<unsigned char> file_bytes(sz);
+    // reinterpret_cast is required: istream::read takes char*, PNG bytes
+    // are unsigned char. This is an ifstream API constraint, not type
+    // punning; char may alias any type, safe.
+    ifs.read(reinterpret_cast<char*>(file_bytes.data()), static_cast<std::streamsize>(sz));
+    if (ifs.gcount() != static_cast<std::streamsize>(sz)) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", short read";
+        return;
+    }
+    // ifs closes itself on destruction (RAII).
+
+    // Guard 5: PNG magic bytes.
+    bool sig_ok = true;
+    for (size_t i = 0; i < static_cast<size_t>(PNG_SIGNATURE_LEN); ++i)
+    {
+        if (file_bytes[i] != PNG_SIGNATURE[i])
+        {
+            sig_ok = false;
+            break;
+        }
+    }
+    if (!sig_ok) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", bad PNG magic";
+        return;
+    }
+
+    // Guard 6: PNG decode.
+    Slic3r::png::ReadBuf buf{file_bytes.data(), file_bytes.size()};
+    Slic3r::png::ImageColorscale img;
+    if (!Slic3r::png::decode_colored_png(buf, img)) {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
+                                << ", PNG decode failed";
+        return;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: success plate " << pd.plate_index
+                            << " (" << img.cols << "x" << img.rows << ")";
+
+    // Populate plate_thumbnail only after successful decode (no half-state).
+    pd.plate_thumbnail.set(static_cast<unsigned int>(img.cols), static_cast<unsigned int>(img.rows));
+
+    const size_t src_bpp = static_cast<size_t>(img.bytes_per_pixel);
+    for (size_t y = 0; y < img.rows; ++y)
+    {
+        for (size_t x = 0; x < img.cols; ++x)
+        {
+            const size_t src_idx = (y * img.cols + x) * src_bpp;
+            const size_t dst_idx = (y * img.cols + x) * 4;
+            pd.plate_thumbnail.pixels[dst_idx + 0] = img.buf[src_idx + 0];
+            pd.plate_thumbnail.pixels[dst_idx + 1] = img.buf[src_idx + 1];
+            pd.plate_thumbnail.pixels[dst_idx + 2] = img.buf[src_idx + 2];
+            pd.plate_thumbnail.pixels[dst_idx + 3] = (src_bpp >= 4) ? img.buf[src_idx + 3] : 255;
+        }
     }
 }
 
@@ -1626,34 +1630,8 @@ void SliceEngine::process_plate(int plate_id)
     }
 
     // Check for EmptyGcodeLayers before post-processing.
-    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
-    // exists but is effectively empty. Skip post-processing and flag as failed.
-    {
-        bool has_empty_gcode_layers = false;
-        for (const auto& iss : slice_result.issues)
-        {
-            if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
-            {
-                has_empty_gcode_layers = true;
-                break;
-            }
-        }
-        if (has_empty_gcode_layers)
-        {
-            boost::filesystem::remove(slice_result.gcode_path);
-            BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
-                                       << ": empty G-code layers, G-code file discarded";
-            for (auto& iss : slice_result.issues)
-                m_stats.issues.push_back(std::move(iss));
-            slice_result.issues.clear();
-            slice_result.gcode_result.moves.clear();
-            slice_result.gcode_result.moves.shrink_to_fit();
-            slice_result.gcode_result.lines_ends.clear();
-            slice_result.gcode_result.lines_ends.shrink_to_fit();
-            m_plate_results[plate_id] = slice_result;
-            return;
-        }
-    }
+    if (handle_empty_gcode_layers(plate_id, slice_result))
+        return;
 
     run_postprocessing(plate_id, slice_result);
 
@@ -1669,6 +1647,36 @@ void SliceEngine::process_plate(int plate_id)
     slice_result.gcode_result.lines_ends.shrink_to_fit();
 
     m_plate_results[plate_id] = slice_result;
+}
+
+bool SliceEngine::handle_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
+{
+    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
+    // exists but is effectively empty. Skip post-processing and flag as failed.
+    bool has_empty_gcode_layers = false;
+    for (const auto& iss : slice_result.issues)
+    {
+        if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
+        {
+            has_empty_gcode_layers = true;
+            break;
+        }
+    }
+    if (!has_empty_gcode_layers)
+        return false;
+
+    boost::filesystem::remove(slice_result.gcode_path);
+    BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                               << ": empty G-code layers, G-code file discarded";
+    for (auto& iss : slice_result.issues)
+        m_stats.issues.push_back(std::move(iss));
+    slice_result.issues.clear();
+    slice_result.gcode_result.moves.clear();
+    slice_result.gcode_result.moves.shrink_to_fit();
+    slice_result.gcode_result.lines_ends.clear();
+    slice_result.gcode_result.lines_ends.shrink_to_fit();
+    m_plate_results[plate_id] = slice_result;
+    return true;
 }
 
 // ============================================================================
@@ -1767,7 +1775,6 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     m_model.update_print_volume_state(build_volume);
 
     bool has_partly_outside = false;
-    bool has_spiral_lift_conflict = false;
     for (ModelObject* obj : m_model.objects)
     {
         for (ModelInstance* inst : obj->instances)
@@ -1800,64 +1807,8 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     }
 
     // Snapmaker: SpiralLiftNearBoundary warning (matches desktop 3DScene.cpp:1105-1122)
-    {
-        bool spiral_lift_active = false;
-        if (m_config.has("z_hop_types"))
-        {
-            auto* zht_opt = m_config.option<ConfigOptionEnumsGeneric>("z_hop_types");
-            if (zht_opt)
-            {
-                for (int v : zht_opt->values)
-                {
-                    if (v == static_cast<int>(ZHopType::zhtSpiral) || v == static_cast<int>(ZHopType::zhtAuto))
-                    {
-                        spiral_lift_active = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if (spiral_lift_active && build_volume.type() == BuildVolume_Type::Rectangle)
-        {
-            constexpr double SPIRAL_LIFT_SAFETY_MARGIN = 3.5; // mm
-            const BoundingBoxf3& bed_bb = build_volume.bounding_volume();
-            std::set<std::string> warned_objects;
-            for (ModelObject* obj : m_model.objects)
-            {
-                if (!obj->printable)
-                    continue;
-                for (size_t idx = 0; idx < obj->instances.size(); ++idx)
-                {
-                    ModelInstance* inst = obj->instances[idx];
-                    if (!inst->printable)
-                        continue;
-                    int lid = static_cast<int>(inst->loaded_id);
-                    if (identify_ids.find(lid) == identify_ids.end())
-                        continue;
-                    if (inst->print_volume_state != ModelInstancePVS_Inside)
-                        continue;
-                    BoundingBoxf3 bb = obj->instance_bounding_box(idx);
-                    double dist_left = std::abs(bb.min.x() - bed_bb.min.x());
-                    double dist_right = std::abs(bed_bb.max.x() - bb.max.x());
-                    double dist_bottom = std::abs(bb.min.y() - bed_bb.min.y());
-                    double dist_top = std::abs(bed_bb.max.y() - bb.max.y());
-                    double min_dist = std::min({dist_left, dist_right, dist_bottom, dist_top});
-                    if (min_dist < SPIRAL_LIFT_SAFETY_MARGIN)
-                    {
-                        if (warned_objects.insert(obj->name).second)
-                        {
-                            m_stats.issues.push_back(
-                                make_serious_warning(plate_id, "SPIRAL_LIFT_NEAR_BOUNDARY",
-                                             "Model too close to bed boundary. "
-                                             "Disable spiral lifting or keep at least 3.5mm gap to avoid collision.",
-                                             obj->name));
-                            has_spiral_lift_conflict = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    bool has_spiral_lift_conflict =
+        check_spiral_lift_near_boundary(plate_id, build_volume, identify_ids);
 
     // Restore global offsets for on-plate instances and update printable state
     for (auto& [inst, global_offset] : shifted)
@@ -1895,6 +1846,68 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     return true;
 }
 
+bool SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
+                                                  const std::set<int>& identify_ids)
+{
+    // Matches desktop 3DScene.cpp:1105-1122.
+    bool spiral_lift_active = false;
+    if (m_config.has("z_hop_types"))
+    {
+        auto* zht_opt = m_config.option<ConfigOptionEnumsGeneric>("z_hop_types");
+        if (zht_opt)
+        {
+            for (int v : zht_opt->values)
+            {
+                if (v == static_cast<int>(ZHopType::zhtSpiral) || v == static_cast<int>(ZHopType::zhtAuto))
+                {
+                    spiral_lift_active = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!spiral_lift_active || build_volume.type() != BuildVolume_Type::Rectangle)
+        return false;
+
+    constexpr double SPIRAL_LIFT_SAFETY_MARGIN = 3.5; // mm
+    const BoundingBoxf3& bed_bb = build_volume.bounding_volume();
+    std::set<std::string> warned_objects;
+    bool has_conflict = false;
+    for (ModelObject* obj : m_model.objects)
+    {
+        if (!obj->printable)
+            continue;
+        for (size_t idx = 0; idx < obj->instances.size(); ++idx)
+        {
+            ModelInstance* inst = obj->instances[idx];
+            if (!inst->printable)
+                continue;
+            int lid = static_cast<int>(inst->loaded_id);
+            if (identify_ids.find(lid) == identify_ids.end())
+                continue;
+            if (inst->print_volume_state != ModelInstancePVS_Inside)
+                continue;
+            BoundingBoxf3 bb = obj->instance_bounding_box(idx);
+            double dist_left = std::abs(bb.min.x() - bed_bb.min.x());
+            double dist_right = std::abs(bed_bb.max.x() - bb.max.x());
+            double dist_bottom = std::abs(bb.min.y() - bed_bb.min.y());
+            double dist_top = std::abs(bed_bb.max.y() - bb.max.y());
+            double min_dist = std::min({dist_left, dist_right, dist_bottom, dist_top});
+            if (min_dist < SPIRAL_LIFT_SAFETY_MARGIN
+                && warned_objects.insert(obj->name).second)
+            {
+                m_stats.issues.push_back(
+                    make_serious_warning(plate_id, "SPIRAL_LIFT_NEAR_BOUNDARY",
+                                 "Model too close to bed boundary. "
+                                 "Disable spiral lifting or keep at least 3.5mm gap to avoid collision.",
+                                 obj->name));
+                has_conflict = true;
+            }
+        }
+    }
+    return has_conflict;
+}
+
 bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
 {
     // plate_index from m_plate_data is already 0-based (import does -1 conversion)
@@ -1904,6 +1917,21 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
     // the desktop output (PartPlate::update_plate_layout_arrange).
     print.set_plate_origin(origin);
 
+    DynamicPrintConfig merged_config = prepare_merged_config_for_plate(plate_id);
+    print.apply(m_model, merged_config);
+
+    if (print.num_object_instances() == 0)
+    {
+        m_stats.issues.push_back(
+            make_warning(plate_id, "NO_PRINTABLE_OBJECTS", "No printable objects on this plate after apply"));
+        return false;
+    }
+
+    return true;
+}
+
+DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
+{
     // Guard against wipe tower / tool change mismatch.
     // If the model uses fewer extruders than filaments configured in the 3MF,
     // the wipe tower generates a tool change sequence that doesn't match actual
@@ -1918,115 +1946,114 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
     // Work on a per-plate copy so extruder-count trimming does not leak
     // into subsequent plates (m_config is shared across the pipeline).
     DynamicPrintConfig merged_config = m_config;
+
+    std::set<int> used_extruders;
+    for (ModelObject* obj : m_model.objects)
     {
-        std::set<int> used_extruders;
-        for (ModelObject* obj : m_model.objects)
+        for (ModelInstance* inst : obj->instances)
         {
-            for (ModelInstance* inst : obj->instances)
+            if (!inst->is_printable())
+                continue;
+            for (ModelVolume* vol : obj->volumes)
             {
-                if (!inst->is_printable())
+                if (!vol->is_model_part())
                     continue;
-                for (ModelVolume* vol : obj->volumes)
-                {
-                    if (!vol->is_model_part())
-                        continue;
-                    for (int eid : vol->get_extruders())
-                        used_extruders.insert(eid);
-                }
+                for (int eid : vol->get_extruders())
+                    used_extruders.insert(eid);
             }
         }
+    }
 
-        int num_filaments = 0;
-        if (m_config.has("filament_diameter"))
-        {
-            auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
-            if (fd)
-                num_filaments = static_cast<int>(fd->values.size());
-        }
+    int num_filaments = 0;
+    if (m_config.has("filament_diameter"))
+    {
+        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
+        if (fd)
+            num_filaments = static_cast<int>(fd->values.size());
+    }
 
-        // If volumes suggest single extruder, also check plate-level ToolChange
-        // custom G-code (AMS per-layer filament switching).
-        if (used_extruders.size() <= 1 && num_filaments > 1)
+    // If volumes suggest single extruder, also check plate-level ToolChange
+    // custom G-code (AMS per-layer filament switching).
+    if (used_extruders.size() <= 1 && num_filaments > 1)
+    {
+        auto it = m_model.plates_custom_gcodes.find(plate_id);
+        if (it != m_model.plates_custom_gcodes.end())
         {
-            auto it = m_model.plates_custom_gcodes.find(plate_id);
-            if (it != m_model.plates_custom_gcodes.end())
+            for (const auto& item : it->second.gcodes)
             {
-                for (const auto& item : it->second.gcodes)
-                {
-                    if (item.type == CustomGCode::Type::ToolChange && item.extruder > 0)
-                        used_extruders.insert(item.extruder);
-                }
+                if (item.type == CustomGCode::Type::ToolChange && item.extruder > 0)
+                    used_extruders.insert(item.extruder);
             }
         }
+    }
 
-        // If still single, also check the single_extruder_multi_material config flag
-        // (used by non-Bambu printers for single-nozzle multi-filament).
-        if (used_extruders.size() <= 1 && num_filaments > 1)
+    // If still single, also check the single_extruder_multi_material config flag
+    // (used by non-Bambu printers for single-nozzle multi-filament).
+    if (used_extruders.size() <= 1 && num_filaments > 1)
+    {
+        auto* semm = m_config.option<ConfigOptionBool>("single_extruder_multi_material");
+        if (semm && semm->value)
         {
-            auto* semm = m_config.option<ConfigOptionBool>("single_extruder_multi_material");
-            if (semm && semm->value)
+            // Model genuinely uses multiple filaments through one extruder.
+            // Insert sentinel values to prevent trimming.
+            used_extruders.insert(1);
+            used_extruders.insert(2);
+        }
+    }
+
+    if (used_extruders.size() <= 1 && num_filaments > 1)
+    {
+        BOOST_LOG_TRIVIAL(info) << "Trimming filament config from " << num_filaments
+                                << " to 1 to match single-extruder model";
+        merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
+
+        // Truncate all filament-related array options to 1 entry.
+        // This prevents Print::has_wipe_tower() from returning true due to
+        // filament_diameter.size() > 1, which is the root cause of the
+        // "append_tcr was asked to do a toolchange it didn't expect" error.
+        // flush_volumes_matrix (N*N flat vector) and wiping_volumes_extruders
+        // must also be trimmed to keep the config internally consistent:
+        // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
+        constexpr const char* trim_keys[] = {
+            "filament_diameter",    "filament_density",         "filament_cost",        "filament_colour",
+            "filament_type",        "filament_is_support",      "filament_settings_id", "nozzle_diameter",
+            "flush_volumes_matrix", "wiping_volumes_extruders",
+        };
+        for (const char* key : trim_keys)
+        {
+            auto* opt = merged_config.option(key, true);
+            if (!opt)
+                continue;
+            if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt))
             {
-                // Model genuinely uses multiple filaments through one extruder.
-                // Insert sentinel values to prevent trimming.
-                used_extruders.insert(1);
-                used_extruders.insert(2);
+                if (!fs->values.empty())
+                {
+                    fs->values.resize(1);
+                    merged_config.set_key_value(key, new ConfigOptionFloats(fs->values));
+                }
             }
-        }
-
-        if (used_extruders.size() <= 1 && num_filaments > 1)
-        {
-            BOOST_LOG_TRIVIAL(info) << "Trimming filament config from " << num_filaments
-                                    << " to 1 to match single-extruder model";
-            merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-
-            // Truncate all filament-related array options to 1 entry.
-            // This prevents Print::has_wipe_tower() from returning true due to
-            // filament_diameter.size() > 1, which is the root cause of the
-            // "append_tcr was asked to do a toolchange it didn't expect" error.
-            // flush_volumes_matrix (N*N flat vector) and wiping_volumes_extruders
-            // must also be trimmed to keep the config internally consistent:
-            // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
-            constexpr const char* trim_keys[] = {
-                "filament_diameter",    "filament_density",         "filament_cost",        "filament_colour",
-                "filament_type",        "filament_is_support",      "filament_settings_id", "nozzle_diameter",
-                "flush_volumes_matrix", "wiping_volumes_extruders",
-            };
-            for (const char* key : trim_keys)
+            else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt))
             {
-                auto* opt = merged_config.option(key, true);
-                if (!opt)
-                    continue;
-                if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt))
+                if (!ss->values.empty())
                 {
-                    if (!fs->values.empty())
-                    {
-                        fs->values.resize(1);
-                        merged_config.set_key_value(key, new ConfigOptionFloats(fs->values));
-                    }
+                    ss->values.resize(1);
+                    merged_config.set_key_value(key, new ConfigOptionStrings(ss->values));
                 }
-                else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt))
+            }
+            else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt))
+            {
+                if (!bs->values.empty())
                 {
-                    if (!ss->values.empty())
-                    {
-                        ss->values.resize(1);
-                        merged_config.set_key_value(key, new ConfigOptionStrings(ss->values));
-                    }
-                }
-                else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt))
-                {
-                    if (!bs->values.empty())
-                    {
-                        bs->values.resize(1);
-                        merged_config.set_key_value(key, new ConfigOptionBools(bs->values));
-                    }
+                    bs->values.resize(1);
+                    merged_config.set_key_value(key, new ConfigOptionBools(bs->values));
                 }
             }
         }
-        else if (used_extruders.size() <= 1)
-        {
-            BOOST_LOG_TRIVIAL(info) << "Disabling prime tower (single extruder model)";
-            merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-        }
+    }
+    else if (used_extruders.size() <= 1)
+    {
+        BOOST_LOG_TRIVIAL(info) << "Disabling prime tower (single extruder model)";
+        merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
     }
 
     // Apply per-plate config overrides (curr_bed_type, print_sequence, spiral_mode, etc.)
@@ -2038,16 +2065,7 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
             break;
         }
     }
-    print.apply(m_model, merged_config);
-
-    if (print.num_object_instances() == 0)
-    {
-        m_stats.issues.push_back(
-            make_warning(plate_id, "NO_PRINTABLE_OBJECTS", "No printable objects on this plate after apply"));
-        return false;
-    }
-
-    return true;
+    return merged_config;
 }
 
 bool SliceEngine::run_validation(int plate_id, Print& print)
@@ -2055,71 +2073,121 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
     StringObjectException warning;
     StringObjectException err = print.validate(&warning, nullptr, nullptr);
 
-    // --- #6: Refine bed mismatch error/warning messages (desktop parity) ---
-    // Replace extruder number with user-friendly filament name.
-    auto refine_bed_mismatch_message = [&](StringObjectException& ex) {
-        if (ex.type == STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE
-            && m_preset_bundle
-            && ex.params.size() >= 3)
-        {
-            try {
-                int extruder_idx = std::stoi(ex.params[2]) - 1;
-                if (extruder_idx >= 0
-                    && extruder_idx < static_cast<int>(m_preset_bundle->filament_presets.size()))
-                {
-                    std::string preset_name = m_preset_bundle->filament_presets[extruder_idx];
-                    std::string alias;
-                    if (auto it = m_preset_bundle->filaments.find_preset(preset_name, false)) {
-                        if (it->is_system) {
-                            alias = it->alias;
-                        } else {
-                            auto* base = m_preset_bundle->filaments.get_preset_base(*it);
-                            if (base && !base->alias.empty())
-                                alias = base->alias;
-                        }
-                    }
-                    if (alias.empty()) {
-                        auto pos = preset_name.rfind(" @");
-                        if (pos != std::string::npos)
-                            alias = preset_name.substr(0, pos);
-                        else
-                            alias = preset_name;
-                    }
-                    ex.string = std::string("Plate ") + ex.params[0] + ": "
-                        + ex.params[1] + " is not suggested to be used to print filament "
-                        + ex.params[2] + " (" + alias + "). "
-                        + "If you still want to do this print job, please set this filament's "
-                        + "bed temperature to non-zero.";
-                }
-            } catch (...) { /* keep original message */ }
-        }
-    };
     refine_bed_mismatch_message(warning);
     refine_bed_mismatch_message(err);
 
     if (!warning.string.empty())
+        emit_validate_warning(plate_id, warning);
+
+    if (!err.string.empty())
+        if (!emit_validate_error(plate_id, err))
+            return false;
+
+    if (!check_print_by_object(plate_id, print))
+        return false;
+
+    check_filament_bed_rules(plate_id, print);
+
+    if (!check_filament_temp_mixing(plate_id, print))
+        return false;
+
+    return true;
+}
+
+void SliceEngine::refine_bed_mismatch_message(StringObjectException& ex)
+{
+    // Replace extruder number with user-friendly filament name (desktop parity).
+    if (ex.type != STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE
+        || !m_preset_bundle
+        || ex.params.size() < 3)
+        return;
+
+    int extruder_idx = 0;
+    try {
+        extruder_idx = std::stoi(ex.params[2]) - 1;
+    } catch (...) {
+        return;
+    }
+    if (extruder_idx < 0
+        || extruder_idx >= static_cast<int>(m_preset_bundle->filament_presets.size()))
+        return;
+
+    std::string preset_name = m_preset_bundle->filament_presets[extruder_idx];
+    std::string alias;
+    if (auto it = m_preset_bundle->filaments.find_preset(preset_name, false)) {
+        if (it->is_system) {
+            alias = it->alias;
+        } else {
+            auto* base = m_preset_bundle->filaments.get_preset_base(*it);
+            if (base && !base->alias.empty())
+                alias = base->alias;
+        }
+    }
+    if (alias.empty()) {
+        auto pos = preset_name.rfind(" @");
+        if (pos != std::string::npos)
+            alias = preset_name.substr(0, pos);
+        else
+            alias = preset_name;
+    }
+    ex.string = std::string("Plate ") + ex.params[0] + ": "
+        + ex.params[1] + " is not suggested to be used to print filament "
+        + ex.params[2] + " (" + alias + "). "
+        + "If you still want to do this print job, please set this filament's "
+        + "bed temperature to non-zero.";
+}
+
+void SliceEngine::emit_validate_warning(int plate_id, const StringObjectException& warning)
+{
+    auto [obj_name, opt_hint] = format_exception_context(warning);
+    BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
+
+    std::string wcode;
+    switch (warning.type)
     {
-        auto [obj_name, opt_hint] = format_exception_context(warning);
-        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
-        std::string wcode;
-        switch (warning.type)
+    case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
+        wcode = "PRINT_VALIDATE_WARNING_FILAMENT_BED_MISMATCH";
+        break;
+    case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
+        wcode = "PRINT_VALIDATE_WARNING_FILAMENT_TEMP_MISMATCH";
+        break;
+    case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
+        wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_SEQ";
+        break;
+    case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
+        wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_LAYER";
+        break;
+    case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
+        wcode = "PRINT_VALIDATE_WARNING_LAYER_HEIGHT_LIMIT";
+        break;
+    case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
+        m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
+            "Organic supports do not support variable layer height. "
+            "Please disable variable layer height or switch to non-organic support type.",
+            obj_name,
+            "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        break;
+    default:
+        wcode = "PRINT_VALIDATE_WARNING";
+        break;
+    }
+    if (!wcode.empty())
+        m_stats.issues.push_back(make_warning(plate_id, wcode, warning.string + opt_hint, obj_name));
+}
+
+bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException& err)
+{
+    auto [obj_name, opt_hint] = format_exception_context(err);
+    // STRING_EXCEPT_NOT_DEFINED (type 0) is used by the library for generic
+    // checks (e.g. exceeds-build-volume-height) that the desktop GUI treats
+    // as non-fatal warnings. Match that behaviour.
+    if (err.type == STRING_EXCEPT_NOT_DEFINED)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+        if (err.string.find("Variable layer height is not supported with Organic supports") != std::string::npos)
         {
-        case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-            wcode = "PRINT_VALIDATE_WARNING_FILAMENT_BED_MISMATCH";
-            break;
-        case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-            wcode = "PRINT_VALIDATE_WARNING_FILAMENT_TEMP_MISMATCH";
-            break;
-        case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-            wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_SEQ";
-            break;
-        case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-            wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_LAYER";
-            break;
-        case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-            wcode = "PRINT_VALIDATE_WARNING_LAYER_HEIGHT_LIMIT";
-            break;
-        case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
             m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
                 "Organic supports do not support variable layer height. "
                 "Please disable variable layer height or switch to non-organic support type.",
@@ -2127,160 +2195,130 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
                 "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
             m_any_error = true;
             set_error_type(EXIT_PREPROCESS_ERROR);
-            break;
-        default:
-            wcode = "PRINT_VALIDATE_WARNING";
-            break;
-        }
-        if (!wcode.empty())
-            m_stats.issues.push_back(make_warning(plate_id, wcode, warning.string + opt_hint, obj_name));
-    }
-
-    if (!err.string.empty())
-    {
-        auto [obj_name, opt_hint] = format_exception_context(err);
-        // STRING_EXCEPT_NOT_DEFINED (type 0) is used by the library for
-        // generic checks (e.g. exceeds-build-volume-height) that the
-        // desktop GUI treats as non-fatal warnings.  Match that behavior.
-        if (err.type == STRING_EXCEPT_NOT_DEFINED)
-        {
-            BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-            if (err.string.find("Variable layer height is not supported with Organic supports") != std::string::npos)
-            {
-                m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
-                    "Organic supports do not support variable layer height. "
-                    "Please disable variable layer height or switch to non-organic support type.",
-                    obj_name,
-                    "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
-                m_any_error = true;
-                set_error_type(EXIT_PREPROCESS_ERROR);
-            }
-            else
-            {
-                m_stats.issues.push_back(make_warning(plate_id, "PRINT_VALIDATE_WARNING",
-                                                      err.string + opt_hint, obj_name));
-            }
         }
         else
         {
-            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-            std::string ecode;
-            switch (err.type)
-            {
-            case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-                ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH";
-                break;
-            case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-                ecode = "PRINT_VALIDATE_FILAMENT_TEMP_MISMATCH";
-                break;
-            case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-                ecode = "PRINT_VALIDATE_OBJECT_COLLISION_SEQ";
-                break;
-            case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-                ecode = "PRINT_VALIDATE_OBJECT_COLLISION_LAYER";
-                break;
-            case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-                ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
-                break;
-            case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
-                ecode = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
-                break;
-            default:
-                ecode = "PRINT_VALIDATE_ERROR";
-                break;
-            }
-            m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-            return false;
+            m_stats.issues.push_back(make_warning(plate_id, "PRINT_VALIDATE_WARNING",
+                                                  err.string + opt_hint, obj_name));
         }
+        // NOT_DEFINED never aborts slicing — falls through to subsequent checks.
+        return true;
     }
 
-    // --- #1: Snapmaker U1 + Print By Object blocks slicing (desktop parity) ---
-    if (print.config().print_sequence.value == PrintSequence::ByObject) {
-        m_stats.issues.push_back(make_error(
-            plate_id, "PRINT_BY_OBJECT_CAUTION",
-            "Print-by-object may cause the print head to collide with printed parts during switching.",
-            "" /*object_name*/,
-            "In Snapmaker Orca, switch to print-by-layer or ensure sufficient clearance between objects."));
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        return false;
-    }
-
-    // --- #2: Filament/nozzle/bed compatibility checks (desktop parity) ---
+    BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+    std::string ecode;
+    switch (err.type)
     {
-        NozzleFilamentRuleMismatch nozzle_mismatch;
-        bool is_gesp = false, is_pei_not_pla = false, is_pei_tpu = false;
+    case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
+        ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH";
+        break;
+    case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
+        ecode = "PRINT_VALIDATE_FILAMENT_TEMP_MISMATCH";
+        break;
+    case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
+        ecode = "PRINT_VALIDATE_OBJECT_COLLISION_SEQ";
+        break;
+    case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
+        ecode = "PRINT_VALIDATE_OBJECT_COLLISION_LAYER";
+        break;
+    case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
+        ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
+        break;
+    case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
+        ecode = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
+        break;
+    default:
+        ecode = "PRINT_VALIDATE_ERROR";
+        break;
+    }
+    m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
+    m_any_error = true;
+    set_error_type(EXIT_PREPROCESS_ERROR);
+    return false;
+}
 
-        print.filament_rule_mismatch_flags(nozzle_mismatch, is_gesp,
-                                           is_pei_not_pla, is_pei_tpu,
-                                           m_preset_bundle.get());
+bool SliceEngine::check_print_by_object(int plate_id, Print& print)
+{
+    // U1 toolchanger cannot safely print by object — collision risk during
+    // tool switches. Block at validation rather than letting it reach slicing.
+    if (print.config().print_sequence.value != PrintSequence::ByObject)
+        return true;
 
-        // A: Nozzle mismatch
-        if (nozzle_mismatch.has_mismatch) {
-            std::string msg = "Using a " + nozzle_mismatch.nozzle_diameter_mm
-                            + " mm " + nozzle_mismatch.nozzle_type_key
-                            + " nozzle for "
-                            + (nozzle_mismatch.filament_preset_name.empty()
-                                   ? "(unknown)"
-                                   : nozzle_mismatch.filament_preset_name)
-                            + " is not recommended.";
-            m_stats.issues.push_back(make_warning(
-                plate_id, "FILAMENT_NOZZLE_MISMATCH", msg));
-        }
+    m_stats.issues.push_back(make_error(
+        plate_id, "PRINT_BY_OBJECT_CAUTION",
+        "Print-by-object may cause the print head to collide with printed parts during switching.",
+        "" /*object_name*/,
+        "In Snapmaker Orca, switch to print-by-layer or ensure sufficient clearance between objects."));
+    m_any_error = true;
+    set_error_type(EXIT_PREPROCESS_ERROR);
+    return false;
+}
 
-        // D: PEI + TPU (higher priority than C, per desktop behavior)
-        if (is_pei_tpu) {
-            m_stats.issues.push_back(make_warning(
-                plate_id, "FILAMENT_BED_PEI_TPU_STICKING",
-                "Filament may stick too strongly to the smooth PEI plate. "
-                "Apply glue to protect the plate and ease part removal."));
-        }
+void SliceEngine::check_filament_bed_rules(int plate_id, Print& print)
+{
+    NozzleFilamentRuleMismatch nozzle_mismatch;
+    bool is_gesp = false, is_pei_not_pla = false, is_pei_tpu = false;
 
-        // C: PEI + non-PLA (suppressed if D also triggered)
-        if (is_pei_not_pla && !is_pei_tpu) {
-            m_stats.issues.push_back(make_warning(
-                plate_id, "FILAMENT_BED_PEI_ADHESION",
-                "Filament may not adhere well to the smooth PEI plate on "
-                "the first layer. Apply glue before printing."));
-        }
+    print.filament_rule_mismatch_flags(nozzle_mismatch, is_gesp,
+                                       is_pei_not_pla, is_pei_tpu,
+                                       m_preset_bundle.get());
 
-        // B: GESP
-        if (is_gesp) {
-            m_stats.issues.push_back(make_warning(
-                plate_id, "FILAMENT_BED_GESP_ADHESION",
-                "Low adhesion to the graphic effect plate may cause failure. "
-                "Use a different filament instead."));
-        }
+    if (nozzle_mismatch.has_mismatch) {
+        std::string msg = "Using a " + nozzle_mismatch.nozzle_diameter_mm
+                        + " mm " + nozzle_mismatch.nozzle_type_key
+                        + " nozzle for "
+                        + (nozzle_mismatch.filament_preset_name.empty()
+                               ? "(unknown)"
+                               : nozzle_mismatch.filament_preset_name)
+                        + " is not recommended.";
+        m_stats.issues.push_back(make_warning(
+            plate_id, "FILAMENT_NOZZLE_MISMATCH", msg));
     }
 
-    // --- #3: High/low temperature filament mixing check (desktop parity) ---
+    // PEI + TPU has higher priority than PEI + non-PLA (desktop parity).
+    if (is_pei_tpu) {
+        m_stats.issues.push_back(make_warning(
+            plate_id, "FILAMENT_BED_PEI_TPU_STICKING",
+            "Filament may stick too strongly to the smooth PEI plate. "
+            "Apply glue to protect the plate and ease part removal."));
+    } else if (is_pei_not_pla) {
+        m_stats.issues.push_back(make_warning(
+            plate_id, "FILAMENT_BED_PEI_ADHESION",
+            "Filament may not adhere well to the smooth PEI plate on "
+            "the first layer. Apply glue before printing."));
+    }
+
+    if (is_gesp) {
+        m_stats.issues.push_back(make_warning(
+            plate_id, "FILAMENT_BED_GESP_ADHESION",
+            "Low adhesion to the graphic effect plate may cause failure. "
+            "Use a different filament instead."));
+    }
+}
+
+bool SliceEngine::check_filament_temp_mixing(int plate_id, Print& print)
+{
     // Uses filament_is_high_temperature from config, same data source as the
     // desktop GUI's check_filament_temp_mixing and chamber_cooling_mode.
-    {
-        bool has_high = false, has_low = false;
-        for (unsigned int extruder : print.extruders()) {
-            if (print.config().filament_is_high_temperature.get_at(extruder))
-                has_high = true;
-            else
-                has_low = true;
-        }
-        if (has_high && has_low) {
-            std::string msg =
-                "Cannot print multiple filaments which have large difference of "
-                "temperature together. Otherwise, the extruder and nozzle may be "
-                "blocked or damaged during printing.";
-            BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << msg;
-            m_stats.issues.push_back(make_error(
-                plate_id, "FILAMENT_TEMP_MIXING", msg));
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-            return false;
-        }
+    bool has_high = false, has_low = false;
+    for (unsigned int extruder : print.extruders()) {
+        if (print.config().filament_is_high_temperature.get_at(extruder))
+            has_high = true;
+        else
+            has_low = true;
     }
+    if (!has_high || !has_low)
+        return true;
 
-    return true;
+    std::string msg =
+        "Cannot print multiple filaments which have large difference of "
+        "temperature together. Otherwise, the extruder and nozzle may be "
+        "blocked or damaged during printing.";
+    BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << msg;
+    m_stats.issues.push_back(make_error(plate_id, "FILAMENT_TEMP_MIXING", msg));
+    m_any_error = true;
+    set_error_type(EXIT_PREPROCESS_ERROR);
+    return false;
 }
 
 bool SliceEngine::run_slicing(int plate_id, Print& print)
@@ -2611,11 +2649,10 @@ void SliceEngine::package_output()
     BOOST_LOG_TRIVIAL(info) << "Creating gcode.3mf package...";
 
     std::string printer_model_id;
-    std::string nozzle_diameters_str;
-
     if (m_config.has("printer_model"))
         printer_model_id = m_config.opt_string("printer_model");
 
+    std::string nozzle_diameters_str;
     if (m_config.has("nozzle_diameter"))
     {
         auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
@@ -2632,16 +2669,104 @@ void SliceEngine::package_output()
         }
     }
 
-    const ConfigOptionStrings* filament_types = nullptr;
-    const ConfigOptionStrings* filament_colors = nullptr;
-    const ConfigOptionStrings* filament_ids = nullptr;
+    populate_plate_data_for_export(printer_model_id, nozzle_diameters_str);
 
-    if (m_config.has("filament_type"))
-        filament_types = m_config.option<ConfigOptionStrings>("filament_type");
-    if (m_config.has("filament_colour"))
-        filament_colors = m_config.option<ConfigOptionStrings>("filament_colour");
-    if (m_config.has("filament_ids"))
-        filament_ids = m_config.option<ConfigOptionStrings>("filament_ids");
+    StoreParams params;
+    params.path = m_output_path.c_str();
+    params.plate_data_list = m_plate_data;
+    params.model = &m_model;
+    params.config = &m_config;
+    params.project_presets = m_project_presets;
+
+    if (m_cfg.single_plate)
+        params.export_plate_idx = m_cfg.plate_id - 1;
+    else
+        params.export_plate_idx = -1;
+
+    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel |
+                      SaveStrategy::WithGcode | SaveStrategy::SkipModel |
+                      SaveStrategy::Zip64;
+    params.project = nullptr;
+    params.profile = nullptr;
+
+    // Thumbnail data: one default-constructed (reset) ThumbnailData per plate,
+    // every pointer non-NULL but is_valid() == false.  Prevents NULL deref in
+    // headless environments (no GPU / Mesa / EGL) while the fallback path in
+    // _BBS_3MF_Exporter still picks up PNG files from plate_data on disk.
+    // Owned holders must outlive the store_bbs_3mf call — params holds raw
+    // pointers into them.
+    size_t plate_count = m_plate_data.size();
+    std::vector<std::unique_ptr<ThumbnailData>> thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> no_light_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> top_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> pick_thumbnail_owned;
+    std::vector<std::unique_ptr<ThumbnailData>> calibration_thumbnail_owned;
+    thumbnail_owned.reserve(plate_count);
+    no_light_thumbnail_owned.reserve(plate_count);
+    top_thumbnail_owned.reserve(plate_count);
+    pick_thumbnail_owned.reserve(plate_count);
+    calibration_thumbnail_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i)
+    {
+        thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        no_light_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        top_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        pick_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        calibration_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
+        params.thumbnail_data.push_back(thumbnail_owned.back().get());
+        params.no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
+        params.top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
+        params.pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
+        params.calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
+    }
+
+    std::vector<PlateBBoxData*> id_bboxes;
+    std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
+    id_bboxes_owned.reserve(plate_count);
+    for (size_t i = 0; i < plate_count; ++i)
+    {
+        id_bboxes_owned.push_back(std::make_unique<PlateBBoxData>());
+        id_bboxes.push_back(id_bboxes_owned.back().get());
+    }
+    params.id_bboxes = id_bboxes;
+
+    try
+    {
+        bool success = store_bbs_3mf(params);
+        if (!success)
+        {
+            BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package";
+            m_any_error = true;
+            set_error_type(EXIT_EXPORT_ERROR);
+            std::string msg = "Failed to create output package. The slicing result could not be saved.";
+            m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
+            if (m_stats.error_message.empty())
+                m_stats.error_message = msg;
+            return;
+        }
+        BOOST_LOG_TRIVIAL(info) << "gcode.3mf package created: " << m_output_path;
+    }
+    catch (const std::exception& e)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package: " << e.what();
+        m_any_error = true;
+        set_error_type(EXIT_EXPORT_ERROR);
+        std::string msg = "Failed to create output package due to an internal error.";
+        m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
+        if (m_stats.error_message.empty())
+            m_stats.error_message = msg;
+    }
+}
+
+void SliceEngine::populate_plate_data_for_export(const std::string& printer_model_id,
+                                                 const std::string& nozzle_diameters_str)
+{
+    const ConfigOptionStrings* filament_types =
+        m_config.has("filament_type") ? m_config.option<ConfigOptionStrings>("filament_type") : nullptr;
+    const ConfigOptionStrings* filament_colors =
+        m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
+    const ConfigOptionStrings* filament_ids =
+        m_config.has("filament_ids") ? m_config.option<ConfigOptionStrings>("filament_ids") : nullptr;
 
     for (auto& pd : m_plate_data)
     {
@@ -2702,91 +2827,6 @@ void SliceEngine::package_output()
             }
         }
     }
-
-    StoreParams params;
-    params.path = m_output_path.c_str();
-    params.plate_data_list = m_plate_data;
-    params.model = &m_model;
-    params.config = &m_config;
-    params.project_presets = m_project_presets;
-
-    if (m_cfg.single_plate)
-        params.export_plate_idx = m_cfg.plate_id - 1;
-    else
-        params.export_plate_idx = -1;
-
-    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel |
-                      SaveStrategy::WithGcode | SaveStrategy::SkipModel |
-                      SaveStrategy::Zip64;
-
-    // Thumbnail data: one default-constructed (reset) ThumbnailData per plate,
-    // every pointer non-NULL but is_valid() == false.  Prevents NULL deref in
-    // headless environments (no GPU / Mesa / EGL) while the fallback path in
-    // _BBS_3MF_Exporter still picks up PNG files from plate_data on disk.
-    size_t plate_count = m_plate_data.size();
-    std::vector<std::unique_ptr<ThumbnailData>> thumbnail_owned;
-    std::vector<std::unique_ptr<ThumbnailData>> no_light_thumbnail_owned;
-    std::vector<std::unique_ptr<ThumbnailData>> top_thumbnail_owned;
-    std::vector<std::unique_ptr<ThumbnailData>> pick_thumbnail_owned;
-    std::vector<std::unique_ptr<ThumbnailData>> calibration_thumbnail_owned;
-    thumbnail_owned.reserve(plate_count);
-    no_light_thumbnail_owned.reserve(plate_count);
-    top_thumbnail_owned.reserve(plate_count);
-    pick_thumbnail_owned.reserve(plate_count);
-    calibration_thumbnail_owned.reserve(plate_count);
-    for (size_t i = 0; i < plate_count; ++i)
-    {
-        thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
-        no_light_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
-        top_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
-        pick_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
-        calibration_thumbnail_owned.push_back(std::make_unique<ThumbnailData>());
-        params.thumbnail_data.push_back(thumbnail_owned.back().get());
-        params.no_light_thumbnail_data.push_back(no_light_thumbnail_owned.back().get());
-        params.top_thumbnail_data.push_back(top_thumbnail_owned.back().get());
-        params.pick_thumbnail_data.push_back(pick_thumbnail_owned.back().get());
-        params.calibration_thumbnail_data.push_back(calibration_thumbnail_owned.back().get());
-    }
-
-    std::vector<PlateBBoxData*> id_bboxes;
-    std::vector<std::unique_ptr<PlateBBoxData>> id_bboxes_owned;
-    id_bboxes_owned.reserve(plate_count);
-    for (size_t i = 0; i < plate_count; ++i)
-    {
-        id_bboxes_owned.push_back(std::make_unique<PlateBBoxData>());
-        id_bboxes.push_back(id_bboxes_owned.back().get());
-    }
-    params.id_bboxes = id_bboxes;
-
-    params.project = nullptr;
-    params.profile = nullptr;
-
-    try
-    {
-        bool success = store_bbs_3mf(params);
-        if (!success)
-        {
-            BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package";
-            m_any_error = true;
-            set_error_type(EXIT_EXPORT_ERROR);
-            std::string msg = "Failed to create output package. The slicing result could not be saved.";
-            m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
-            if (m_stats.error_message.empty())
-                m_stats.error_message = msg;
-            return;
-        }
-        BOOST_LOG_TRIVIAL(info) << "gcode.3mf package created: " << m_output_path;
-    }
-    catch (const std::exception& e)
-    {
-        BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package: " << e.what();
-        m_any_error = true;
-        set_error_type(EXIT_EXPORT_ERROR);
-        std::string msg = "Failed to create output package due to an internal error.";
-        m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
-        if (m_stats.error_message.empty())
-            m_stats.error_message = msg;
-    }
 }
 
 // ============================================================================
@@ -2822,231 +2862,196 @@ void SliceEngine::build_statistics()
     {
         SliceOutputStats::PlateStats plate_stats;
         plate_stats.plate_id = plate_id;
-
-        bool plate_has_error = false;
-        bool plate_has_warning = false;
-        for (const auto& issue : result.issues)
-        {
-            if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
-                plate_has_error = true;
-            if (issue.level == IssueLevel::warning || issue.level == IssueLevel::serious_warning)
-                plate_has_warning = true;
-            m_stats.issues.push_back(issue);
-        }
-
-        plate_stats.success = !plate_has_error;
-        if (plate_has_error)
-        {
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-        }
-        if (plate_has_warning || result.has_postprocess_warning)
-            m_any_postprocess_warning = true;
-
-        plate_stats.issues = result.issues;
-
-        if (plate_stats.success)
-        {
-            plate_stats.gcode_file = m_output_path;
-
-            auto& modes = result.gcode_result.print_statistics.modes;
-            auto& normal_mode = modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)];
-            plate_stats.total_time = normal_mode.time;
-            plate_stats.prepare_time = normal_mode.prepare_time;
-            plate_stats.print_time = normal_mode.time - normal_mode.prepare_time;
-            if (!std::isfinite(plate_stats.print_time))
-            {
-                BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << " print time is non-finite (" << normal_mode.time
-                                           << " - " << normal_mode.prepare_time << "), falling back to 0";
-                plate_stats.print_time = 0.0f;
-            }
-
-            plate_stats.total_filament_m = result.total_used_filament;
-            plate_stats.total_filament_g = result.total_weight;
-            plate_stats.total_cost = result.total_cost;
-            plate_stats.support_used = result.support_used;
-            plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
-            plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
-
-            // Calculate model filament
-            double total_support_m = 0.0, total_support_g = 0.0;
-            double total_flush_m = 0.0, total_flush_g = 0.0;
-            double total_wipe_tower_m = 0.0, total_wipe_tower_g = 0.0;
-
-            const auto& fd = result.gcode_result.filament_diameters;
-            const auto& fdens = result.gcode_result.filament_densities;
-
-            for (const auto& [extruder_id, volume] : result.filament_volumes)
-            {
-                if (extruder_id < fd.size() && extruder_id < fdens.size())
-                {
-                    double diameter = fd[extruder_id];
-                    double density = fdens[extruder_id];
-                    double cross_section = M_PI * 0.25 * diameter * diameter;
-                    double used_m = (volume / cross_section) * 0.001;
-                    double used_g = volume * density * 0.001;
-                    plate_stats.filament_used_m[extruder_id] = used_m;
-                    plate_stats.filament_used_g[extruder_id] = used_g;
-                }
-            }
-
-            auto& ps = result.gcode_result.print_statistics;
-            for (const auto& [extruder_id, volume] : ps.support_volumes_per_extruder)
-            {
-                if (extruder_id < fd.size() && extruder_id < fdens.size())
-                {
-                    double cross_section = M_PI * 0.25 * fd[extruder_id] * fd[extruder_id];
-                    total_support_m += (volume / cross_section) * 0.001;
-                    total_support_g += volume * fdens[extruder_id] * 0.001;
-                }
-            }
-
-            for (const auto& [extruder_id, volume] : ps.wipe_tower_volumes_per_extruder)
-            {
-                if (extruder_id < fd.size() && extruder_id < fdens.size())
-                {
-                    double cross_section = M_PI * 0.25 * fd[extruder_id] * fd[extruder_id];
-                    total_wipe_tower_m += (volume / cross_section) * 0.001;
-                    total_wipe_tower_g += volume * fdens[extruder_id] * 0.001;
-                }
-            }
-
-            for (const auto& [extruder_id, volume] : ps.flush_per_filament)
-            {
-                if (extruder_id < fd.size() && extruder_id < fdens.size())
-                {
-                    double cross_section = M_PI * 0.25 * fd[extruder_id] * fd[extruder_id];
-                    total_flush_m += (volume / cross_section) * 0.001;
-                    total_flush_g += volume * fdens[extruder_id] * 0.001;
-                }
-            }
-
-            plate_stats.model_filament_m =
-                plate_stats.total_filament_m - total_support_m - total_flush_m - total_wipe_tower_m;
-            plate_stats.model_filament_g =
-                plate_stats.total_filament_g - total_support_g - total_flush_g - total_wipe_tower_g;
-
-            if (m_config.has("nozzle_diameter"))
-            {
-                auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
-                if (nozzle_opt)
-                    plate_stats.nozzle_diameters = nozzle_opt->values;
-            }
-
-            plate_stats.plate_count = static_cast<int>(m_plate_data.size());
-
-            const ConfigOptionStrings* ftypes =
-                m_config.has("filament_type") ? m_config.option<ConfigOptionStrings>("filament_type") : nullptr;
-            const ConfigOptionStrings* fcolors =
-                m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
-
-            for (const auto& [extruder_id, used_g] : plate_stats.filament_used_g)
-            {
-                SliceOutputStats::FilamentDetail detail;
-                detail.id = extruder_id;
-                detail.used_g = used_g;
-                detail.used_m =
-                    plate_stats.filament_used_m.count(extruder_id) ? plate_stats.filament_used_m.at(extruder_id) : 0.0;
-
-                const size_t ext_sz = static_cast<size_t>(extruder_id);
-                if (ftypes && ext_sz < ftypes->values.size())
-                    detail.type = ftypes->values[extruder_id];
-                else
-                    detail.type = "Unknown";
-
-                if (fcolors && ext_sz < fcolors->values.size())
-                    detail.color = fcolors->values[extruder_id];
-                else
-                    detail.color = "#000000";
-
-                plate_stats.filament_details.push_back(detail);
-            }
-
-            // Look up the thumbnail path from plate data
-            for (const auto* pd : m_plate_data)
-            {
-                if (pd->plate_index == plate_id && !pd->thumbnail_file.empty())
-                {
-                    plate_stats.model_thumbnail = "Metadata/plate_" + std::to_string(plate_id + 1) + ".png";
-                    break;
-                }
-            }
-        }
-        else
-        {
-            plate_stats.plate_count = static_cast<int>(m_plate_data.size());
-        }
-
+        assemble_plate_stats(plate_id, result, plate_stats);
         m_stats.plates.push_back(plate_stats);
     }
 
-    // Add placeholder plates for plates with issues but not in plate_results
+    patch_orphan_plate_issues();
+    finalise_statistics();
+}
+
+void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& result,
+                                       SliceOutputStats::PlateStats& plate_stats)
+{
+    bool plate_has_error = false;
+    bool plate_has_warning = false;
+    for (const auto& issue : result.issues)
+    {
+        if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
+            plate_has_error = true;
+        if (issue.level == IssueLevel::warning || issue.level == IssueLevel::serious_warning)
+            plate_has_warning = true;
+        m_stats.issues.push_back(issue);
+    }
+
+    plate_stats.success = !plate_has_error;
+    if (plate_has_error)
+    {
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+    }
+    if (plate_has_warning || result.has_postprocess_warning)
+        m_any_postprocess_warning = true;
+
+    plate_stats.issues = result.issues;
+    plate_stats.plate_count = static_cast<int>(m_plate_data.size());
+
+    if (!plate_stats.success)
+        return;
+
+    plate_stats.gcode_file = m_output_path;
+
+    auto& modes = result.gcode_result.print_statistics.modes;
+    auto& normal_mode = modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)];
+    plate_stats.total_time = normal_mode.time;
+    plate_stats.prepare_time = normal_mode.prepare_time;
+    plate_stats.print_time = normal_mode.time - normal_mode.prepare_time;
+    if (!std::isfinite(plate_stats.print_time))
+    {
+        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << " print time is non-finite (" << normal_mode.time
+                                   << " - " << normal_mode.prepare_time << "), falling back to 0";
+        plate_stats.print_time = 0.0f;
+    }
+
+    plate_stats.total_filament_m = result.total_used_filament;
+    plate_stats.total_filament_g = result.total_weight;
+    plate_stats.total_cost = result.total_cost;
+    plate_stats.support_used = result.support_used;
+    plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
+    plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
+
+    const auto& fd = result.gcode_result.filament_diameters;
+    const auto& fdens = result.gcode_result.filament_densities;
+
+    for (const auto& [extruder_id, volume] : result.filament_volumes)
+    {
+        if (extruder_id < fd.size() && extruder_id < fdens.size())
+        {
+            double diameter = fd[extruder_id];
+            double density = fdens[extruder_id];
+            double cross_section = M_PI * 0.25 * diameter * diameter;
+            double used_m = (volume / cross_section) * 0.001;
+            double used_g = volume * density * 0.001;
+            plate_stats.filament_used_m[extruder_id] = used_m;
+            plate_stats.filament_used_g[extruder_id] = used_g;
+        }
+    }
+
+    double total_support_m = 0.0, total_support_g = 0.0;
+    double total_flush_m = 0.0, total_flush_g = 0.0;
+    double total_wipe_tower_m = 0.0, total_wipe_tower_g = 0.0;
+
+    auto& ps = result.gcode_result.print_statistics;
+    auto accumulate = [&](const std::map<size_t, double>& volumes, double& m_acc, double& g_acc)
+    {
+        for (const auto& [extruder_id, volume] : volumes)
+        {
+            if (extruder_id < fd.size() && extruder_id < fdens.size())
+            {
+                double cross_section = M_PI * 0.25 * fd[extruder_id] * fd[extruder_id];
+                m_acc += (volume / cross_section) * 0.001;
+                g_acc += volume * fdens[extruder_id] * 0.001;
+            }
+        }
+    };
+    accumulate(ps.support_volumes_per_extruder, total_support_m, total_support_g);
+    accumulate(ps.wipe_tower_volumes_per_extruder, total_wipe_tower_m, total_wipe_tower_g);
+    accumulate(ps.flush_per_filament, total_flush_m, total_flush_g);
+
+    plate_stats.model_filament_m =
+        plate_stats.total_filament_m - total_support_m - total_flush_m - total_wipe_tower_m;
+    plate_stats.model_filament_g =
+        plate_stats.total_filament_g - total_support_g - total_flush_g - total_wipe_tower_g;
+
+    if (m_config.has("nozzle_diameter"))
+    {
+        auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+        if (nozzle_opt)
+            plate_stats.nozzle_diameters = nozzle_opt->values;
+    }
+
+    const ConfigOptionStrings* ftypes =
+        m_config.has("filament_type") ? m_config.option<ConfigOptionStrings>("filament_type") : nullptr;
+    const ConfigOptionStrings* fcolors =
+        m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
+
+    for (const auto& [extruder_id, used_g] : plate_stats.filament_used_g)
+    {
+        SliceOutputStats::FilamentDetail detail;
+        detail.id = extruder_id;
+        detail.used_g = used_g;
+        detail.used_m =
+            plate_stats.filament_used_m.count(extruder_id) ? plate_stats.filament_used_m.at(extruder_id) : 0.0;
+
+        const size_t ext_sz = static_cast<size_t>(extruder_id);
+        if (ftypes && ext_sz < ftypes->values.size())
+            detail.type = ftypes->values[extruder_id];
+        else
+            detail.type = "Unknown";
+
+        if (fcolors && ext_sz < fcolors->values.size())
+            detail.color = fcolors->values[extruder_id];
+        else
+            detail.color = "#000000";
+
+        plate_stats.filament_details.push_back(detail);
+    }
+
+    for (const auto* pd : m_plate_data)
+    {
+        if (pd->plate_index == plate_id && !pd->thumbnail_file.empty())
+        {
+            plate_stats.model_thumbnail = "Metadata/plate_" + std::to_string(plate_id + 1) + ".png";
+            break;
+        }
+    }
+}
+
+void SliceEngine::patch_orphan_plate_issues()
+{
+    // Add placeholder plates for plates with issues but not in plate_results.
     std::set<int> plates_with_results;
     for (const auto& p : m_stats.plates)
         plates_with_results.insert(p.plate_id);
 
     for (const auto& issue : m_stats.issues)
     {
-        if (issue.plate_id >= 0 && plates_with_results.find(issue.plate_id) == plates_with_results.end())
+        if (issue.plate_id < 0 || plates_with_results.find(issue.plate_id) != plates_with_results.end())
+            continue;
+
+        auto it = std::find_if(m_stats.plates.begin(), m_stats.plates.end(),
+                               [&](const SliceOutputStats::PlateStats& p) { return p.plate_id == issue.plate_id; });
+        if (it != m_stats.plates.end())
         {
-            bool found = false;
-            for (const auto& p : m_stats.plates)
-            {
-                if (p.plate_id == issue.plate_id)
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                SliceOutputStats::PlateStats failed_plate;
-                failed_plate.plate_id = issue.plate_id;
-                failed_plate.success = false;
-                failed_plate.plate_count = static_cast<int>(m_plate_data.size());
-                failed_plate.issues.push_back(issue);
-                plates_with_results.insert(issue.plate_id);
-                m_stats.plates.push_back(failed_plate);
-            }
-            else
-            {
-                for (auto& p : m_stats.plates)
-                {
-                    if (p.plate_id == issue.plate_id)
-                    {
-                        p.issues.push_back(issue);
-                        break;
-                    }
-                }
-            }
+            it->issues.push_back(issue);
+            continue;
         }
-    }
 
-    // Sort issues by severity within each plate (stable: preserves detection order within same level)
-    for (auto& p : m_stats.plates)
+        SliceOutputStats::PlateStats failed_plate;
+        failed_plate.plate_id = issue.plate_id;
+        failed_plate.success = false;
+        failed_plate.plate_count = static_cast<int>(m_plate_data.size());
+        failed_plate.issues.push_back(issue);
+        plates_with_results.insert(issue.plate_id);
+        m_stats.plates.push_back(failed_plate);
+    }
+}
+
+void SliceEngine::finalise_statistics()
+{
+    auto by_severity = [](const Issue& a, const Issue& b)
     {
-        std::stable_sort(p.issues.begin(), p.issues.end(),
-                         [](const Issue& a, const Issue& b)
-                         {
-                             return static_cast<int>(a.level) < static_cast<int>(b.level);
-                         });
-    }
+        return static_cast<int>(a.level) < static_cast<int>(b.level);
+    };
 
-    // Sort global issues by severity
-    std::stable_sort(m_stats.issues.begin(), m_stats.issues.end(),
-                     [](const Issue& a, const Issue& b)
-                     {
-                         return static_cast<int>(a.level) < static_cast<int>(b.level);
-                     });
+    for (auto& p : m_stats.plates)
+        std::stable_sort(p.issues.begin(), p.issues.end(), by_severity);
+    std::stable_sort(m_stats.issues.begin(), m_stats.issues.end(), by_severity);
 
-    // Sort plates by plate_id
     std::sort(m_stats.plates.begin(), m_stats.plates.end(),
               [](const SliceOutputStats::PlateStats& a, const SliceOutputStats::PlateStats& b)
-              {
-                  return a.plate_id < b.plate_id;
-              });
+              { return a.plate_id < b.plate_id; });
 
-    // Determine global success
     m_stats.success = !m_stats.plates.empty();
     for (const auto& p : m_stats.plates)
     {
@@ -3056,7 +3061,6 @@ void SliceEngine::build_statistics()
             break;
         }
     }
-    // Also check global-level issues for errors/serious warnings that bypassed per-plate checks
     if (m_stats.success)
     {
         for (const auto& issue : m_stats.issues)
@@ -3070,22 +3074,23 @@ void SliceEngine::build_statistics()
             }
         }
     }
-    if (!m_stats.success && m_stats.error_message.empty())
+
+    if (m_stats.success || !m_stats.error_message.empty())
+        return;
+
+    if (m_stats.plates.empty())
     {
-        if (m_stats.plates.empty())
-            m_stats.error_message = "No plates completed successfully";
-        else
-        {
-            int failed_count = 0;
-            for (const auto& p : m_stats.plates)
-                if (!p.success)
-                    ++failed_count;
-            if (failed_count == static_cast<int>(m_stats.plates.size()))
-                m_stats.error_message = "All plates failed with errors";
-            else if (failed_count > 0)
-                m_stats.error_message = "Some plates failed with errors";
-            else
-                m_stats.error_message = "Global errors or serious warnings detected";
-        }
+        m_stats.error_message = "No plates completed successfully";
+        return;
     }
+    int failed_count = 0;
+    for (const auto& p : m_stats.plates)
+        if (!p.success)
+            ++failed_count;
+    if (failed_count == static_cast<int>(m_stats.plates.size()))
+        m_stats.error_message = "All plates failed with errors";
+    else if (failed_count > 0)
+        m_stats.error_message = "Some plates failed with errors";
+    else
+        m_stats.error_message = "Global errors or serious warnings detected";
 }
