@@ -112,7 +112,7 @@ private:
     // Clear all user-supplied G-code keys (machine + process level) and the
     // post_process shell-command list from m_config. Records per-key issues:
     //   GCODE_CLEARED          (tip)     for each cleared G-code key
-    //   POST_PROCESS_REJECTED  (error)   when post_process is non-empty
+    //   POST_PROCESS_CLEARED   (tip)     when post_process is non-empty
     // Never blocks — official G-code values are restored later by
     // apply_printer_official_preset / apply_filament_official_preset /
     // apply_process_official_preset.

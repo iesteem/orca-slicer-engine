@@ -658,14 +658,18 @@ void SliceEngine::clear_user_gcode_and_post_process()
     // or embed user-supplied G-code for safety and consistency.
     //
     // Coverage: all known machine-level (printer) and process-level G-code
-    // keys in the OrcaSlicer PrintConfig system. Filament-level keys
-    // (filament_start_gcode, filament_end_gcode) are handled separately by
-    // apply_filament_official_preset().
+    // keys in the OrcaSlicer PrintConfig system. Filament-level G-code keys
+    // (filament_start_gcode, filament_end_gcode) are intentionally NOT cleared
+    // here: apply_filament_official_preset only restores official filament
+    // G-code when substituting a non-official filament, so for an official
+    // filament the user value would be lost without any official replacement
+    // if cleared here. Filament G-code is therefore left for that function to
+    // handle on a case-by-case basis.
     //
     // After clearing, official values are restored by the three-stage
     // enforcement pipeline:
     //   overwrite_all_keys_from (printer) → official machine G-code
-    //   apply_filament_official_preset     → official filament G-code
+    //   apply_filament_official_preset     → official filament G-code (when substituting)
     //   apply_process_official_preset      → official process G-code
     // Keys not defined in any official U1 preset remain blank — the U1
     // runs Klipper firmware and does not use Marlin-era process-level
@@ -700,19 +704,18 @@ void SliceEngine::clear_user_gcode_and_post_process()
         }
     }
 
-    // post_process is handled separately because (a) it is ConfigOptionStrings
-    // (a list of shell commands), not ConfigOptionString like the keys above,
-    // and (b) it represents a direct RCE vector (host-side arbitrary command
-    // execution after slicing), so the issue is reported at error severity
-    // (POST_PROCESS_REJECTED) rather than the tip severity used for G-code
-    // injection risks.
+    // post_process is handled separately because it is ConfigOptionStrings
+    // (a list of shell commands), not ConfigOptionString like the keys above.
+    // It represents a direct RCE vector (host-side arbitrary command execution
+    // after slicing) and is cleared at tip severity (POST_PROCESS_CLEARED),
+    // matching the G-code clearing policy: clear and report, do not block.
     if (m_config.has("post_process"))
     {
         auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
         if (pp && !pp->values.empty())
         {
-            m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
-                                                "Custom post-processing scripts are not supported in cloud slicing."));
+            m_stats.issues.push_back(
+                make_tip(-1, "POST_PROCESS_CLEARED", "Custom post-processing scripts cleared for cloud safety."));
             m_config.set_key_value("post_process", new ConfigOptionStrings({}));
         }
     }
