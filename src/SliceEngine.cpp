@@ -593,56 +593,43 @@ bool SliceEngine::validate_presets()
         std::set<std::string> modified_gcodes;
         int validated = preset_bundle.validate_presets(m_cfg.input_file, m_config, modified_gcodes);
 
-        switch (validated)
+        if (validated == VALIDATE_PRESETS_SUCCESS)
         {
-        case VALIDATE_PRESETS_SUCCESS:
             BOOST_LOG_TRIVIAL(info) << "Preset validation passed";
-            break;
-
-        case VALIDATE_PRESETS_PRINTER_NOT_FOUND:
-        {
-            std::string details;
-            for (const auto& name : modified_gcodes)
-                details += (details.empty() ? "" : ", ") + name;
-            std::string msg = "Custom printer preset not found in system presets";
-            if (!details.empty())
-                msg += ": " + details;
-            // Warning, not error: validate_presets only checks whether the
-            // user's printer_settings_id resolves in the bundle. Downstream
-            // apply_printer_official_preset does NOT use printer_settings_id —
-            // it looks up the official U1 preset by nozzle_diameter and
-            // overwrites unconditionally. So a failed user-preset lookup has
-            // no effect on the final slice. Real printer-config errors
-            // (system presets missing, official U1 not found) are reported
-            // separately by apply_printer_official_preset at error severity.
-            m_stats.issues.push_back(make_warning(-1, "PRESET_PRINTER_NOT_FOUND", msg));
-            break;
+            return true;
         }
 
-        case VALIDATE_PRESETS_FILAMENTS_NOT_FOUND:
+        // All non-success branches share one shape: pick the (issue code,
+        // message prefix) for the validated code, append the modified_gcodes
+        // list as details, and emit a warning. All three are non-blocking for
+        // the reasons listed in the comment block above — the downstream
+        // apply_*_official_preset stages overwrite with official presets
+        // regardless of whether the user's preset reference resolved.
+        static const std::map<int, std::pair<const char*, const char*>> kPresetIssueTable = {
+            {VALIDATE_PRESETS_PRINTER_NOT_FOUND,
+             {"PRESET_PRINTER_NOT_FOUND",
+              "Custom printer preset not found in system presets"}},
+            {VALIDATE_PRESETS_FILAMENTS_NOT_FOUND,
+             {"PRESET_FILAMENT_NOT_FOUND",
+              "Custom filament preset not found in system presets"}},
+            {VALIDATE_PRESETS_MODIFIED_GCODES,
+             {"PRESET_MODIFIED_GCODES",
+              "Modified G-code keys found in presets"}},
+        };
+        auto it = kPresetIssueTable.find(validated);
+        if (it == kPresetIssueTable.end())
         {
-            std::string details;
-            for (const auto& name : modified_gcodes)
-                details += (details.empty() ? "" : ", ") + name;
-            std::string msg = "Custom filament preset not found in system presets";
-            if (!details.empty())
-                msg += ": " + details;
-            m_stats.issues.push_back(make_warning(-1, "PRESET_FILAMENT_NOT_FOUND", msg));
-            break;
+            BOOST_LOG_TRIVIAL(warning) << "Unknown validate_presets code: " << validated;
+            return true;
         }
 
-        case VALIDATE_PRESETS_MODIFIED_GCODES:
-        {
-            std::string details;
-            for (const auto& name : modified_gcodes)
-                details += (details.empty() ? "" : ", ") + name;
-            std::string msg = "Modified G-code keys found in presets";
-            if (!details.empty())
-                msg += ": " + details;
-            m_stats.issues.push_back(make_warning(-1, "PRESET_MODIFIED_GCODES", msg));
-            break;
-        }
-        }
+        std::string details;
+        for (const auto& name : modified_gcodes)
+            details += (details.empty() ? "" : ", ") + name;
+        std::string msg = it->second.second;
+        if (!details.empty())
+            msg += ": " + details;
+        m_stats.issues.push_back(make_warning(-1, it->second.first, msg));
         return true;
     }
     catch (const std::exception& e)
