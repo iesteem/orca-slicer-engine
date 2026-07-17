@@ -646,72 +646,77 @@ bool SliceEngine::validate_presets()
 // Stage 1.5a: Printer preset substitution (official Snapmaker U1)
 // ============================================================================
 
-bool SliceEngine::apply_printer_official_preset()
+void SliceEngine::clear_user_gcode_and_post_process()
 {
-    // 1. Strip all custom G-code blocks — cloud slicing must not execute
-    //    or embed user-supplied G-code for safety and consistency.
+    // Strip all custom G-code blocks — cloud slicing must not execute
+    // or embed user-supplied G-code for safety and consistency.
     //
-    //    Coverage: all known machine-level (printer) and process-level G-code
-    //    keys in the OrcaSlicer PrintConfig system. Filament-level keys
-    //    (filament_start_gcode, filament_end_gcode) are handled separately by
-    //    apply_filament_official_preset().
+    // Coverage: all known machine-level (printer) and process-level G-code
+    // keys in the OrcaSlicer PrintConfig system. Filament-level keys
+    // (filament_start_gcode, filament_end_gcode) are handled separately by
+    // apply_filament_official_preset().
     //
-    //    After clearing, official values are restored by the three-stage
-    //    enforcement pipeline:
-    //      overwrite_all_keys_from (printer) → official machine G-code
-    //      apply_filament_official_preset     → official filament G-code
-    //      apply_process_official_preset      → official process G-code
-    //    Keys not defined in any official U1 preset remain blank — the U1
-    //    runs Klipper firmware and does not use Marlin-era process-level
-    //    G-code macros (start_gcode, end_gcode, etc.).
+    // After clearing, official values are restored by the three-stage
+    // enforcement pipeline:
+    //   overwrite_all_keys_from (printer) → official machine G-code
+    //   apply_filament_official_preset     → official filament G-code
+    //   apply_process_official_preset      → official process G-code
+    // Keys not defined in any official U1 preset remain blank — the U1
+    // runs Klipper firmware and does not use Marlin-era process-level
+    // G-code macros (start_gcode, end_gcode, etc.).
+    constexpr const char* gcode_keys[] = {
+        // Printer (machine) level
+        "machine_start_gcode",
+        "machine_end_gcode",
+        "before_layer_change_gcode",
+        "layer_change_gcode",
+        "change_filament_gcode",
+        "machine_pause_gcode",
+        // Process level
+        "start_gcode",
+        "end_gcode",
+        "layer_gcode",
+        "between_objects_gcode",
+        "toolchange_gcode",
+        "template_custom_gcode",
+        "printing_by_object_gcode",
+        "time_lapse_gcode",
+        // Connectivity
+        "print_host",
+    };
+    for (const char* key : gcode_keys)
     {
-        constexpr const char* gcode_keys[] = {
-            // Printer (machine) level
-            "machine_start_gcode",
-            "machine_end_gcode",
-            "before_layer_change_gcode",
-            "layer_change_gcode",
-            "change_filament_gcode",
-            "machine_pause_gcode",
-            // Process level
-            "start_gcode",
-            "end_gcode",
-            "layer_gcode",
-            "between_objects_gcode",
-            "toolchange_gcode",
-            "template_custom_gcode",
-            "printing_by_object_gcode",
-            "time_lapse_gcode",
-            // Connectivity
-            "print_host",
-        };
-        for (const char* key : gcode_keys)
+        if (m_config.has(key))
         {
-            if (m_config.has(key))
-            {
-                m_config.set_key_value(key, new ConfigOptionString(""));
-                m_stats.issues.push_back(
-                    make_tip(-1, "GCODE_CLEARED", std::string("Custom G-code '") + key + "' cleared for cloud safety"));
-            }
-        }
-
-        // post_process is handled separately because (a) it is ConfigOptionStrings
-        // (a list of shell commands), not ConfigOptionString like the keys above,
-        // and (b) it represents a direct RCE vector (host-side arbitrary command
-        // execution after slicing), so the issue is reported at error severity
-        // (POST_PROCESS_REJECTED) rather than the tip severity used for G-code
-        // injection risks.
-        if (m_config.has("post_process"))
-        {
-            auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
-            if (pp && !pp->values.empty())
-            {
-                m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
-                                                    "Custom post-processing scripts are not supported in cloud slicing."));
-                m_config.set_key_value("post_process", new ConfigOptionStrings({}));
-            }
+            m_config.set_key_value(key, new ConfigOptionString(""));
+            m_stats.issues.push_back(
+                make_tip(-1, "GCODE_CLEARED", std::string("Custom G-code '") + key + "' cleared for cloud safety"));
         }
     }
+
+    // post_process is handled separately because (a) it is ConfigOptionStrings
+    // (a list of shell commands), not ConfigOptionString like the keys above,
+    // and (b) it represents a direct RCE vector (host-side arbitrary command
+    // execution after slicing), so the issue is reported at error severity
+    // (POST_PROCESS_REJECTED) rather than the tip severity used for G-code
+    // injection risks.
+    if (m_config.has("post_process"))
+    {
+        auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
+        if (pp && !pp->values.empty())
+        {
+            m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
+                                                "Custom post-processing scripts are not supported in cloud slicing."));
+            m_config.set_key_value("post_process", new ConfigOptionStrings({}));
+        }
+    }
+}
+
+bool SliceEngine::apply_printer_official_preset()
+{
+    // 1. Strip user-supplied G-code and post_process before applying the
+    //    official preset (which restores official machine G-code values).
+    clear_user_gcode_and_post_process();
 
     // 2. Replace the user's printer configuration wholesale with the official
     //    Snapmaker U1 preset matching the requested nozzle diameter. No user

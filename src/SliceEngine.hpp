@@ -109,6 +109,14 @@ private:
     // by load_system_presets. Never blocks — load failures only log a warning.
     void load_project_presets();
     bool validate_presets();
+    // Clear all user-supplied G-code keys (machine + process level) and the
+    // post_process shell-command list from m_config. Records per-key issues:
+    //   GCODE_CLEARED          (tip)     for each cleared G-code key
+    //   POST_PROCESS_REJECTED  (error)   when post_process is non-empty
+    // Never blocks — official G-code values are restored later by
+    // apply_printer_official_preset / apply_filament_official_preset /
+    // apply_process_official_preset.
+    void clear_user_gcode_and_post_process();
     bool apply_printer_official_preset();
     bool apply_filament_official_preset();
     void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
