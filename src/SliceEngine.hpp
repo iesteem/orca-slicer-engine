@@ -104,6 +104,10 @@ private:
     bool validate_printer_model();
     void collect_config_warnings();
     void load_system_presets();
+    // Load project-embedded presets (read from the .3mf input during
+    // load_3mf) into m_preset_bundle, alongside the system presets loaded
+    // by load_system_presets. Never blocks — load failures only log a warning.
+    void load_project_presets();
     bool validate_presets();
     bool apply_printer_official_preset();
     bool apply_filament_official_preset();

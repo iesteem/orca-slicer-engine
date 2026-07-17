@@ -153,8 +153,12 @@ bool SliceEngine::run()
     // validate_presets and apply_*_official_preset below.
     load_system_presets();
 
+    // Merge project-embedded presets (read from the .3mf input) into the
+    // bundle so validate_presets can resolve references to them. Never blocks.
+    load_project_presets();
+
     // Validate that printer/filament/process presets referenced by the
-    // loaded config exist in the system profiles. Blocks on failure.
+    // loaded config exist in the system + project bundle. Blocks on failure.
     if (!validate_presets())
     {
         build_statistics();
@@ -450,7 +454,7 @@ void SliceEngine::collect_config_warnings()
 }
 
 // ============================================================================
-// Stage 1.3: Load system presets from vendor JSON files
+// Stage 1.3: Load presets (system from vendor JSON, project-embedded from .3mf)
 // ============================================================================
 
 void SliceEngine::load_system_presets()
@@ -515,6 +519,45 @@ void SliceEngine::load_system_presets()
     }
 }
 
+// Project-embedded presets: loaded from the .3mf input file during load_3mf
+// (m_project_presets), merged into m_preset_bundle here. Logically part of
+// Stage 1.3 — paired with load_system_presets so validate_presets sees a
+// unified bundle of system + project presets.
+
+void SliceEngine::load_project_presets()
+{
+    // Precondition: m_preset_bundle is populated by load_system_presets().
+    // When system presets are unavailable, there is nowhere to merge project
+    // presets into, so we skip silently (validate_presets will also early-exit).
+    if (!m_presets_available || !m_preset_bundle) return;
+    if (m_project_presets.empty()) return;
+
+    PresetBundle& preset_bundle = *m_preset_bundle;
+    try
+    {
+        PresetsConfigSubstitutions preset_subs = preset_bundle.load_project_embedded_presets(
+            m_project_presets, ForwardCompatibilitySubstitutionRule::Enable);
+
+        for (const auto& preset_sub : preset_subs)
+        {
+            for (const auto& substitution : preset_sub.substitutions)
+            {
+                const char* key = substitution.opt_def ? substitution.opt_def->opt_key.c_str() : "?";
+                m_stats.issues.push_back(make_warning(-1, "PRESET_SUBSTITUTION",
+                                                      std::string("Embedded preset '") + preset_sub.preset_name +
+                                                          "' key '" + key + "' was substituted"));
+            }
+        }
+    }
+    catch (const std::exception& e)
+    {
+        // Graceful degradation: a malformed embedded preset must not abort
+        // the pipeline. validate_presets will still run and may surface
+        // follow-up errors about missing preset references.
+        BOOST_LOG_TRIVIAL(warning) << "Failed to load project embedded presets: " << e.what();
+    }
+}
+
 // ============================================================================
 // Stage 1.4: Validate presets against system profiles
 // ============================================================================
@@ -527,33 +570,11 @@ bool SliceEngine::validate_presets()
         return true;
     }
 
-    // B2: Load project embedded presets
+    // Precondition: m_project_presets has been merged into m_preset_bundle
+    // by load_project_presets(), so references to embedded presets resolve.
     PresetBundle& preset_bundle = *m_preset_bundle;
-    if (!m_project_presets.empty())
-    {
-        try
-        {
-            PresetsConfigSubstitutions preset_subs = preset_bundle.load_project_embedded_presets(
-                m_project_presets, ForwardCompatibilitySubstitutionRule::Enable);
 
-            for (const auto& preset_sub : preset_subs)
-            {
-                for (const auto& substitution : preset_sub.substitutions)
-                {
-                    const char* key = substitution.opt_def ? substitution.opt_def->opt_key.c_str() : "?";
-                    m_stats.issues.push_back(make_warning(-1, "PRESET_SUBSTITUTION",
-                                                          std::string("Embedded preset '") + preset_sub.preset_name +
-                                                              "' key '" + key + "' was substituted"));
-                }
-            }
-        }
-        catch (const std::exception& e)
-        {
-            BOOST_LOG_TRIVIAL(warning) << "Failed to load project embedded presets: " << e.what();
-        }
-    }
-
-    // B3: Validate presets against system profiles
+    // Validate presets against system profiles
     try
     {
         std::set<std::string> modified_gcodes;
