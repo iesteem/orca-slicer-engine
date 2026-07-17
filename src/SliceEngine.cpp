@@ -781,45 +781,8 @@ bool SliceEngine::apply_printer_official_preset()
     // user's value (machine G-code keys included).
     overwrite_all_keys_from(m_config, official->config);
 
-    // Verify the official preset actually took effect: printable_area must be
-    // a 4-point rectangle that differs from the library default, and
-    // printable_height must differ from the default.
-    auto fail = [&](const std::string& detail)
-    {
-        std::string msg = "Printer configuration incomplete: " + detail +
-                          ". The official U1 printer preset was not applied correctly.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
-    };
-    auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
-    if (!pa || pa->values.size() != 4)
-    {
-        fail("printable_area missing or wrong format");
+    if (!verify_printer_geometry())
         return false;
-    }
-    auto near = [](double a, double b)
-    {
-        return std::abs(a - b) < PLATE_DIM_EPSILON;
-    };
-    bool is_default_area =
-        (near(pa->values[0].x(), 0.0) && near(pa->values[0].y(), 0.0)) &&
-        (near(pa->values[1].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[1].y(), 0.0)) &&
-        (near(pa->values[2].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[2].y(), DEFAULT_PLATE_DEPTH)) &&
-        (near(pa->values[3].x(), 0.0) && near(pa->values[3].y(), DEFAULT_PLATE_DEPTH));
-    if (is_default_area)
-    {
-        fail("printable_area is still the default");
-        return false;
-    }
-    auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
-    if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT))
-    {
-        fail("printable_height is still the default");
-        return false;
-    }
 
     // Reporting follows the unified substitution policy:
     //   - Same name (user already picked the official preset): the overwrite
@@ -836,6 +799,49 @@ bool SliceEngine::apply_printer_official_preset()
     else
         msg = "Printer preset \"" + preset_name + "\" verified against official preset for cloud safety";
     m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", msg));
+    return true;
+}
+
+bool SliceEngine::verify_printer_geometry()
+{
+    // After overwrite_all_keys_from, confirm the official preset actually took
+    // effect by checking that printable_area / printable_height are no longer
+    // the library defaults. A silent no-op overwrite (e.g. bundle corruption,
+    // missing keys) would otherwise proceed to slicing with a 200x200x100 bed
+    // and produce nonsense G-code. Treat as a fatal preprocess error.
+
+    auto fail = [&](const std::string& detail)
+    {
+        std::string msg = "Printer configuration incomplete: " + detail +
+                          ". The official U1 printer preset was not applied correctly.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+    };
+
+    auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.size() != 4)
+    {
+        fail("printable_area missing or wrong format");
+        return false;
+    }
+    auto near = [](double a, double b) { return std::abs(a - b) < PLATE_DIM_EPSILON; };
+    bool is_default_area =
+        near(pa->values[0].x(), 0.0) && near(pa->values[0].y(), 0.0) &&
+        near(pa->values[2].x(), DEFAULT_PLATE_WIDTH) && near(pa->values[2].y(), DEFAULT_PLATE_DEPTH);
+    if (is_default_area)
+    {
+        fail("printable_area is still the default");
+        return false;
+    }
+    auto* ph = m_config.option<ConfigOptionFloat>("printable_height");
+    if (!ph || near(ph->value, DEFAULT_PRINTABLE_HEIGHT))
+    {
+        fail("printable_height is still the default");
+        return false;
+    }
     return true;
 }
 
@@ -1050,99 +1056,20 @@ void SliceEngine::apply_process_official_preset()
     // to the matching Snapmaker U1 process preset name, e.g.
     // "0.20 Standard @Snapmaker U1 (0.4 nozzle)".
     auto* dpp = m_config.option<ConfigOptionString>("print_settings_id", false);
-    if (!dpp || dpp->value.empty()) 
+    if (!dpp || dpp->value.empty())
     {
         BOOST_LOG_TRIVIAL(warning)
             << "default_print_profile not set; cannot determine process preset.";
+        apply_auto_brim_fallback();
         return;
     }
 
-    // Look up a process preset by name: system presets first, then project
-    // embedded. Follows the same pattern as validate_filament_official().
-    auto find_in_system = [this](const std::string& name) -> const Preset* 
-    {
-        const Preset* p = m_preset_bundle->prints.find_preset(name, false);
-        if (p && p->name == name) return p;
-        return nullptr;
-    };
-
-    auto find_in_project = [this](const std::string& name) -> const Preset* 
-    {
-        for (auto* pp : m_project_presets)
-        {
-            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINT)
-                return pp;
-        }
-        return nullptr;
-    };
-
-    const Preset* official = nullptr;
     const std::string preset_name = dpp->value;
-    // Case 1: Direct system preset match
-    if (const Preset* sys = find_in_system(preset_name)) 
-    {
-        official = sys;
-    } 
-    else 
-    {
-        // Case 2: Not a direct system match — walk the inheritance chain
-        // to find a system preset ancestor.
-        const Preset* current = find_in_project(preset_name);
-        std::set<std::string> visited;
-        while (current) 
-        {
-            std::string inherits_name = current->inherits();
-            if (inherits_name.empty()) break;
-
-            if (!visited.insert(inherits_name).second) 
-            {
-                BOOST_LOG_TRIVIAL(warning)
-                    << "Circular inheritance detected in process preset \""
-                    << preset_name << "\"";
-                break;
-            }
-
-            if (const Preset* parent = find_in_system(inherits_name)) 
-            {
-                official = parent;
-                break;
-            }
-
-            const Preset* project_parent = find_in_project(inherits_name);
-            if (project_parent)
-            {
-                current = project_parent;
-                continue;
-            }
-            break; // unknown ancestor
-        }
-    }
+    const Preset* official = find_official_process_preset(preset_name);
 
     if (official)
     {
-        // Parse different_settings_to_system[0] — the set of process keys the
-        // user explicitly changed from the original printer's system defaults.
-        // These are preserved to honour the user's intent.
-        std::set<std::string> user_overrides;
-        {
-            auto* diff_opt = m_config.option<ConfigOptionStrings>(
-                "different_settings_to_system", false);
-            if (diff_opt && !diff_opt->values.empty() && !diff_opt->values[0].empty())
-            {
-                std::istringstream ss(diff_opt->values[0]);
-                std::string key;
-                while (std::getline(ss, key, ';'))
-                {
-                    // Trim leading/trailing whitespace.
-                    size_t start = key.find_first_not_of(" \t");
-                    size_t end   = key.find_last_not_of(" \t");
-                    if (start != std::string::npos && end != std::string::npos)
-                        key = key.substr(start, end - start + 1);
-                    if (!key.empty())
-                        user_overrides.insert(key);
-                }
-            }
-        }
+        std::set<std::string> user_overrides = parse_process_user_overrides();
 
         BOOST_LOG_TRIVIAL(info)
             << "Applying official process preset \"" << official->name
@@ -1164,7 +1091,6 @@ void SliceEngine::apply_process_official_preset()
         // Reporting follows the unified substitution policy (same as printer
         // and filament): same name → "verified against" (cloud-side hardening
         // against user-modified copies); different name → explicit "from X to Y".
-        // preset_name is the user's original print_settings_id captured above.
         std::string msg;
         if (official->name == preset_name)
             msg = "Process preset \"" + official->name + "\" verified against official preset for cloud safety";
@@ -1172,8 +1098,8 @@ void SliceEngine::apply_process_official_preset()
             msg = "Process preset substituted from \"" + preset_name + "\" to \"" + official->name +
                   "\" for cloud safety";
         m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED", msg));
-    } 
-    else 
+    }
+    else
     {
         BOOST_LOG_TRIVIAL(warning)
             << "No system process preset found for \"" << preset_name
@@ -1181,19 +1107,102 @@ void SliceEngine::apply_process_official_preset()
             << " inheritance chain); process settings not updated.";
     }
 
+    apply_auto_brim_fallback();
+}
+
+const Preset* SliceEngine::find_official_process_preset(const std::string& preset_name) const
+{
+    // Look up a process preset by name: system presets first, then project
+    // embedded. Follows the same pattern as resolve_filament.
+
+    auto find_in_system = [this](const std::string& name) -> const Preset*
+    {
+        const Preset* p = m_preset_bundle->prints.find_preset(name, false);
+        if (p && p->name == name) return p;
+        return nullptr;
+    };
+
+    auto find_in_project = [this](const std::string& name) -> const Preset*
+    {
+        for (auto* pp : m_project_presets)
+        {
+            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINT)
+                return pp;
+        }
+        return nullptr;
+    };
+
+    // Case 1: Direct system preset match
+    if (const Preset* sys = find_in_system(preset_name))
+        return sys;
+
+    // Case 2: Not a direct system match — walk the inheritance chain
+    // to find a system preset ancestor.
+    const Preset* current = find_in_project(preset_name);
+    std::set<std::string> visited;
+    while (current)
+    {
+        std::string inherits_name = current->inherits();
+        if (inherits_name.empty()) break;
+
+        if (!visited.insert(inherits_name).second)
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "Circular inheritance detected in process preset \""
+                << preset_name << "\"";
+            return nullptr;
+        }
+
+        if (const Preset* parent = find_in_system(inherits_name))
+            return parent;
+
+        const Preset* project_parent = find_in_project(inherits_name);
+        if (project_parent)
+        {
+            current = project_parent;
+            continue;
+        }
+        break; // unknown ancestor
+    }
+    return nullptr;
+}
+
+std::set<std::string> SliceEngine::parse_process_user_overrides() const
+{
+    // Parse different_settings_to_system[0] — the ;-separated list of process
+    // keys the user explicitly changed from the system defaults. Returns an
+    // empty set if the field is absent or empty.
+    std::set<std::string> user_overrides;
+    auto* diff_opt = m_config.option<ConfigOptionStrings>("different_settings_to_system", false);
+    if (!diff_opt || diff_opt->values.empty() || diff_opt->values[0].empty())
+        return user_overrides;
+
+    std::istringstream ss(diff_opt->values[0]);
+    std::string key;
+    while (std::getline(ss, key, ';'))
+    {
+        size_t start = key.find_first_not_of(" \t");
+        size_t end   = key.find_last_not_of(" \t");
+        if (start != std::string::npos && end != std::string::npos)
+            key = key.substr(start, end - start + 1);
+        if (!key.empty())
+            user_overrides.insert(key);
+    }
+    return user_overrides;
+}
+
+void SliceEngine::apply_auto_brim_fallback()
+{
     // When brim_type is auto_brim, set brim_width to 0 so that the
     // fallback path (when the algorithm decides no brim is needed)
     // doesn't generate unwanted brim. The algorithm still sets its
     // own computed width when it determines brim IS needed.
-    // Always executed, regardless of whether an official preset was found.
+    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+    if (bt && bt->value == btAutoBrim)
     {
-        auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
-        if (bt && bt->value == btAutoBrim)
-        {
-            m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
-            BOOST_LOG_TRIVIAL(info)
-                << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
-        }
+        m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
+        BOOST_LOG_TRIVIAL(info)
+            << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
     }
 }
 

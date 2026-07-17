@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,11 @@ private:
     // are cleared — those have no official counterpart. Never blocks.
     void strip_user_content();
     bool apply_printer_official_preset();
+    // Verify the official printer preset took effect after overwrite_all_keys_from.
+    // Checks printable_area (4-point non-default rectangle) and printable_height
+    // (non-default). On failure, emits PRINTER_PRESET_NOT_APPLIED error and
+    // returns false; caller propagates as a fatal abort.
+    bool verify_printer_geometry();
     bool apply_filament_official_preset();
     // Resolve a single extruder's filament to an official Snapmaker preset.
     // On success, records the outcome in rolled_back or substituted. On failure
@@ -134,6 +140,22 @@ private:
     // against" (cloud hardening), orig!=target → "from X to Y" (real swap).
     void emit_filament_warnings(const FilamentGrouping& rolled_back, const FilamentGrouping& substituted);
     void apply_process_official_preset();
+    // Look up an official system process preset for the given preset name.
+    // Tries a direct system match first (Case 1), then walks the inheritance
+    // chain through project-embedded presets to find a system ancestor
+    // (Case 2). Returns nullptr if neither path resolves. Circular
+    // inheritance is detected and logged, then treated as no ancestor.
+    const Slic3r::Preset* find_official_process_preset(const std::string& preset_name) const;
+    // Parse different_settings_to_system[0] — the ;-separated list of process
+    // keys the user explicitly changed from the system defaults. Returns an
+    // empty set if the field is absent or empty. Used by apply_process_official_preset
+    // to honour user overrides when applying the official preset.
+    std::set<std::string> parse_process_user_overrides() const;
+    // When brim_type=auto_brim, set brim_width=0 so the fallback path (when
+    // the algorithm decides no brim is needed) doesn't generate unwanted brim.
+    // The algorithm still sets its own computed width when it determines brim
+    // IS needed. Matches desktop Snapmaker behaviour.
+    void apply_auto_brim_fallback();
     bool validate_input();
     void ensure_models_on_bed();
 
