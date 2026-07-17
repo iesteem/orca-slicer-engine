@@ -160,9 +160,15 @@ bool SliceEngine::run()
 
     if (!m_cfg.skip_preset_substitution)
     {
-        // Apply the official Snapmaker U1 printer preset — clears custom G-code,
-        // then wholesale-replaces printer config (printable_area, machine G-code,
-        // nozzle_diameter, etc.) with official values.
+        // Strip user-supplied content (G-code, notes, post_process, external
+        // file refs) before any apply_*_official_preset stage. The three apply
+        // stages then restore official values for the keys each owns.
+        // Position matters: must run before all three apply_* calls.
+        strip_user_content();
+
+        // Apply the official Snapmaker U1 printer preset — wholesale-replaces
+        // printer config (printable_area, machine G-code, nozzle_diameter,
+        // etc.) with official values.
         if (!apply_printer_official_preset())
         {
             build_statistics();
@@ -702,17 +708,12 @@ void SliceEngine::strip_user_content()
 
 bool SliceEngine::apply_printer_official_preset()
 {
-    // 1. Strip user-supplied G-code and post_process before applying the
-    //    official preset (which restores official machine G-code values).
-    strip_user_content();
-
-    // 2. Replace the user's printer configuration wholesale with the official
-    //    Snapmaker U1 preset matching the requested nozzle diameter. No user
-    //    printer value (printable area, machine G-code, kinematics, …) is kept.
-    //    The official machine G-code overwrites the cleared values above.
-    //    The official preset config is sourced from the already-loaded
-    //    PresetBundle, whose system presets carry a fully inherits-expanded
-    //    config (fdm_U1 -> fdm_toolchanger merged in at load time).
+    // Replace the user's printer configuration wholesale with the official
+    // Snapmaker U1 preset matching the requested nozzle diameter. No user
+    // printer value (printable area, machine G-code, kinematics, …) is kept.
+    // The official preset config is sourced from the already-loaded
+    // PresetBundle, whose system presets carry a fully inherits-expanded
+    // config (fdm_U1 -> fdm_toolchanger merged in at load time).
     if (!m_presets_available || !m_preset_bundle)
     {
         std::string msg = "System presets not available; cannot apply official printer preset.";
