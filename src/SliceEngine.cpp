@@ -1258,6 +1258,7 @@ void SliceEngine::decode_plate_thumbnails()
     // is acceptable, an uncaught exception is not (Snapmaker no-throw policy).
     try
     {
+        BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: enter, plate_count=" << m_plate_data.size();
     for (auto& pd : m_plate_data)
     {
         // Guard 1: path non-empty and ends in ".png".
