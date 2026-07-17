@@ -795,6 +795,54 @@ void SliceEngine::strip_user_content()
         }
     }
 
+    // (6) Drop every stripped key from different_settings_to_system so the
+    // later apply_*_official_preset stages do not skip them. The 3MF save
+    // path records "keys the user changed relative to the system preset" in
+    // this ;-separated list; apply_process_official_preset honours it by
+    // preserving the user value via overwrite_all_keys_from_except. That is
+    // desirable for genuine user choices (layer height, infill, …) but wrong
+    // for keys we just stripped — the stripped value is gone, and skipping
+    // the key would leave a vacuum where the official value belongs. Today
+    // the official post_process is "", so the bug is latent; the moment any
+    // official preset populates a stripped key, every user who touched that
+    // key would lose the official content. Removing the names here makes
+    // "stripped" mean "handed back to the official preset", consistently.
+    {
+        constexpr const char* stripped_keys[] = {
+            "machine_start_gcode", "machine_end_gcode",
+            "before_layer_change_gcode", "layer_change_gcode",
+            "change_filament_gcode", "machine_pause_gcode",
+            "change_extrusion_role_gcode", "template_custom_gcode",
+            "printing_by_object_gcode", "time_lapse_gcode", "print_host",
+            "filament_start_gcode", "filament_end_gcode",
+            "printer_notes", "filament_notes",
+            "post_process",
+        };
+        const std::set<std::string> stripped(
+            stripped_keys, stripped_keys + sizeof(stripped_keys) / sizeof(stripped_keys[0]));
+
+        auto* diff = m_config.option<ConfigOptionStrings>("different_settings_to_system", false);
+        if (diff && !diff->values.empty())
+        {
+            std::istringstream ss(diff->values[0]);
+            std::string token;
+            std::string rebuilt;
+            bool first = true;
+            while (std::getline(ss, token, ';'))
+            {
+                size_t s = token.find_first_not_of(" \t");
+                size_t e = token.find_last_not_of(" \t");
+                std::string trimmed = (s == std::string::npos) ? std::string{} : token.substr(s, e - s + 1);
+                if (trimmed.empty() || stripped.count(trimmed))
+                    continue;
+                if (!first) rebuilt += ';';
+                rebuilt += trimmed;
+                first = false;
+            }
+            diff->values[0] = std::move(rebuilt);
+        }
+    }
+
     if (user_only_content)
     {
         m_stats.issues.push_back(make_tip(
