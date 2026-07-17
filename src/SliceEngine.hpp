@@ -120,6 +120,19 @@ private:
     void strip_user_content();
     bool apply_printer_official_preset();
     bool apply_filament_official_preset();
+    // Resolve a single extruder's filament to an official Snapmaker preset.
+    // On success, records the outcome in rolled_back or substituted. On failure
+    // (no official preset resolvable AND rollback failed), pushes an error
+    // issue directly and returns false. See apply_filament_official_preset.cpp
+    // for the case-by-case decision tree.
+    using FilamentGrouping = std::map<std::pair<std::string, std::string>, std::vector<int>>;
+    bool resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_ids,
+                          FilamentGrouping& rolled_back, FilamentGrouping& substituted);
+    // Emit deduplicated FILAMENT_ROLLED_BACK / FILAMENT_SUBSTITUTED warnings
+    // from the grouping maps built during resolve_filament. Message shape
+    // follows the unified substitution policy: orig==target → "verified
+    // against" (cloud hardening), orig!=target → "from X to Y" (real swap).
+    void emit_filament_warnings(const FilamentGrouping& rolled_back, const FilamentGrouping& substituted);
     void apply_process_official_preset();
     bool validate_input();
     void ensure_models_on_bed();

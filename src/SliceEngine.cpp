@@ -851,19 +851,57 @@ bool SliceEngine::apply_filament_official_preset()
     if (!filament_ids || filament_ids->values.empty())
         return true;
 
-    // Guaranteed by run(): bundle availability is checked before any apply_*
-    // stage runs, and apply_printer_official_preset() must succeed first.
-    // Not assert-guarded — the contract is structural (call order), not a
-    // runtime invariant, and assert would be a no-op in Release anyway.
+    // Deduplicated accumulators for filament warnings. Multiple extruders
+    // often share the same filament preset (e.g. 4× Generic PLA on a 4-extruder
+    // machine) — emitting one warning per slot produces N identical lines.
+    // Instead, group slots by (original, target) pair and emit one merged
+    // warning per group with the slot indices listed.
+    //
+    // Errors (rollback fallback failure) are NOT deduplicated — each failed
+    // slot deserves its own error line.
+    FilamentGrouping rolled_back;
+    FilamentGrouping substituted;
 
-    // Lambda: check whether a system preset is "official"
-    // Only Snapmaker vendor presets are supported in cloud deployment.
+    int num_filaments = static_cast<int>(filament_ids->values.size());
+    bool any_error = false;
+    for (int i = 0; i < num_filaments; ++i)
+    {
+        if (!resolve_filament(i, filament_ids, rolled_back, substituted))
+            any_error = true;
+    }
+
+    emit_filament_warnings(rolled_back, substituted);
+
+    if (any_error)
+    {
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+    }
+    return !any_error;
+}
+
+bool SliceEngine::resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_ids,
+                                   FilamentGrouping& rolled_back, FilamentGrouping& substituted)
+{
+    // Decision tree for a single extruder's filament:
+    //   Case 1 — direct system preset match
+    //       official → overwrite + record substitution (orig==target)
+    //       unofficial vendor → rollback (vendor mismatch)
+    //   Case 2 — not in system: walk inheritance chain
+    //       find official ancestor → overwrite + record substitution
+    //       unofficial vendor in chain → rollback
+    //       unknown / circular / no ancestor → rollback
+    // Rollback failure → emit error immediately (not deduplicated).
+    //
+    // Even when the user already selected an official filament preset, we
+    // still overwriteExtruderFrom its config — cloud-side hardening drops
+    // user-modified copies of the official values, symmetric with the printer
+    // and process apply paths.
+
     auto is_official_preset = [](const Preset& p) -> bool
     {
         return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
     };
-
-    // Look up a preset name: system presets first, then project embedded
     auto find_in_system = [this](const std::string& name) -> Preset*
     {
         auto* p = m_preset_bundle->filaments.find_preset(name, false);
@@ -871,7 +909,6 @@ bool SliceEngine::apply_filament_official_preset()
             return p;
         return nullptr;
     };
-
     auto find_in_project = [this](const std::string& name) -> Preset*
     {
         for (auto* pp : m_project_presets)
@@ -881,25 +918,12 @@ bool SliceEngine::apply_filament_official_preset()
         }
         return nullptr;
     };
-
-    // Deduplicated accumulators for filament warnings. Multiple extruders
-    // often share the same filament preset (e.g. 4× Generic PLA on a 4-extruder
-    // machine) — emitting one warning per slot produces N identical lines.
-    // Instead, group slots by (original, target) pair and emit one merged
-    // warning per group with the slot indices listed.
-    //
-    // Errors (try_rollback fallback failure) are NOT deduplicated — each
-    // failed slot deserves its own error line.
-    std::map<std::pair<std::string, std::string>, std::vector<int>> rolled_back;
-    std::map<std::pair<std::string, std::string>, std::vector<int>> substituted;
-
-    // All non-official failure branches funnel through here: first try
-    // PresetRollback to fall back to a base category preset. On success,
-    // record the rollback for deduplicated reporting; on failure, emit the
-    // original error immediately.
+    // All non-official failure branches funnel through here: try PresetRollback
+    // to fall back to a base category preset. On success, record for deduplicated
+    // reporting; on failure, emit the original error immediately.
     // After a successful rollback, filament_ids->values[i] is already updated
     // to the base category name.
-    auto try_rollback = [&](int i, const std::string& name, const char* err_code, const std::string& err_msg) -> bool
+    auto try_rollback = [&](const std::string& name, const char* err_code, const std::string& err_msg) -> bool
     {
         if (PresetRollback::rollback(m_config, m_preset_bundle.get(), i))
         {
@@ -911,108 +935,84 @@ bool SliceEngine::apply_filament_official_preset()
         return false;
     };
 
-    // Resolve a single filament: official → full overwrite; unofficial →
-    // walk the inheritance chain to find an official ancestor (full
-    // substitution); on failure, rollback; if rollback also fails → emit
-    // error and return false.
-    //
-    // Even when the user already selected an official filament preset, we
-    // still overwrite_extruder_from its config. This guarantees the final
-    // slice uses the complete official preset values rather than user-modified
-    // copies of them (cloud safety guarantee). Symmetric with the printer
-    // and process apply paths, which always overwrite regardless of source.
-    auto resolve_filament = [&](int i) -> bool
+    const std::string& name = filament_ids->values[i];
+
+    // Case 1: Direct system preset match
+    if (Preset* sys = find_in_system(name))
     {
-        const std::string& name = filament_ids->values[i];
-
-        // Case 1: Direct system preset match
-        if (Preset* sys = find_in_system(name))
+        if (is_official_preset(*sys))
         {
-            if (is_official_preset(*sys))
-            {
-                // Official filament: full overwrite (cloud-side hardening
-                // drops user-modified copies of the official values, same
-                // guarantee as printer and process paths). Recorded in the
-                // substituted map with orig == target so emit_grouped can
-                // render it as "verified against" rather than "from X to Y".
-                PresetRollback::overwriteExtruderFrom(m_config, *sys, i, filament_ids);
-                substituted[{name, sys->name}].push_back(i);
-                return true;
-            }
-            return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
-                                "Filament \"" + name + "\" belongs to unsupported vendor");
+            // Official filament: full overwrite (cloud-side hardening drops
+            // user-modified copies). Recorded with orig == target so
+            // emit_filament_warnings renders it as "verified against".
+            PresetRollback::overwriteExtruderFrom(m_config, *sys, i, filament_ids);
+            substituted[{name, sys->name}].push_back(i);
+            return true;
         }
-
-        // Case 2: Not a direct system match — walk the inheritance chain
-        Preset* current = find_in_project(name);
-        if (!current)
-        {
-            return try_rollback(i, name, "FILAMENT_UNKNOWN", "Filament \"" + name + "\" is not a recognized preset");
-        }
-
-        std::set<std::string> visited;
-        while (current)
-        {
-            std::string inherits_name = current->inherits();
-            if (inherits_name.empty())
-            {
-                return try_rollback(i, name, "FILAMENT_NO_OFFICIAL_ANCESTOR",
-                                    "Filament \"" + name + "\" is not derived from any Snapmaker or Generic filament");
-            }
-
-            if (!visited.insert(inherits_name).second)
-            {
-                return try_rollback(i, name, "FILAMENT_CIRCULAR_INHERITS",
-                                    "Circular inheritance detected in filament \"" + name + "\"");
-            }
-
-            // Try system presets first
-            if (Preset* parent = find_in_system(inherits_name))
-            {
-                if (is_official_preset(*parent))
-                {
-                    PresetRollback::overwriteExtruderFrom(m_config, *parent, i, filament_ids);
-                    substituted[{name, parent->name}].push_back(i);
-                    return true;
-                }
-                std::string vendor_name = parent->vendor ? parent->vendor->name : "unknown";
-                return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
-                                    "Filament \"" + name + "\" derives from unsupported vendor \"" + vendor_name +
-                                        "\" via \"" + inherits_name + "\"");
-            }
-
-            // Not in system — try project embedded, then continue walking
-            Preset* project_parent = find_in_project(inherits_name);
-            if (project_parent)
-            {
-                current = project_parent;
-                continue;
-            }
-            return try_rollback(i, name, "FILAMENT_UNKNOWN_ANCESTOR",
-                                "Filament \"" + name + "\" inherits from unknown preset \"" + inherits_name + "\"");
-        }
-
-        __builtin_unreachable(); // loop always exits via return
-    };
-
-    int num_filaments = static_cast<int>(filament_ids->values.size());
-    bool any_error = false;
-    for (int i = 0; i < num_filaments; ++i)
-    {
-        if (!resolve_filament(i))
-            any_error = true;
+        return try_rollback(name, "FILAMENT_UNSUPPORTED_VENDOR",
+                            "Filament \"" + name + "\" belongs to unsupported vendor");
     }
 
-    // Emit deduplicated warnings. Slot list is appended so users can see
-    // which extruders were affected; identical rollbacks/substitutions across
-    // multiple slots collapse to one line.
-    //
-    // Message shape follows the unified substitution policy:
-    //   - orig == target (Case 1, user already picked the official preset):
-    //     "verified against" — overwrite is cloud-side hardening, not a swap.
-    //   - orig != target (Case 2 / rollback): explicit "from X to Y".
-    auto emit_grouped = [this](const std::map<std::pair<std::string, std::string>, std::vector<int>>& groups,
-                               const char* code)
+    // Case 2: Not a direct system match — walk the inheritance chain
+    Preset* current = find_in_project(name);
+    if (!current)
+    {
+        return try_rollback(name, "FILAMENT_UNKNOWN", "Filament \"" + name + "\" is not a recognized preset");
+    }
+
+    std::set<std::string> visited;
+    while (current)
+    {
+        std::string inherits_name = current->inherits();
+        if (inherits_name.empty())
+        {
+            return try_rollback(name, "FILAMENT_NO_OFFICIAL_ANCESTOR",
+                                "Filament \"" + name + "\" is not derived from any Snapmaker or Generic filament");
+        }
+
+        if (!visited.insert(inherits_name).second)
+        {
+            return try_rollback(name, "FILAMENT_CIRCULAR_INHERITS",
+                                "Circular inheritance detected in filament \"" + name + "\"");
+        }
+
+        // Try system presets first
+        if (Preset* parent = find_in_system(inherits_name))
+        {
+            if (is_official_preset(*parent))
+            {
+                PresetRollback::overwriteExtruderFrom(m_config, *parent, i, filament_ids);
+                substituted[{name, parent->name}].push_back(i);
+                return true;
+            }
+            std::string vendor_name = parent->vendor ? parent->vendor->name : "unknown";
+            return try_rollback(name, "FILAMENT_UNSUPPORTED_VENDOR",
+                                "Filament \"" + name + "\" derives from unsupported vendor \"" + vendor_name +
+                                    "\" via \"" + inherits_name + "\"");
+        }
+
+        // Not in system — try project embedded, then continue walking
+        Preset* project_parent = find_in_project(inherits_name);
+        if (project_parent)
+        {
+            current = project_parent;
+            continue;
+        }
+        return try_rollback(name, "FILAMENT_UNKNOWN_ANCESTOR",
+                            "Filament \"" + name + "\" inherits from unknown preset \"" + inherits_name + "\"");
+    }
+
+    __builtin_unreachable(); // loop always exits via return
+}
+
+void SliceEngine::emit_filament_warnings(const FilamentGrouping& rolled_back, const FilamentGrouping& substituted)
+{
+    // Slot list is appended so users can see which extruders were affected;
+    // identical rollbacks/substitutions across multiple slots collapse to
+    // one line. Message shape follows the unified substitution policy:
+    //   orig == target → "verified against" (cloud-side hardening, no swap)
+    //   orig != target → "substituted from X to Y" (real swap)
+    auto emit_group = [this](const FilamentGrouping& groups, const char* code)
     {
         for (const auto& kv : groups)
         {
@@ -1033,15 +1033,8 @@ bool SliceEngine::apply_filament_official_preset()
             m_stats.issues.push_back(make_warning(-1, code, msg));
         }
     };
-    emit_grouped(rolled_back, "FILAMENT_ROLLED_BACK");
-    emit_grouped(substituted, "FILAMENT_SUBSTITUTED");
-
-    if (any_error)
-    {
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-    }
-    return !any_error;
+    emit_group(rolled_back, "FILAMENT_ROLLED_BACK");
+    emit_group(substituted, "FILAMENT_SUBSTITUTED");
 }
 
 // ============================================================================
