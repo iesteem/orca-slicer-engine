@@ -113,16 +113,14 @@ private:
     // process + filament level), user-authored text (printer_notes /
     // filament_notes), the post_process shell-command list, and external
     // file-loading references (load_custom_gcodes / load_slicedata /
-    // load_settings / load_assemble_list). Emits a single USER_CONTENT_CLEARED
-    // tip when any field is cleared; never blocks.
-    // Official G-code values are restored later by the three apply_*_official_preset
-    // functions, all of which overwrite unconditionally (filament included,
-    // even when the user already picked an official preset).
+    // load_settings / load_assemble_list).
+    // Silent for G-code and post_process (apply_*_official_preset reports the
+    // replacement separately as PRINTER/FILAMENT/PROCESS_SUBSTITUTED). Emits
+    // one USER_CONTENT_CLEARED tip only when notes or external file references
+    // are cleared — those have no official counterpart. Never blocks.
     void strip_user_content();
     bool apply_printer_official_preset();
     bool apply_filament_official_preset();
-    void substitute_filament_params(Slic3r::ConfigOptionStrings* filament_ids, int ext_idx,
-                                    const Slic3r::Preset& official_parent, const std::string& original_name);
     void apply_process_official_preset();
     bool validate_input();
     void ensure_models_on_bed();
