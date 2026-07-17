@@ -821,10 +821,20 @@ bool SliceEngine::apply_printer_official_preset()
         return false;
     }
 
-    std::string msg = "Printer preset replaced with official preset \"" + preset_name + "\"";
+    // Reporting follows the unified substitution policy:
+    //   - Same name (user already picked the official preset): the overwrite
+    //     is cloud-side hardening against locally-modified copies. Surface
+    //     it as "verified against" so the user knows no swap happened but
+    //     the preset was reapplied.
+    //   - Different name (real substitution): explicit "from X to Y".
+    // Both branches emphasise "for cloud safety" — the cloud pipeline
+    // overwrites regardless of the user's choice.
+    std::string msg;
     if (!original_printer.empty() && original_printer != preset_name)
-        msg += " (original: \"" + original_printer + "\")";
-    msg += " for cloud safety";
+        msg = "Printer preset substituted from \"" + original_printer + "\" to \"" + preset_name +
+              "\" for cloud safety";
+    else
+        msg = "Printer preset \"" + preset_name + "\" verified against official preset for cloud safety";
     m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", msg));
     return true;
 }
@@ -920,12 +930,13 @@ bool SliceEngine::apply_filament_official_preset()
         {
             if (is_official_preset(*sys))
             {
-                // Official filament: full overwrite without warning. The
-                // user already chose an official preset; the overwrite is
-                // cloud-side hardening (drops user-modified copies of the
-                // official values), not a substitution. Stays silent to
-                // avoid noisy "X substituted with X" warnings.
+                // Official filament: full overwrite (cloud-side hardening
+                // drops user-modified copies of the official values, same
+                // guarantee as printer and process paths). Recorded in the
+                // substituted map with orig == target so emit_grouped can
+                // render it as "verified against" rather than "from X to Y".
                 PresetRollback::overwriteExtruderFrom(m_config, *sys, i, filament_ids);
+                substituted[{name, sys->name}].push_back(i);
                 return true;
             }
             return try_rollback(i, name, "FILAMENT_UNSUPPORTED_VENDOR",
@@ -995,9 +1006,13 @@ bool SliceEngine::apply_filament_official_preset()
     // Emit deduplicated warnings. Slot list is appended so users can see
     // which extruders were affected; identical rollbacks/substitutions across
     // multiple slots collapse to one line.
+    //
+    // Message shape follows the unified substitution policy:
+    //   - orig == target (Case 1, user already picked the official preset):
+    //     "verified against" — overwrite is cloud-side hardening, not a swap.
+    //   - orig != target (Case 2 / rollback): explicit "from X to Y".
     auto emit_grouped = [this](const std::map<std::pair<std::string, std::string>, std::vector<int>>& groups,
-                               const char* code,
-                               const char* verb_template)
+                               const char* code)
     {
         for (const auto& kv : groups)
         {
@@ -1009,14 +1024,17 @@ bool SliceEngine::apply_filament_official_preset()
                 if (k) slots_str += ", ";
                 slots_str += std::to_string(kv.second[k]);
             }
-            m_stats.issues.push_back(make_warning(
-                -1, code,
-                "Filament \"" + orig + "\" " + verb_template + " \"" + target + "\" (slot" +
-                    (kv.second.size() > 1 ? "s " : " ") + slots_str + ")"));
+            std::string slot_suffix = " (slot" + std::string(kv.second.size() > 1 ? "s " : " ") + slots_str + ")";
+            std::string msg;
+            if (orig == target)
+                msg = "Filament \"" + orig + "\" verified against official preset for cloud safety" + slot_suffix;
+            else
+                msg = "Filament substituted from \"" + orig + "\" to \"" + target + "\" for cloud safety" + slot_suffix;
+            m_stats.issues.push_back(make_warning(-1, code, msg));
         }
     };
-    emit_grouped(rolled_back, "FILAMENT_ROLLED_BACK", "rolled back to base preset");
-    emit_grouped(substituted, "FILAMENT_SUBSTITUTED", "substituted with official preset");
+    emit_grouped(rolled_back, "FILAMENT_ROLLED_BACK");
+    emit_grouped(substituted, "FILAMENT_SUBSTITUTED");
 
     if (any_error)
     {
@@ -1150,9 +1168,17 @@ void SliceEngine::apply_process_official_preset()
         // config.
         overwrite_all_keys_from_except(m_config, official->config, user_overrides);
 
-        m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED",
-            "Process preset replaced with official preset \"" + official->name
-            + "\" for cloud consistency"));
+        // Reporting follows the unified substitution policy (same as printer
+        // and filament): same name → "verified against" (cloud-side hardening
+        // against user-modified copies); different name → explicit "from X to Y".
+        // preset_name is the user's original print_settings_id captured above.
+        std::string msg;
+        if (official->name == preset_name)
+            msg = "Process preset \"" + official->name + "\" verified against official preset for cloud safety";
+        else
+            msg = "Process preset substituted from \"" + preset_name + "\" to \"" + official->name +
+                  "\" for cloud safety";
+        m_stats.issues.push_back(make_warning(-1, "PROCESS_SUBSTITUTED", msg));
     } 
     else 
     {
