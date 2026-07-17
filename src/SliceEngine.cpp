@@ -149,22 +149,14 @@ bool SliceEngine::run()
     // Collect config warnings (never blocks the pipeline).
     collect_config_warnings();
 
-    // Load vendor preset JSONs from resources/profiles/. Required for
-    // validate_presets and apply_*_official_preset below.
+    // Load vendor preset JSONs from resources/profiles/. Required for the
+    // apply_*_official_preset stages below.
     load_system_presets();
 
     // Merge project-embedded presets (read from the .3mf input) into the
-    // bundle so validate_presets can resolve references to them. Never blocks.
+    // bundle so the apply_*_official_preset stages can resolve inheritance
+    // references to them. Never blocks.
     load_project_presets();
-
-    // Resolve printer/filament/process preset references in the loaded config
-    // against the system + project bundle. Never blocks — all preset lookup
-    // failures are warnings (apply_*_official_preset overwrites downstream).
-    if (!validate_presets())
-    {
-        build_statistics();
-        return false;
-    }
 
     if (!m_cfg.skip_preset_substitution)
     {
@@ -522,14 +514,15 @@ void SliceEngine::load_system_presets()
 
 // Project-embedded presets: loaded from the .3mf input file during load_3mf
 // (m_project_presets), merged into m_preset_bundle here. Logically part of
-// Stage 1.3 — paired with load_system_presets so validate_presets sees a
-// unified bundle of system + project presets.
+// Stage 1.3 — paired with load_system_presets so the apply_*_official_preset
+// stages below see a unified bundle of system + project presets.
 
 void SliceEngine::load_project_presets()
 {
     // Precondition: m_preset_bundle is populated by load_system_presets().
     // When system presets are unavailable, there is nowhere to merge project
-    // presets into, so we skip silently (validate_presets will also early-exit).
+    // presets into, so we skip silently — apply_*_official_preset also
+    // early-exits when m_presets_available is false.
     if (!m_presets_available || !m_preset_bundle) return;
     if (m_project_presets.empty()) return;
 
@@ -553,92 +546,9 @@ void SliceEngine::load_project_presets()
     catch (const std::exception& e)
     {
         // Graceful degradation: a malformed embedded preset must not abort
-        // the pipeline. validate_presets will still run and may surface
-        // follow-up errors about missing preset references.
+        // the pipeline. The apply_*_official_preset stages below tolerate
+        // missing references via inheritance-chain fallbacks.
         BOOST_LOG_TRIVIAL(warning) << "Failed to load project embedded presets: " << e.what();
-    }
-}
-
-// ============================================================================
-// Stage 1.4: Preset reference resolution
-// ============================================================================
-
-bool SliceEngine::validate_presets()
-{
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        BOOST_LOG_TRIVIAL(info) << "Preset validation skipped (system presets not available)";
-        return true;
-    }
-
-    // Precondition: m_project_presets has been merged into m_preset_bundle
-    // by load_project_presets(), so references to embedded presets resolve.
-    PresetBundle& preset_bundle = *m_preset_bundle;
-
-    // Check that m_config's printer/filament/process preset references resolve
-    // in the bundle (system + project-embedded). All three branches are
-    // non-blocking warnings — apply_*_official_preset unconditionally
-    // overwrites with the official U1 / filament / process presets downstream,
-    // so a failed user-preset lookup has no effect on the final slice:
-    //   PRINTER_NOT_FOUND    -> warning. apply_printer_official_preset ignores
-    //                            printer_settings_id and looks up the official
-    //                            U1 by nozzle_diameter.
-    //   FILAMENTS_NOT_FOUND  -> warning. apply_filament_official_preset walks
-    //                            the inheritance chain / rolls back per extruder.
-    //   MODIFIED_GCODES      -> warning. strip_user_content +
-    //                            apply_printer_official_preset overwrite user
-    //                            G-code with official values downstream.
-    try
-    {
-        std::set<std::string> modified_gcodes;
-        int validated = preset_bundle.validate_presets(m_cfg.input_file, m_config, modified_gcodes);
-
-        if (validated == VALIDATE_PRESETS_SUCCESS)
-        {
-            BOOST_LOG_TRIVIAL(info) << "Preset validation passed";
-            return true;
-        }
-
-        // All non-success branches share one shape: pick the (issue code,
-        // message prefix) for the validated code, append the modified_gcodes
-        // list as details, and emit a warning. All three are non-blocking for
-        // the reasons listed in the comment block above — the downstream
-        // apply_*_official_preset stages overwrite with official presets
-        // regardless of whether the user's preset reference resolved.
-        static const std::map<int, std::pair<const char*, const char*>> kPresetIssueTable = {
-            {VALIDATE_PRESETS_PRINTER_NOT_FOUND,
-             {"PRESET_PRINTER_NOT_FOUND",
-              "Custom printer preset not found in system presets"}},
-            {VALIDATE_PRESETS_FILAMENTS_NOT_FOUND,
-             {"PRESET_FILAMENT_NOT_FOUND",
-              "Custom filament preset not found in system presets"}},
-            {VALIDATE_PRESETS_MODIFIED_GCODES,
-             {"PRESET_MODIFIED_GCODES",
-              "Modified G-code keys found in presets"}},
-        };
-        auto it = kPresetIssueTable.find(validated);
-        if (it == kPresetIssueTable.end())
-        {
-            BOOST_LOG_TRIVIAL(warning) << "Unknown validate_presets code: " << validated;
-            return true;
-        }
-
-        std::string details;
-        for (const auto& name : modified_gcodes)
-            details += (details.empty() ? "" : ", ") + name;
-        std::string msg = it->second.second;
-        if (!details.empty())
-            msg += ": " + details;
-        m_stats.issues.push_back(make_warning(-1, it->second.first, msg));
-        return true;
-    }
-    catch (const std::exception& e)
-    {
-        BOOST_LOG_TRIVIAL(error) << "Preset validation error: " << e.what();
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = std::string("Preset validation failed: ") + e.what();
-        return false;
     }
 }
 

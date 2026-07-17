@@ -108,7 +108,6 @@ private:
     // load_3mf) into m_preset_bundle, alongside the system presets loaded
     // by load_system_presets. Never blocks — load failures only log a warning.
     void load_project_presets();
-    bool validate_presets();
     // Strip all user-supplied content from m_config: G-code keys (machine +
     // process + filament level), user-authored text (printer_notes /
     // filament_notes), the post_process shell-command list, and external
