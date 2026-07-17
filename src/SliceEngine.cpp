@@ -166,6 +166,24 @@ bool SliceEngine::run()
         // Position matters: must run before all three apply_* calls.
         strip_user_content();
 
+        // Bundle precondition for all three apply_*_official_preset stages.
+        // Without system presets we cannot look up official U1 / filament /
+        // process configurations, so the whole substitution block is aborted.
+        // (Previously each apply function checked this independently; the
+        // filament and process checks were effectively dead code given the
+        // printer stage already returned false on this condition.)
+        if (!m_presets_available || !m_preset_bundle)
+        {
+            std::string msg = "System presets not available; cannot apply official presets.";
+            BOOST_LOG_TRIVIAL(error) << msg;
+            m_any_error = true;
+            set_error_type(EXIT_PREPROCESS_ERROR);
+            m_stats.error_message = msg;
+            m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
+            build_statistics();
+            return false;
+        }
+
         // Apply the official Snapmaker U1 printer preset — wholesale-replaces
         // printer config (printable_area, machine G-code, nozzle_diameter,
         // etc.) with official values.
@@ -714,16 +732,9 @@ bool SliceEngine::apply_printer_official_preset()
     // The official preset config is sourced from the already-loaded
     // PresetBundle, whose system presets carry a fully inherits-expanded
     // config (fdm_U1 -> fdm_toolchanger merged in at load time).
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        std::string msg = "System presets not available; cannot apply official printer preset.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_MISSING", msg));
-        return false;
-    }
+    //
+    // Precondition: bundle availability is verified by run() before this
+    // function is called, so m_preset_bundle is non-null here.
 
     // Determine nozzle diameter from the first extruder (default 0.4).
     double nozzle = 0.4;
@@ -827,7 +838,8 @@ bool SliceEngine::apply_filament_official_preset()
     if (!filament_ids || filament_ids->values.empty())
         return true;
 
-    // Guaranteed by run(): apply_printer_official_preset() must succeed first
+    // Guaranteed by run(): bundle availability is checked before any apply_*
+    // stage runs, and apply_printer_official_preset() must succeed first.
     assert(m_preset_bundle);
 
     // Lambda: check whether a system preset is "official"
@@ -1016,15 +1028,8 @@ bool SliceEngine::apply_filament_official_preset()
 
 void SliceEngine::apply_process_official_preset()
 {
-    // Non-blocking: if system presets are unavailable, the existing process
-    // config from the 3MF is used as a fallback. Printer config is already
-    // correct at this point, so geometry is safe.
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        BOOST_LOG_TRIVIAL(warning)
-            << "System presets not available; cannot apply official process preset.";
-        return;
-    }
+    // Precondition: bundle availability is verified by run() before this
+    // function is called, so m_preset_bundle is non-null here.
 
     // The official printer preset (already applied) sets default_print_profile
     // to the matching Snapmaker U1 process preset name, e.g.
