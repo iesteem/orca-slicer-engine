@@ -102,7 +102,7 @@ private:
     void record_load_error(const std::string& code, const std::string& msg);
 
     bool validate_printer_model();
-    void validate_config();
+    void collect_config_warnings();
     void load_system_presets();
     bool validate_presets();
     bool apply_printer_official_preset();

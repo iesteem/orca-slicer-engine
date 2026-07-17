@@ -147,7 +147,7 @@ bool SliceEngine::run()
     }
 
     // Config & preset validation
-    validate_config();
+    collect_config_warnings();
     load_system_presets();
     if (!validate_presets())
     {
@@ -411,19 +411,19 @@ bool SliceEngine::validate_printer_model()
 }
 
 // ============================================================================
-// Stage 1.2: Config validation
+// Stage 1.2: Config warning collection
 // ============================================================================
 
-void SliceEngine::validate_config()
+void SliceEngine::collect_config_warnings()
 {
-    // A1: Validate config values (layer_height, nozzle_diameter, etc.).
+    // Validate config values (layer_height, nozzle_diameter, etc.).
     // Use under_cli=false to match desktop GUI behavior — invalid config
     // values produce warnings but do NOT block slicing.
     std::map<std::string, std::string> invalid = m_config.validate(false);
     for (const auto& [key, msg] : invalid)
         m_stats.issues.push_back(make_warning(-1, "CONFIG_INVALID_" + key, msg));
 
-    // A2: Check config substitutions (unknown keys, forward-compat changes)
+    // Check config substitutions (unknown keys, forward-compat changes)
     if (!m_config_substitutions.empty())
     {
         for (const auto& substitution : m_config_substitutions.substitutions)
