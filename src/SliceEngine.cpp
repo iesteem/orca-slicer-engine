@@ -277,47 +277,61 @@ bool SliceEngine::run()
 
 bool SliceEngine::load_3mf()
 {
-    auto fail_load = [&](const std::string& code, const std::string& msg)
-    {
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_LOAD_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, code, msg));
-        return false;
-    };
+    BOOST_LOG_TRIVIAL(info) << "Loading 3MF file...";
 
-    // --- Pre-load validation: format & size ---
+    if (!validate_input_file()) return false;
+    if (!read_3mf_model()) return false;
+    sanitize_cloud_config();
 
+    BOOST_LOG_TRIVIAL(info) << "Loaded " << m_model.objects.size() << " object(s)";
+    return true;
+}
+
+void SliceEngine::record_load_error(const std::string& code, const std::string& msg)
+{
+    BOOST_LOG_TRIVIAL(error) << msg;
+    m_any_error = true;
+    set_error_type(EXIT_LOAD_ERROR);
+    m_stats.error_message = msg;
+    m_stats.issues.push_back(make_error(-1, code, msg));
+}
+
+bool SliceEngine::validate_input_file()
+{
     // Extension check (case-insensitive: .3mf, .3MF, .3Mf are all valid)
     std::string extension = boost::filesystem::path(m_cfg.input_file).extension().string();
     boost::to_lower(extension);
     if (extension != ".3mf")
     {
-        return fail_load("FORMAT_REJECTED",
-                         "Only .3mf files are supported. Please export your project from Snapmaker Orca Slicer.");
+        record_load_error(
+            "FORMAT_REJECTED",
+            "Only .3mf files are supported. Please export your project from Snapmaker Orca Slicer.");
+        return false;
     }
 
     // File size check (configurable via --max-size, default 200MB, 0 = no limit)
-    if (m_cfg.max_size_mb > 0)
+    if (m_cfg.max_size_mb <= 0) return true;
+
+    boost::uintmax_t max_file_size = static_cast<boost::uintmax_t>(m_cfg.max_size_mb) * 1024ULL * 1024ULL;
+    boost::system::error_code err_code;
+    boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, err_code);
+    if (!err_code && file_size > max_file_size)
     {
-        boost::uintmax_t max_file_size = static_cast<boost::uintmax_t>(m_cfg.max_size_mb) * 1024ULL * 1024ULL;
-        boost::system::error_code err_code;
-        boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, err_code);
-        if (!err_code && file_size > max_file_size)
-        {
-            return fail_load("FILE_SIZE_EXCEEDED",
-                             "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb) +
-                                 " MB). Please simplify the model or reduce face count and try again.");
-        }
+        record_load_error("FILE_SIZE_EXCEEDED",
+                          "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb) +
+                              " MB). Please simplify the model or reduce face count and try again.");
+        return false;
     }
+    return true;
+}
 
-    BOOST_LOG_TRIVIAL(info) << "Loading 3MF file...";
-
+bool SliceEngine::read_3mf_model()
+{
     // Reset substitution state from any prior run
     m_config_substitutions = ConfigSubstitutionContext(ForwardCompatibilitySubstitutionRule::Enable);
     LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::AddDefaultInstances |
                             LoadStrategy::LoadAuxiliary;
+
     try
     {
         m_model =
@@ -326,30 +340,28 @@ bool SliceEngine::load_3mf()
     }
     catch (const std::exception& e)
     {
-        std::string what = e.what();
-        BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << what;
-        m_any_error = true;
-        set_error_type(EXIT_LOAD_ERROR);
-
         // Detect gcode.3mf output files (no geometry, only pre-sliced G-code).
         // Model::read_from_file() throws "The supplied file couldn't be read
         // because it's empty" when the 3MF has valid XML metadata but zero
         // model objects — typical of a .gcode.3mf slicing result being
         // mistakenly re-submitted as input.
-        bool is_empty = (what.find("empty") != std::string::npos);
-        if (is_empty)
+        // FIXME(libslic3r-upstream): substring match on exception message is
+        // brittle — a libslic3r error-text change will silently regress the
+        // gcode.3mf detection. Consider an explicit signal from read_from_file.
+        const std::string what = e.what();
+        BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << what;
+        if (what.find("empty") != std::string::npos)
         {
-            m_stats.error_message =
+            record_load_error(
+                "LOAD_3MF_ERROR",
                 "This 3MF file contains no 3D model objects. "
                 "It appears to be a gcode.3mf slicing output file, not a project file. "
-                "Please upload the original .3mf project file instead.";
-            m_stats.issues.push_back(make_error(-1, "LOAD_3MF_ERROR", m_stats.error_message));
+                "Please upload the original .3mf project file instead.");
         }
         else
         {
-            m_stats.error_message =
-                "Failed to load 3MF file. The file may be corrupted or in an unsupported format.";
-            m_stats.issues.push_back(make_error(-1, "LOAD_3MF_ERROR", m_stats.error_message));
+            record_load_error("LOAD_3MF_ERROR",
+                              "Failed to load 3MF file. The file may be corrupted or in an unsupported format.");
         }
 
         // Model::read_from_file() may have partially populated output parameters
@@ -357,35 +369,30 @@ bool SliceEngine::load_3mf()
         // downstream code from accessing invalid state.
         release_PlateData_list(m_plate_data);
         m_project_presets.clear();
-
         return false;
     }
 
     if (m_model.objects.empty())
     {
-        BOOST_LOG_TRIVIAL(error) << "No objects found in 3MF file";
-        m_any_error = true;
-        set_error_type(EXIT_LOAD_ERROR);
-        m_stats.error_message = "3MF file contains no sliceable model objects";
-        m_stats.issues.push_back(make_error(-1, "MODEL_EMPTY", m_stats.error_message));
+        record_load_error("MODEL_EMPTY", "3MF file contains no sliceable model objects");
         return false;
     }
-
-    BOOST_LOG_TRIVIAL(info) << "Loaded " << m_model.objects.size() << " object(s)";
-
-    // Detect and reject post-processing scripts in cloud mode (RCE prevention)
-    if (m_config.has("post_process"))
-    {
-        auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
-        if (pp && !pp->values.empty())
-        {
-            m_stats.issues.push_back(make_error(-1, "POST_PROCESS_REJECTED",
-                                                "Custom post-processing scripts are not supported in cloud slicing."));
-            m_config.set_key_value("post_process", new ConfigOptionStrings({}));
-        }
-    }
-
     return true;
+}
+
+void SliceEngine::sanitize_cloud_config()
+{
+    // Detect and reject post-processing scripts in cloud mode (RCE prevention).
+    // Records an issue but does NOT fail the load — matches original behavior.
+    if (!m_config.has("post_process")) return;
+
+    auto* pp = m_config.option<ConfigOptionStrings>("post_process", true);
+    if (!pp || pp->values.empty()) return;
+
+    m_stats.issues.push_back(
+        make_error(-1, "POST_PROCESS_REJECTED",
+                   "Custom post-processing scripts are not supported in cloud slicing."));
+    m_config.set_key_value("post_process", new ConfigOptionStrings({}));
 }
 
 // ============================================================================

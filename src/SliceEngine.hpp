@@ -83,6 +83,28 @@ public:
 private:
     // --- Pipeline stages (in call order) ---
     bool load_3mf();
+
+    // load_3mf sub-stages (private implementation details)
+    // Validate the input file path before invoking libslic3r: extension must
+    // be .3mf (case-insensitive) and size must respect --max-size (0 = no limit).
+    // Returns false if rejected; record_load_error() has already been called.
+    bool validate_input_file();
+    // Invoke Model::read_from_file with the full load strategy and classify
+    // failures. On success m_model is populated. On failure (exception or zero
+    // objects) partial outputs are released and an issue is recorded.
+    // Returns false on failure.
+    // Note: empty-file detection currently relies on a substring match
+    // ("empty") in the libslic3r exception message — fragile, see FIXME in cpp.
+    bool read_3mf_model();
+    // Cloud-mode safety: clear any user-supplied post-processing scripts from
+    // the loaded config. Records a POST_PROCESS_REJECTED issue but does NOT
+    // fail the load (matches original behavior).
+    void sanitize_cloud_config();
+    // Record a load-stage failure: log, set error flag, set exit code,
+    // populate m_stats.error_message and issues. Does NOT throw and does NOT
+    // return; the caller decides whether to propagate via return false.
+    void record_load_error(const std::string& code, const std::string& msg);
+
     bool validate_printer_model();
     void validate_config();
     void load_system_presets();
