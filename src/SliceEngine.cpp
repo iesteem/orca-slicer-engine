@@ -1168,7 +1168,7 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     return nullptr;
 }
 
-std::set<std::string> SliceEngine::parse_process_user_overrides() const
+std::set<std::string> SliceEngine::parse_process_user_overrides()
 {
     // Parse different_settings_to_system[0] — the ;-separated list of process
     // keys the user explicitly changed from the system defaults. Returns an

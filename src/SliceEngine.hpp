@@ -155,7 +155,7 @@ private:
     // keys the user explicitly changed from the system defaults. Returns an
     // empty set if the field is absent or empty. Used by apply_process_official_preset
     // to honour user overrides when applying the official preset.
-    std::set<std::string> parse_process_user_overrides() const;
+    std::set<std::string> parse_process_user_overrides();
     // When brim_type=auto_brim, set brim_width=0 so the fallback path (when
     // the algorithm decides no brim is needed) doesn't generate unwanted brim.
     // The algorithm still sets its own computed width when it determines brim
