@@ -146,9 +146,15 @@ bool SliceEngine::run()
         return false;
     }
 
-    // Config & preset validation
+    // Collect config warnings (never blocks the pipeline).
     collect_config_warnings();
+
+    // Load vendor preset JSONs from resources/profiles/. Required for
+    // validate_presets and apply_*_official_preset below.
     load_system_presets();
+
+    // Validate that printer/filament/process presets referenced by the
+    // loaded config exist in the system profiles. Blocks on failure.
     if (!validate_presets())
     {
         build_statistics();
