@@ -160,12 +160,6 @@ bool SliceEngine::run()
 
     if (!m_cfg.skip_preset_substitution)
     {
-        // Strip user-supplied content (G-code, notes, post_process, external
-        // file refs) before any apply_*_official_preset stage. The three apply
-        // stages then restore official values for the keys each owns.
-        // Position matters: must run before all three apply_* calls.
-        strip_user_content();
-
         // Bundle precondition for all three apply_*_official_preset stages.
         // Without system presets we cannot look up official U1 / filament /
         // process configurations, so the whole substitution block is aborted.
@@ -183,6 +177,15 @@ bool SliceEngine::run()
             build_statistics();
             return false;
         }
+
+        // Strip user-supplied content (G-code, notes, post_process, external
+        // file refs) before any apply_*_official_preset stage. The three apply
+        // stages then restore official values for the keys each owns.
+        // Runs after the bundle check so the PRESETS_MISSING error path does
+        // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
+        // apply official presets, the user content stays untouched and the
+        // engine fails cleanly.
+        strip_user_content();
 
         // Apply the official Snapmaker U1 printer preset — wholesale-replaces
         // printer config (printable_area, machine G-code, nozzle_diameter,
