@@ -754,6 +754,15 @@ bool SliceEngine::apply_printer_official_preset()
         return false;
     }
 
+    // Capture the user's original printer preset name before the wholesale
+    // overwrite below replaces printer_settings_id with the official value.
+    // Used to surface "X replaced with Y" in the SUBSTITUTED warning so users
+    // can trace which of their presets was discarded — matches the filament
+    // and process paths, which already list the original name.
+    std::string original_printer;
+    if (const auto* pid = m_config.option<ConfigOptionString>("printer_settings_id", false))
+        original_printer = pid->value;
+
     // Wholesale overwrite: every key in the official config replaces the
     // user's value (machine G-code keys included).
     overwrite_all_keys_from(m_config, official->config);
@@ -798,9 +807,11 @@ bool SliceEngine::apply_printer_official_preset()
         return false;
     }
 
-    m_stats.issues.push_back(
-        make_warning(-1, "PRINTER_SUBSTITUTED",
-                     "Printer preset replaced with official preset \"" + preset_name + "\" for cloud safety"));
+    std::string msg = "Printer preset replaced with official preset \"" + preset_name + "\"";
+    if (!original_printer.empty() && original_printer != preset_name)
+        msg += " (original: \"" + original_printer + "\")";
+    msg += " for cloud safety";
+    m_stats.issues.push_back(make_warning(-1, "PRINTER_SUBSTITUTED", msg));
     return true;
 }
 
