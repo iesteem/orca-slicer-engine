@@ -1897,7 +1897,7 @@ bool SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
                 && warned_objects.insert(obj->name).second)
             {
                 m_stats.issues.push_back(
-                    make_serious_warning(plate_id, "SPIRAL_LIFT_NEAR_BOUNDARY",
+                    make_warning(plate_id, "SPIRAL_LIFT_NEAR_BOUNDARY",
                                  "Model too close to bed boundary. "
                                  "Disable spiral lifting or keep at least 3.5mm gap to avoid collision.",
                                  obj->name));
