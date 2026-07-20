@@ -256,7 +256,7 @@ private:
     // bounding box sits within SPIRAL_LIFT_SAFETY_MARGIN of the bed edge.
     // Returns true if any serious warning was emitted. Deduplicates by
     // object name so multi-instance objects emit one warning.
-    bool check_spiral_lift_near_boundary(int plate_id, const Slic3r::BuildVolume& build_volume,
+    void check_spiral_lift_near_boundary(int plate_id, const Slic3r::BuildVolume& build_volume,
                                          const std::set<int>& identify_ids);
     bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
     // Build the per-plate merged DynamicPrintConfig consumed by print.apply().

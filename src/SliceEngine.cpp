@@ -1807,8 +1807,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     }
 
     // Snapmaker: SpiralLiftNearBoundary warning (matches desktop 3DScene.cpp:1105-1122)
-    bool has_spiral_lift_conflict =
-        check_spiral_lift_near_boundary(plate_id, build_volume, identify_ids);
+    check_spiral_lift_near_boundary(plate_id, build_volume, identify_ids);
 
     // Restore global offsets for on-plate instances and update printable state
     for (auto& [inst, global_offset] : shifted)
@@ -1828,14 +1827,6 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         }
     }
 
-    if (has_spiral_lift_conflict)
-    {
-        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects too close to bed boundary with spiral lift, skipping";
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        return false;
-    }
-
     if (has_partly_outside)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects outside build volume, skipping";
@@ -1846,7 +1837,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     return true;
 }
 
-bool SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
+void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
                                                   const std::set<int>& identify_ids)
 {
     // Matches desktop 3DScene.cpp:1105-1122.
@@ -1867,12 +1858,11 @@ bool SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
         }
     }
     if (!spiral_lift_active || build_volume.type() != BuildVolume_Type::Rectangle)
-        return false;
+        return;
 
     constexpr double SPIRAL_LIFT_SAFETY_MARGIN = 3.5; // mm
     const BoundingBoxf3& bed_bb = build_volume.bounding_volume();
     std::set<std::string> warned_objects;
-    bool has_conflict = false;
     for (ModelObject* obj : m_model.objects)
     {
         if (!obj->printable)
@@ -1901,11 +1891,9 @@ bool SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
                                  "Model too close to bed boundary. "
                                  "Disable spiral lifting or keep at least 3.5mm gap to avoid collision.",
                                  obj->name));
-                has_conflict = true;
             }
         }
     }
-    return has_conflict;
 }
 
 bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
