@@ -381,7 +381,7 @@ private:
     // Check for high+low temperature filament mixing — U1 toolchanger cannot
     // handle the thermal difference. Returns false (with a fatal error pushed)
     // when mixing is detected.
-    bool check_filament_temp_mixing(int plate_id, Slic3r::Print& print);
+    bool check_filament_temp_mixing(int plate_id);
 
     // Execute the slicing process: call print.process() to generate toolpaths.
     // Reports progress via the status callback and checks for cancellation.

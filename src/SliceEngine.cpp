@@ -1946,8 +1946,21 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
 
     if (used_extruders.size() <= 1 && num_filaments > 1)
     {
+        // Keep the filament data for the extruder actually used on this
+        // plate, not just the first slot.  Without this remap, a plate
+        // that only uses slot 1 (PETG) would inherit slot 0 (ABS) values
+        // for filament_is_high_temperature, temperature_vitrification, etc.,
+        // which causes wrong chamber cooling mode and other downstream bugs.
+        int keep_idx = 0;
+        if (used_extruders.size() == 1)
+            keep_idx = *used_extruders.begin() - 1; // used_extruders stores 1-based
+        if (keep_idx < 0 || keep_idx >= num_filaments)
+            keep_idx = 0;
+
         BOOST_LOG_TRIVIAL(info) << "Trimming filament config from " << num_filaments
-                                << " to 1 to match single-extruder model";
+                                << " to 1 (keeping slot " << keep_idx
+                                << ") to match single-extruder model";
+
         merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
 
         // Truncate all filament-related array options to 1 entry.
@@ -1958,37 +1971,67 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
         // must also be trimmed to keep the config internally consistent:
         // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
         constexpr const char* trim_keys[] = {
-            "filament_diameter",    "filament_density",         "filament_cost",        "filament_colour",
-            "filament_type",        "filament_is_support",      "filament_settings_id", "nozzle_diameter",
-            "flush_volumes_matrix", "wiping_volumes_extruders",
+            "filament_diameter",          "filament_density",
+            "filament_cost",              "filament_colour",
+            "filament_type",              "filament_is_support",
+            "filament_settings_id",       "nozzle_diameter",
+            "flush_volumes_matrix",       "wiping_volumes_extruders",
+            "filament_is_high_temperature", "temperature_vitrification",
         };
         for (const char* key : trim_keys)
         {
             auto* opt = merged_config.option(key, true);
             if (!opt)
                 continue;
+
+            // Helper: remap keep_idx to index 0, then truncate to 1.
+            auto remap_floats = [&](std::vector<double>& vals) {
+                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
+                    vals[0] = vals[keep_idx];
+                vals.resize(1);
+            };
+            auto remap_ints = [&](std::vector<int>& vals) {
+                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
+                    vals[0] = vals[keep_idx];
+                vals.resize(1);
+            };
+            auto remap_strings = [&](std::vector<std::string>& vals) {
+                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
+                    vals[0] = vals[keep_idx];
+                vals.resize(1);
+            };
+            auto remap_bools = [&](std::vector<unsigned char>& vals) {
+                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
+                    vals[0] = vals[keep_idx];
+                vals.resize(1);
+            };
+
             if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt))
             {
-                if (!fs->values.empty())
-                {
-                    fs->values.resize(1);
+                if (!fs->values.empty()) {
+                    remap_floats(fs->values);
                     merged_config.set_key_value(key, new ConfigOptionFloats(fs->values));
                 }
             }
             else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt))
             {
-                if (!ss->values.empty())
-                {
-                    ss->values.resize(1);
+                if (!ss->values.empty()) {
+                    remap_strings(ss->values);
                     merged_config.set_key_value(key, new ConfigOptionStrings(ss->values));
                 }
             }
             else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt))
             {
-                if (!bs->values.empty())
-                {
-                    bs->values.resize(1);
+                if (!bs->values.empty()) {
+                    remap_bools(bs->values);
                     merged_config.set_key_value(key, new ConfigOptionBools(bs->values));
+                }
+            }
+            else if (auto* is_opt = dynamic_cast<ConfigOptionInts*>(opt))
+            {
+                if (!is_opt->values.empty()) {
+                    remap_ints(is_opt->values);
+                    merged_config.set_key_value(key, new ConfigOptionInts(is_opt->values));
                 }
             }
         }
@@ -2031,7 +2074,7 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
 
     check_filament_bed_rules(plate_id, print);
 
-    if (!check_filament_temp_mixing(plate_id, print))
+    if (!check_filament_temp_mixing(plate_id))
         return false;
 
     return true;
@@ -2239,17 +2282,110 @@ void SliceEngine::check_filament_bed_rules(int plate_id, Print& print)
     }
 }
 
-bool SliceEngine::check_filament_temp_mixing(int plate_id, Print& print)
+bool SliceEngine::check_filament_temp_mixing(int plate_id)
 {
-    // Uses filament_is_high_temperature from config, same data source as the
-    // desktop GUI's check_filament_temp_mixing and chamber_cooling_mode.
+    // Collect filament slots actually used by this plate, then check for
+    // high/low temperature mixing via the UNTRIMMED global config (m_config).
+    // This mirrors the desktop Plater::check_filament_temp_mixing() pattern
+    // but keeps the binary high/low classification (no tri-state compatible
+    // mode). Reading from m_config avoids the trimmed print.config() which
+    // has already lost multi-extruder information via prepare_merged_config.
+    int num_filaments = 0;
+    auto* ftype_opt = m_config.option<ConfigOptionStrings>("filament_type");
+    if (ftype_opt)
+        num_filaments = static_cast<int>(ftype_opt->values.size());
+    if (num_filaments <= 1)
+        return true;
+
+    std::set<int> used_slots;
+
+    // (a) Collect extruders from printable model instances on this plate.
+    // Also track whether any object relies on the global default extruder —
+    // when it does, per-feature defaults (wall / infill filaments) affect
+    // the slicing output and must be collected.
+    bool uses_default_extruder = false;
+    for (ModelObject* obj : m_model.objects)
+    {
+        for (ModelInstance* inst : obj->instances)
+        {
+            if (!inst->is_printable())
+                continue;
+            for (ModelVolume* vol : obj->volumes)
+            {
+                if (!vol->is_model_part())
+                    continue;
+                for (int eid : vol->get_extruders())
+                {
+                    if (eid >= 1 && eid <= num_filaments)
+                        used_slots.insert(eid - 1);
+                }
+            }
+            // An object without an explicit "extruder" key in its config
+            // (or with extruder==0) inherits the global default.  This
+            // matches the desktop Plater::check_filament_temp_mixing logic.
+            if (!obj->config.has("extruder") || obj->config.extruder() == 0)
+                uses_default_extruder = true;
+        }
+    }
+
+    // (b) Collect global feature extruders from the untrimmed config.
+    // Always-collected keys: wipe tower and support filaments apply
+    // regardless of object-level overrides.
+    {
+        static const std::vector<const char*> always_keys = {
+            "wipe_tower_filament",
+            "support_filament",
+            "support_interface_filament"
+        };
+        for (const char* key : always_keys)
+        {
+            auto* opt = m_config.option<ConfigOptionInt>(key);
+            if (opt && opt->value >= 1 && opt->value <= num_filaments)
+                used_slots.insert(opt->value - 1);
+        }
+    }
+
+    // (c) When at least one object uses the default extruder, the global
+    // wall / infill defaults affect the output and must be collected.
+    if (uses_default_extruder)
+    {
+        static const std::vector<const char*> default_keys = {
+            "wall_filament",
+            "sparse_infill_filament",
+            "solid_infill_filament"
+        };
+        for (const char* key : default_keys)
+        {
+            auto* opt = m_config.option<ConfigOptionInt>(key);
+            if (opt && opt->value >= 1 && opt->value <= num_filaments)
+                used_slots.insert(opt->value - 1);
+        }
+
+        // Resolve the global default extruder itself.
+        auto* extruder_opt = m_config.option<ConfigOptionInt>("extruder");
+        if (extruder_opt && extruder_opt->value >= 1 && extruder_opt->value <= num_filaments)
+            used_slots.insert(extruder_opt->value - 1);
+    }
+
+    if (used_slots.empty())
+        return true;
+
+    // Check high/low mixing across the actually-used slots.
+    auto* f_i_h_t = m_config.option<ConfigOptionBools>("filament_is_high_temperature");
+    if (!f_i_h_t)
+        return true;
+
     bool has_high = false, has_low = false;
-    for (unsigned int extruder : print.extruders()) {
-        if (print.config().filament_is_high_temperature.get_at(extruder))
+    for (int slot : used_slots)
+    {
+        if (slot >= static_cast<int>(f_i_h_t->values.size()))
+            continue;
+        if (f_i_h_t->values[slot])
             has_high = true;
         else
             has_low = true;
     }
+
     if (!has_high || !has_low)
         return true;
 
