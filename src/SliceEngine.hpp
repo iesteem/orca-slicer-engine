@@ -268,13 +268,6 @@ private:
     // in m_plate_results[plate_id].
     void process_plate(int plate_id);
 
-    // Detect the EmptyGcodeLayers condition on a slice result: the G-code file
-    // exists but contains no valid layers. On detection, removes the empty
-    // G-code file, drains the per-plate issues into m_stats, shrinks the
-    // moves/lines_ends buffers, stores the result, and returns true so the
-    // caller skips post-processing. Returns false for normal results.
-    bool handle_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result);
-
     // Package all successfully sliced plate results (G-code + metadata) into a
     // single .3mf output file. Only called when at least one plate produced output.
     void package_output();
@@ -324,6 +317,14 @@ private:
     // (fatal error).
     bool run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Slic3r::Vec3d& origin);
 
+    // Check whether the global slicing timeout has been exceeded. Returns false
+    // if timed out (fatal error), after logging and pushing SLICING_TIMEOUT.
+    bool check_timeout(int plate_id);
+
+    // Create a Print object for the plate: set status callback and BBL flag.
+    // Returns a configured Print ready for model application.
+    Slic3r::Print init_print();
+
     // SpiralLiftNearBoundary check (desktop 3DScene.cpp parity): when z_hop
     // uses spiral/auto mode and bed is rectangular, flag any object whose
     // bounding box sits within SPIRAL_LIFT_SAFETY_MARGIN of the bed edge.
@@ -335,6 +336,12 @@ private:
     // Set plate index and origin on the Print, build the merged config, and
     // apply the model objects. Returns false if no printable objects result.
     bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
+
+    // Assign sequential arrange_order values to all model instances.
+    void assign_arrange_order();
+
+    // Set global extruder parameters and print speed table from config.
+    void setup_extruder_params(Slic3r::Print& print);
 
     // Build the per-plate merged DynamicPrintConfig consumed by print.apply().
     // Starts from m_config, then trims filament arrays down to a single
@@ -384,9 +391,19 @@ private:
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
+    // Check for the EmptyGcodeLayers condition: the G-code file exists but
+    // contains no valid layers. On detection, removes the empty file, drains
+    // per-plate issues into m_stats, and stores the result. Returns false when
+    // empty layers are found (caller should abort); true for normal results.
+    bool check_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result);
+
     // Post-slicing analysis: extract filament usage, compute cost, embed
     // thumbnails, and collect per-plate issues into result.issues.
-    void run_postprocessing(int plate_id, PlateSliceResult& result);
+    void do_postprocessing(int plate_id, PlateSliceResult& result);
+
+    // Free G-code visualization data (moves/lines_ends) and store the result
+    // into m_plate_results. Must be called after post-processing for each plate.
+    void finalise_plate_result(int plate_id, PlateSliceResult& result);
 
     // --- State ---
     EngineConfig m_cfg;

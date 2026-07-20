@@ -1545,108 +1545,47 @@ void SliceEngine::process_plate(int plate_id)
     if (!run_build_volume_check(plate_id, identify_ids, origin))
         return;
 
-    // --- Slicing + Export ---
-    // Check timeout before slicing
-    if (m_has_timeout && std::chrono::steady_clock::now() > m_timeout_deadline)
-    {
-        BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
-        m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
-                                            "Slicing timed out. The model may be too complex. If you believe this is "
-                                            "an error, please submit an appeal for review."));
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
+    // --- Timeout check (before heavy slicing work) ---
+    if (!check_timeout(plate_id))
         return;
-    }
 
     // --- Create Print ---
-    Print print;
-    print.set_status_callback(
-        [&print, this](const PrintBase::SlicingStatus& s)
-        {
-            default_status_callback(s, &print, &m_cfg.cancel_file);
-        });
-    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
+    Print print = init_print();
 
     // --- Apply model ---
     if (!apply_model(plate_id, print, origin))
         return;
 
     // --- Assign arrange_order ---
-    {
-        int order = 1;
-        for (ModelObject* obj : m_model.objects)
-            for (ModelInstance* inst : obj->instances)
-                inst->arrange_order = order++;
-    }
+    assign_arrange_order();
 
     // --- Set global extruder params & speed table ---
-    {
-        int num_extruders = 0;
-        if (m_config.has("filament_diameter"))
-        {
-            auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
-            if (fd)
-                num_extruders = static_cast<int>(fd->values.size());
-        }
-        Model::setExtruderParams(m_config, num_extruders);
-        Model::setPrintSpeedTable(m_config, print.config());
-    }
+    setup_extruder_params(print);
 
     // --- Validation ---
     if (!run_validation(plate_id, print))
         return;
 
-    // Slicing
+    // --- Slicing ---
     if (!run_slicing(plate_id, print))
-    {
-        BOOST_LOG_TRIVIAL(error) << "Slicing failed for plate " << (plate_id + 1);
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
         return;
-    }
 
     BOOST_LOG_TRIVIAL(info) << "Slicing completed for plate " << (plate_id + 1);
 
-    // Export G-code
+    // --- Export G-code ---
     PlateSliceResult slice_result;
     if (!export_gcode(plate_id, print, slice_result))
-    {
-        if (is_wipe_tower_error(slice_result))
-        {
-            BOOST_LOG_TRIVIAL(error) << "Wipe tower tool change mismatch on plate " << (plate_id + 1)
-                                     << ". This model may be incompatible with the "
-                                        "prime tower. Please disable the prime tower and re-submit.";
-            m_stats.issues.push_back(make_error(plate_id, "WIPE_TOWER_TOOLCHANGE_ERROR",
-                                                "Wipe tower tool change mismatch. Please disable the prime tower "
-                                                "in filament settings and re-submit the model."));
-        }
-        else
-        {
-            BOOST_LOG_TRIVIAL(error) << "G-code export failed for plate " << (plate_id + 1);
-        }
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
-        return;
-    }
-
-    // Check for EmptyGcodeLayers before post-processing.
-    if (handle_empty_gcode_layers(plate_id, slice_result))
         return;
 
-    run_postprocessing(plate_id, slice_result);
+    // --- Empty G-code layers check ---
+    if (!check_empty_gcode_layers(plate_id, slice_result))
+        return;
 
-    // Free G-code visualization data that the cloud engine never uses.
-    // GCodeProcessorResult::moves and lines_ends store every G-code move
-    // vertex for the desktop GUI — hundreds of MB per plate.  Retaining
-    // them across plates causes std::bad_alloc on complex multi-plate
-    // projects (e.g. Mochi Makes plate 3 with 10 instances after plates
-    // 1+2 already consumed 500+ MB for their moves vectors).
-    slice_result.gcode_result.moves.clear();
-    slice_result.gcode_result.moves.shrink_to_fit();
-    slice_result.gcode_result.lines_ends.clear();
-    slice_result.gcode_result.lines_ends.shrink_to_fit();
+    // --- Post-processing ---
+    do_postprocessing(plate_id, slice_result);
 
-    m_plate_results[plate_id] = slice_result;
+    // --- Finalise ---
+    finalise_plate_result(plate_id, slice_result);
 }
 
 // ============================================================================
@@ -1805,6 +1744,53 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         return false;
     }
     return true;
+}
+
+bool SliceEngine::check_timeout(int plate_id)
+{
+    if (!m_has_timeout || std::chrono::steady_clock::now() <= m_timeout_deadline)
+        return true;
+
+    BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
+    m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
+                                        "Slicing timed out. The model may be too complex. If you believe this is "
+                                        "an error, please submit an appeal for review."));
+    m_any_error = true;
+    set_error_type(EXIT_SLICING_ERROR);
+    return false;
+}
+
+Print SliceEngine::init_print()
+{
+    Print print;
+    print.set_status_callback(
+        [&print, this](const PrintBase::SlicingStatus& s)
+        {
+            default_status_callback(s, &print, &m_cfg.cancel_file);
+        });
+    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
+    return print;
+}
+
+void SliceEngine::assign_arrange_order()
+{
+    int order = 1;
+    for (ModelObject* obj : m_model.objects)
+        for (ModelInstance* inst : obj->instances)
+            inst->arrange_order = order++;
+}
+
+void SliceEngine::setup_extruder_params(Print& print)
+{
+    int num_extruders = 0;
+    if (m_config.has("filament_diameter"))
+    {
+        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
+        if (fd)
+            num_extruders = static_cast<int>(fd->values.size());
+    }
+    Model::setExtruderParams(m_config, num_extruders);
+    Model::setPrintSpeedTable(m_config, print.config());
 }
 
 void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
@@ -2442,7 +2428,22 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     }
     catch (const std::exception& e)
     {
-        BOOST_LOG_TRIVIAL(error) << "Failed to export G-code for plate " << plate_id << ": " << e.what();
+        // Check for wipe tower tool change mismatch before generic reporting.
+        // CGAL/float differences on some platforms cause non-consecutive
+        // extruder ID handling to fail during G-code export.
+        if (is_wipe_tower_error(result))
+        {
+            BOOST_LOG_TRIVIAL(error) << "Wipe tower tool change mismatch on plate " << (plate_id + 1)
+                                     << ". This model may be incompatible with the "
+                                        "prime tower. Please disable the prime tower and re-submit.";
+            m_stats.issues.push_back(make_error(plate_id, "WIPE_TOWER_TOOLCHANGE_ERROR",
+                                                "Wipe tower tool change mismatch. Please disable the prime tower "
+                                                "in filament settings and re-submit the model."));
+        }
+        else
+        {
+            BOOST_LOG_TRIVIAL(error) << "Failed to export G-code for plate " << plate_id << ": " << e.what();
+        }
         result.issues.push_back(
             make_error(plate_id, "GCODE_EXPORT_ERROR",
                        "Failed to write G-code output. "
@@ -2454,7 +2455,7 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     }
 }
 
-bool SliceEngine::handle_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
+bool SliceEngine::check_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
 {
     // EmptyGcodeLayers means the plate has no valid layers; the G-code file
     // exists but is effectively empty. Skip post-processing and flag as failed.
@@ -2468,7 +2469,7 @@ bool SliceEngine::handle_empty_gcode_layers(int plate_id, PlateSliceResult& slic
         }
     }
     if (!has_empty_gcode_layers)
-        return false;
+        return true;
 
     boost::filesystem::remove(slice_result.gcode_path);
     BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
@@ -2481,10 +2482,10 @@ bool SliceEngine::handle_empty_gcode_layers(int plate_id, PlateSliceResult& slic
     slice_result.gcode_result.lines_ends.clear();
     slice_result.gcode_result.lines_ends.shrink_to_fit();
     m_plate_results[plate_id] = slice_result;
-    return true;
+    return false;
 }
 
-void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
+void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result)
 {
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
@@ -2626,6 +2627,22 @@ void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
         m_any_error = true;
         set_error_type(EXIT_POSTPROCESS_ERROR);
     }
+}
+
+void SliceEngine::finalise_plate_result(int plate_id, PlateSliceResult& result)
+{
+    // Free G-code visualization data that the cloud engine never uses.
+    // GCodeProcessorResult::moves and lines_ends store every G-code move
+    // vertex for the desktop GUI — hundreds of MB per plate.  Retaining
+    // them across plates causes std::bad_alloc on complex multi-plate
+    // projects (e.g. Mochi Makes plate 3 with 10 instances after plates
+    // 1+2 already consumed 500+ MB for their moves vectors).
+    result.gcode_result.moves.clear();
+    result.gcode_result.moves.shrink_to_fit();
+    result.gcode_result.lines_ends.clear();
+    result.gcode_result.lines_ends.shrink_to_fit();
+
+    m_plate_results[plate_id] = result;
 }
 
 // ============================================================================
