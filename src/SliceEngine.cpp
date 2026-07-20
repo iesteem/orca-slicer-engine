@@ -256,52 +256,6 @@ bool SliceEngine::run()
     return !m_plate_results.empty();
 }
 
-bool SliceEngine::apply_preset_substitution()
-{
-    // Bundle precondition for all three apply_*_official_preset stages.
-    // Without system presets we cannot look up official U1 / filament /
-    // process configurations, so the whole substitution block is aborted.
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        std::string msg = "System presets not available; cannot apply official presets.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
-        return false;
-    }
-
-    // Strip user-supplied content (G-code, notes, post_process, external
-    // file refs) before any apply_*_official_preset stage. The three apply
-    // stages then restore official values for the keys each owns.
-    // Runs after the bundle check so the PRESETS_MISSING error path does
-    // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
-    // apply official presets, the user content stays untouched and the
-    // engine fails cleanly.
-    strip_user_content();
-
-    // Apply the official Snapmaker U1 printer preset — wholesale-replaces
-    // printer config (printable_area, machine G-code, nozzle_diameter,
-    // etc.) with official values.
-    if (!apply_printer_official_preset())
-        return false;
-
-    // Filament official compliance check & substitution (always enforced).
-    // Runs after printer preset so PresetRollback reads the corrected
-    // nozzle_diameter from the official config, not the user's 3MF value.
-    if (!apply_filament_official_preset())
-        return false;
-
-    // Substitute the process preset with the official Snapmaker U1 preset
-    // so that process-level settings (skirt_loops, brim_type, etc.) from a
-    // different printer profile in the 3MF don't leak through. User-explicit
-    // overrides (different_settings_to_system) are preserved.
-    // Non-blocking: substitution failure is a warning, not a fatal error.
-    apply_process_official_preset();
-    return true;
-}
-
 // ============================================================================
 // Stage 0: Load 3MF
 // ============================================================================
@@ -581,8 +535,54 @@ void SliceEngine::load_project_presets()
 }
 
 // ============================================================================
-// Stage 1.5a: Printer preset substitution (official Snapmaker U1)
+// Stage 1.4a: Printer preset substitution (official Snapmaker U1)
 // ============================================================================
+
+bool SliceEngine::apply_preset_substitution()
+{
+    // Bundle precondition for all three apply_*_official_preset stages.
+    // Without system presets we cannot look up official U1 / filament /
+    // process configurations, so the whole substitution block is aborted.
+    if (!m_presets_available || !m_preset_bundle)
+    {
+        std::string msg = "System presets not available; cannot apply official presets.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
+        return false;
+    }
+
+    // Strip user-supplied content (G-code, notes, post_process, external
+    // file refs) before any apply_*_official_preset stage. The three apply
+    // stages then restore official values for the keys each owns.
+    // Runs after the bundle check so the PRESETS_MISSING error path does
+    // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
+    // apply official presets, the user content stays untouched and the
+    // engine fails cleanly.
+    strip_user_content();
+
+    // Apply the official Snapmaker U1 printer preset — wholesale-replaces
+    // printer config (printable_area, machine G-code, nozzle_diameter,
+    // etc.) with official values.
+    if (!apply_printer_official_preset())
+        return false;
+
+    // Filament official compliance check & substitution (always enforced).
+    // Runs after printer preset so PresetRollback reads the corrected
+    // nozzle_diameter from the official config, not the user's 3MF value.
+    if (!apply_filament_official_preset())
+        return false;
+
+    // Substitute the process preset with the official Snapmaker U1 preset
+    // so that process-level settings (skirt_loops, brim_type, etc.) from a
+    // different printer profile in the 3MF don't leak through. User-explicit
+    // overrides (different_settings_to_system) are preserved.
+    // Non-blocking: substitution failure is a warning, not a fatal error.
+    apply_process_official_preset();
+    return true;
+}
 
 void SliceEngine::strip_user_content()
 {
@@ -847,7 +847,7 @@ bool SliceEngine::verify_printer_geometry()
 }
 
 // ============================================================================
-// Stage 1.5b: Filament preset substitution (official compliance check)
+// Stage 1.4b: Filament preset substitution (official compliance check)
 // ============================================================================
 
 bool SliceEngine::apply_filament_official_preset()
@@ -1045,7 +1045,7 @@ void SliceEngine::emit_filament_warnings(const FilamentGrouping& rolled_back, co
 }
 
 // ============================================================================
-// Stage 1.5c: Process preset substitution (official, preserves user overrides)
+// Stage 1.4c: Process preset substitution (official, preserves user overrides)
 // ============================================================================
 
 void SliceEngine::apply_process_official_preset()
@@ -1647,36 +1647,6 @@ void SliceEngine::process_plate(int plate_id)
     slice_result.gcode_result.lines_ends.shrink_to_fit();
 
     m_plate_results[plate_id] = slice_result;
-}
-
-bool SliceEngine::handle_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
-{
-    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
-    // exists but is effectively empty. Skip post-processing and flag as failed.
-    bool has_empty_gcode_layers = false;
-    for (const auto& iss : slice_result.issues)
-    {
-        if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
-        {
-            has_empty_gcode_layers = true;
-            break;
-        }
-    }
-    if (!has_empty_gcode_layers)
-        return false;
-
-    boost::filesystem::remove(slice_result.gcode_path);
-    BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
-                               << ": empty G-code layers, G-code file discarded";
-    for (auto& iss : slice_result.issues)
-        m_stats.issues.push_back(std::move(iss));
-    slice_result.issues.clear();
-    slice_result.gcode_result.moves.clear();
-    slice_result.gcode_result.moves.shrink_to_fit();
-    slice_result.gcode_result.lines_ends.clear();
-    slice_result.gcode_result.lines_ends.shrink_to_fit();
-    m_plate_results[plate_id] = slice_result;
-    return true;
 }
 
 // ============================================================================
@@ -2482,6 +2452,36 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         m_plate_results[plate_id] = result;
         return false;
     }
+}
+
+bool SliceEngine::handle_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
+{
+    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
+    // exists but is effectively empty. Skip post-processing and flag as failed.
+    bool has_empty_gcode_layers = false;
+    for (const auto& iss : slice_result.issues)
+    {
+        if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
+        {
+            has_empty_gcode_layers = true;
+            break;
+        }
+    }
+    if (!has_empty_gcode_layers)
+        return false;
+
+    boost::filesystem::remove(slice_result.gcode_path);
+    BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                               << ": empty G-code layers, G-code file discarded";
+    for (auto& iss : slice_result.issues)
+        m_stats.issues.push_back(std::move(iss));
+    slice_result.issues.clear();
+    slice_result.gcode_result.moves.clear();
+    slice_result.gcode_result.moves.shrink_to_fit();
+    slice_result.gcode_result.lines_ends.clear();
+    slice_result.gcode_result.lines_ends.shrink_to_fit();
+    m_plate_results[plate_id] = slice_result;
+    return true;
 }
 
 void SliceEngine::run_postprocessing(int plate_id, PlateSliceResult& result)
