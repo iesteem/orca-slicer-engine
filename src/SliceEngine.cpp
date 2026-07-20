@@ -1550,7 +1550,8 @@ void SliceEngine::process_plate(int plate_id)
         return;
 
     // --- Create Print ---
-    Print print = init_print();
+    Print print;
+    init_print(print);
 
     // --- Apply model ---
     if (!apply_model(plate_id, print, origin))
@@ -1760,16 +1761,14 @@ bool SliceEngine::check_timeout(int plate_id)
     return false;
 }
 
-Print SliceEngine::init_print()
+void SliceEngine::init_print(Print& print)
 {
-    Print print;
     print.set_status_callback(
         [&print, this](const PrintBase::SlicingStatus& s)
         {
             default_status_callback(s, &print, &m_cfg.cancel_file);
         });
     print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
-    return print;
 }
 
 void SliceEngine::assign_arrange_order()

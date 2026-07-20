@@ -323,7 +323,7 @@ private:
 
     // Create a Print object for the plate: set status callback and BBL flag.
     // Returns a configured Print ready for model application.
-    Slic3r::Print init_print();
+    void init_print(Slic3r::Print& print);
 
     // SpiralLiftNearBoundary check (desktop 3DScene.cpp parity): when z_hop
     // uses spiral/auto mode and bed is rectangular, flag any object whose
