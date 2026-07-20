@@ -11,56 +11,96 @@
 
 #include "slic3r_c_api.h"
 
-int main(int argc, char* argv[]) {
-    const char* input_3mf  = NULL;
-    const char* output     = NULL;
-    const char* resources  = NULL;
+int main(int argc, char* argv[])
+{
+    const char* input_3mf   = NULL;
+    const char* output      = NULL;
+    const char* resources   = NULL;
     const char* log_file    = NULL;
-    int         log_enabled = 0;
     const char* json_output = NULL;
-    int         plate_id   = 0;
-    const char* format     = "gcode.3mf";
-    int         verbose    = 0;
+    int         plate_id    = 0;
+    const char* format      = "gcode.3mf";
+    int         verbose     = 0;
+    int         timeout_sec = 0;
+    int         max_size_mb = 0;
+    const char* cancel_file = NULL;
+    int         skip_preset_substitution = 0;
 
     /* Parse CLI arguments */
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+    for (int i = 1; i < argc; i++)
+    {
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help"))
+        {
             printf("orca-slice-engine v%s\n", slic3r_version());
             printf("Usage: %s <input.3mf> [options]\n", argv[0]);
             printf("  -o, --output <path>   Output path (without extension)\n");
             printf("  -p, --plate <id>      Plate ID (0=all, default: 0)\n");
             printf("  -f, --format <fmt>    gcode | gcode.3mf (default: gcode.3mf)\n");
             printf("  -r, --resources <dir> Resources directory\n");
-            printf("  --log                 Enable log file output\n");
-            printf("  --log-file <file>     Specify log file path (implies --log)\n");
-            printf("  -j, --json [file]     Output slice statistics as JSON\n");
-            printf("                        If not specified, auto-saved next to output\n");
+            printf("  --log [file]         Log file path (without .log extension)\n");
+            printf("                        Default: auto-derived from output path\n");
+            printf("  -j, --json [file]    JSON statistics output path (without .json extension)\n");
+            printf("                        Default: auto-derived from output path\n");
+            printf("  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit)\n");
+            printf("  --max-size <mb>       Max input file size in MB (0 = no limit)\n");
+            printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
             printf("  -v, --verbose         Verbose output\n");
+            printf("  --skip-preset-substitution\n");
+            printf("                        Skip official preset enforcement\n");
             return 0;
-        } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
+        }
+        else if (!strcmp(argv[i], "--skip-preset-substitution"))
+        {
+            skip_preset_substitution = 1;
+        }
+        else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose"))
+        {
             verbose = 1;
-        } else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output")) {
+        }
+        else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--timeout"))
+        {
+            if (++i < argc) timeout_sec = atoi(argv[i]);
+        }
+        else if (!strcmp(argv[i], "--max-size"))
+        {
+            if (++i < argc) max_size_mb = atoi(argv[i]);
+        }
+        else if (!strcmp(argv[i], "--cancel-file"))
+        {
+            if (++i < argc) cancel_file = argv[i];
+        }
+        else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output"))
+        {
             if (++i < argc) output = argv[i];
-        } else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate")) {
+        }
+        else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate"))
+        {
             if (++i < argc) plate_id = atoi(argv[i]);
-        } else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format")) {
+        }
+        else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format"))
+        {
             if (++i < argc) format = argv[i];
-        } else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--resources")) {
+        }
+        else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--resources"))
+        {
             if (++i < argc) resources = argv[i];
-        } else if (!strcmp(argv[i], "--log-file")) {
-            if (++i < argc) { log_file = argv[i]; log_enabled = 1; }
-        } else if (!strcmp(argv[i], "--log")) {
-            /* --log without --log-file: auto-generate log path later */
-            verbose = 1;
-            log_enabled = 1;
-        } else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json")) {
+        }
+        else if (!strcmp(argv[i], "--log"))
+        {
+            /* --log [path]: optional custom log path (without .log) */
+            if (i + 1 < argc && argv[i+1][0] != '-')
+                log_file = argv[++i];
+        }
+        else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json"))
+        {
             if (i + 1 < argc && argv[i+1][0] != '-')
                 json_output = argv[++i];
             else
                 json_output = "";  // flag present, no value → auto-derive
-        } else if (argv[i][0] != '-') {
-            /* Only accept as input file if it has a .3mf extension
-             * (prevents --log-file <path> value from being eaten as input) */
+        }
+        else if (argv[i][0] != '-')
+        {
+            /* Only accept as input file if it has a .3mf extension */
             const char* dot = strrchr(argv[i], '.');
             if (dot && dot[1] == '3'
                 && (dot[2] == 'm' || dot[2] == 'M')
@@ -70,14 +110,16 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (!input_3mf) {
+    if (!input_3mf)
+    {
         fprintf(stderr, "Error: input file required. Use -h for help.\n");
         return 1;
     }
 
     /* Default output path from input filename */
     char output_default[1024];
-    if (!output) {
+    if (!output)
+    {
         const char* base = strrchr(input_3mf, '/');
         if (!base) base = strrchr(input_3mf, '\\');
         base = base ? base + 1 : input_3mf;
@@ -87,26 +129,34 @@ int main(int argc, char* argv[]) {
         output = output_default;
     }
 
-    /* Auto-generate log file path when --log is given without --log-file.
-     * Log lands beside the output file, e.g. -o /tmp/foo -> /tmp/foo.log */
-    char log_auto_path[1024] = {0};
-    if (log_enabled && !log_file) {
-        snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
+    /* Log and JSON files are always generated.
+     * Paths default to <output>.log and <output>.json when not specified.
+     * The slic3r_slice engine also auto-derives these internally, but we
+     * pass them explicitly so the caller (main.c) retains control. */
+    char log_auto_path[1060] = {0};
+    if (!log_file)
+    {
+        int n = snprintf(log_auto_path, sizeof(log_auto_path), "%s.log", output);
+        if (n < 0 || (size_t)n >= sizeof(log_auto_path))
+            log_auto_path[sizeof(log_auto_path) - 1] = '\0';
         log_file = log_auto_path;
     }
 
-    /* Auto-generate JSON output path when -j is given without a value.
-     * JSON lands beside the output file, e.g. -o /tmp/foo -> /tmp/foo.json */
-    char json_auto_path[1024] = {0};
-    if (json_output && !json_output[0]) {
-        snprintf(json_auto_path, sizeof(json_auto_path), "%s.json", output);
+    char json_auto_path[1060] = {0};
+    if (!json_output)
+    {
+        int n = snprintf(json_auto_path, sizeof(json_auto_path), "%s.json", output);
+        if (n < 0 || (size_t)n >= sizeof(json_auto_path))
+            json_auto_path[sizeof(json_auto_path) - 1] = '\0';
         json_output = json_auto_path;
     }
 
     /* Default resources from environment */
-    if (!resources) {
+    if (!resources)
+    {
         resources = getenv("ORCA_RESOURCES");
-        if (!resources) {
+        if (!resources)
+        {
             fprintf(stderr, "Error: --resources required (or set ORCA_RESOURCES)\n");
             return 1;
         }
@@ -116,7 +166,8 @@ int main(int argc, char* argv[]) {
 
     /* Create slicer context */
     slic3r_ctx_t* ctx = slic3r_create(resources);
-    if (!ctx) {
+    if (!ctx)
+    {
         fprintf(stderr, "FATAL: Failed to initialize slicer\n");
         return 99;
     }
@@ -125,12 +176,22 @@ int main(int argc, char* argv[]) {
     char params[2048];
     int pos = snprintf(params, sizeof(params),
         "{\"plate_id\":%d,\"format\":\"%s\"", plate_id, format);
-    if (log_file && log_file[0])
+    pos += snprintf(params + pos, sizeof(params) - pos,
+        ",\"log_path\":\"%s\"", log_file ? log_file : "");
+    pos += snprintf(params + pos, sizeof(params) - pos,
+        ",\"json_output_path\":\"%s\"", json_output ? json_output : "");
+    if (timeout_sec > 0)
         pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"log_path\":\"%s\"", log_file);
-    if (json_output && json_output[0])
+            ",\"timeout_seconds\":%d", timeout_sec);
+    if (max_size_mb > 0)
         pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"json_output_path\":\"%s\"", json_output);
+            ",\"max_size_mb\":%d", max_size_mb);
+    if (cancel_file && cancel_file[0])
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"cancel_file\":\"%s\"", cancel_file);
+    if (skip_preset_substitution)
+        pos += snprintf(params + pos, sizeof(params) - pos,
+            ",\"skip_preset_substitution\":true");
     if (pos < (int)sizeof(params))
         snprintf(params + pos, sizeof(params) - pos, "}");
 
@@ -138,13 +199,15 @@ int main(int argc, char* argv[]) {
     char stats[32768] = {0};
     int rc = slic3r_slice(ctx, input_3mf, output, params, stats, sizeof(stats));
 
-    if (rc != SLIC3R_OK) {
+    if (rc != SLIC3R_OK)
+    {
         fprintf(stderr, "Slice failed (code %d): %s\n", rc, slic3r_get_error(ctx));
         slic3r_destroy(ctx);
         return rc;
     }
 
-    if (verbose && stats[0]) {
+    if (verbose && stats[0])
+    {
         printf("Stats: %s\n", stats);
     }
 

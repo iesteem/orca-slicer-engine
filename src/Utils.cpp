@@ -5,7 +5,13 @@
 #include <cstring>
 #include <iostream>
 
+#include <boost/log/core.hpp>
+#include <boost/log/expressions.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
+#include <boost/log/utility/setup/file.hpp>
+#include <boost/log/attributes.hpp>
+#include <boost/log/support/date_time.hpp>
 
 #include "libslic3r/libslic3r.h"
 
@@ -18,106 +24,54 @@ void log_plate_message(const char* stage, const char* level, int plate, const st
         BOOST_LOG_TRIVIAL(warning) << full;
     else
         BOOST_LOG_TRIVIAL(info) << full;
-
-    if (std::strcmp(level, "TIP") != 0)
-        std::cerr << "[" << level << "] Plate " << plate << ": " << msg << std::endl;
 }
 
 std::pair<std::string, std::string> format_exception_context(const Slic3r::StringObjectException& ex)
 {
     std::string obj_name;
-    if (ex.object) {
+    if (ex.object)
+    {
         auto mo = dynamic_cast<Slic3r::ModelObject const*>(ex.object);
-        if (!mo) {
+        if (!mo)
+        {
             if (auto po = dynamic_cast<Slic3r::PrintObjectBase const*>(ex.object))
                 mo = po->model_object();
         }
-        if (mo) obj_name = " [object: " + mo->name + "]";
+        if (mo)
+            obj_name = " [object: " + mo->name + "]";
     }
     std::string opt_hint = ex.opt_key.empty() ? "" : " (config: " + ex.opt_key + ")";
     return {obj_name, opt_hint};
 }
 
-void print_usage(const char* program_name) {
-    std::cout << "OrcaSlicer Cloud Slicing Engine v" << ENGINE_VERSION << std::endl;
-    std::cout << std::endl;
-    std::cout << "Usage: " << program_name << " input.3mf [OPTIONS]" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Options:" << std::endl;
-    std::cout << "  -o, --output <file>    Output file path (without extension)" << std::endl;
-    std::cout << "                         Single plate: outputs {file}.gcode or {file}.gcode.3mf" << std::endl;
-    std::cout << "                         All plates: outputs {file}.gcode.3mf" << std::endl;
-    std::cout << "  -p, --plate <id>       Plate number to slice (1, 2, 3...)" << std::endl;
-    std::cout << "                         Omit or \"all\" for all plates (default: all)" << std::endl;
-    std::cout << "  -f, --format <fmt>     Output format: gcode | gcode.3mf (default: gcode.3mf)" << std::endl;
-    std::cout << "                         Note: All plates always use gcode.3mf" << std::endl;
-    std::cout << "  -r, --resources <dir>  Resources directory containing printer profiles" << std::endl;
-    std::cout << "  -d, --data-dir <dir>   System presets directory (default: <resources>/profiles)" << std::endl;
-    std::cout << "  -j, --json [file]      Output slice statistics as JSON to specified file" << std::endl;
-    std::cout << "                         If not specified, JSON is auto-saved next to the output" << std::endl;
-    std::cout << "  -t, --timeout <sec>    Slicing timeout in seconds (0 = no limit)" << std::endl;
-    std::cout << "  --max-size <mb>        Max input file size in MB (default: 200, 0 = no limit)" << std::endl;
-    std::cout << "  --cancel-file <file>   Watchdog file for external cancellation" << std::endl;
-    std::cout << "                         If the file is created, slicing is cancelled" << std::endl;
-    std::cout << "  --allow-custom-presets        Disable all enforcement (filament + G-code)" << std::endl;
-    std::cout << "  --no-filament-substitution    Skip filament official compliance check" << std::endl;
-    std::cout << "                                (default: check & substitute)" << std::endl;
-    std::cout << "  --keep-custom-gcode           Keep custom G-code blocks unchanged" << std::endl;
-    std::cout << "                                (default: clear all custom G-code)" << std::endl;
-    std::cout << "  --log                  Enable log file output (auto-saved next to the output)" << std::endl;
-    std::cout << "  --log-file <file>      Specify log file path (implies --log)" << std::endl;
-    std::cout << "  -v, --verbose          Enable verbose logging" << std::endl;
-    std::cout << "  -h, --help             Show this help message" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Exit codes:" << std::endl;
-    std::cout << "  0  Success" << std::endl;
-    std::cout << "  1  Invalid arguments" << std::endl;
-    std::cout << "  2  Input file not found" << std::endl;
-    std::cout << "  3  3MF load / format validation error" << std::endl;
-    std::cout << "  4  Slicing error (incl. timeout)" << std::endl;
-    std::cout << "  5  G-code export error" << std::endl;
-    std::cout << "  6  Pre-processing validation error (collision, invalid config, geometry defects)" << std::endl;
-    std::cout << "  7  Post-processing warning (toolpath outside print volume)" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Output:" << std::endl;
-    std::cout << "  On success, outputs JSON with slicing statistics including:" << std::endl;
-    std::cout << "    - success: true/false" << std::endl;
-    std::cout << "    - plates[].time: total, prepare, print time (seconds and formatted)" << std::endl;
-    std::cout << "    - plates[].filament: total/model filament (m, g), cost, per-extruder usage" << std::endl;
-    std::cout << "    - plates[].gcode_file: path to output file" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Examples:" << std::endl;
-    std::cout << "  " << program_name << " model.3mf                        # All plates -> model.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1                   # Plate 1 -> model-p1.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1 -f gcode          # Plate 1 -> model-p1.gcode (plain text)" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -p 1 -o output         # Plate 1 -> output.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -o result              # All plates -> result.gcode.3mf" << std::endl;
-    std::cout << "  " << program_name << " model.3mf -j stats.json          # Output statistics to stats.json" << std::endl;
-}
-
-void default_status_callback(
-    const Slic3r::PrintBase::SlicingStatus& status,
-    Slic3r::PrintBase* print,
-    const std::string* cancel_file)
+void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Slic3r::PrintBase* print,
+                             const std::string* cancel_file)
 {
     // Check for external cancellation via watchdog file
-    if (print && cancel_file && !cancel_file->empty()) {
-        if (boost::filesystem::exists(*cancel_file)) {
+    if (print && cancel_file && !cancel_file->empty())
+    {
+        if (boost::filesystem::exists(*cancel_file))
+        {
             print->cancel();
             std::cout << "[Status] Cancellation requested via " << *cancel_file << std::endl;
             return;
         }
     }
 
-    if (status.percent >= 0) {
+    if (status.percent >= 0)
+    {
         std::cout << "[Progress] " << status.percent << "% - " << status.text << std::endl;
-    } else {
+    }
+    else
+    {
         std::cout << "[Status] " << status.text << std::endl;
     }
 }
 
-std::string format_time_hhmmss(float seconds) {
-    if (!std::isfinite(seconds) || seconds < 0) return "00:00:00";
+std::string format_time_hhmmss(float seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0)
+        return "00:00:00";
     int total_secs = static_cast<int>(seconds);
     int hours = total_secs / 3600;
     int mins = (total_secs % 3600) / 60;
@@ -127,19 +81,32 @@ std::string format_time_hhmmss(float seconds) {
     return std::string(buf);
 }
 
-std::string generate_output_path(
-    const std::string& input_file,
-    const std::string& output_base,
-    int plate_id,
-    OutputFormat format,
-    bool single_plate)
+std::string ensure_extension(const std::string& path, const std::string& ext)
+{
+    if (path.empty())
+    {
+        return path;
+    }
+    boost::filesystem::path p(path);
+    if (p.extension() == ext)
+    {
+        return path;
+    }
+    return path + ext;
+}
+
+std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
+                                 OutputFormat format, bool single_plate)
 {
     boost::filesystem::path input_path(input_file);
     std::string base_name;
 
-    if (!output_base.empty()) {
+    if (!output_base.empty())
+    {
         base_name = output_base;
-    } else {
+    }
+    else
+    {
         boost::filesystem::path parent = input_path.parent_path();
         if (parent.empty())
             parent = boost::filesystem::current_path();
@@ -149,22 +116,127 @@ std::string generate_output_path(
     std::string extension = (format == OutputFormat::GCODE_3MF) ? ".gcode.3mf" : ".gcode";
 
     std::string path;
-    if (single_plate) {
-        if (output_base.empty()) {
+    if (single_plate)
+    {
+        if (output_base.empty())
+        {
             path = base_name + "-p" + std::to_string(plate_id) + extension;
-        } else {
+        }
+        else
+        {
             path = base_name + extension;
         }
-    } else {
+    }
+    else
+    {
         path = base_name + ".gcode.3mf";
     }
 
     // Prevent multi-process collision: append unique suffix if output file already exists
-    if (boost::filesystem::exists(path)) {
+    if (boost::filesystem::exists(path))
+    {
         auto ts = std::chrono::system_clock::now().time_since_epoch().count();
         boost::filesystem::path p(path);
         path = (p.parent_path() / (p.stem().string() + "_" + std::to_string(ts))).string() + p.extension().string();
     }
 
     return path;
+}
+
+Slic3r::ThumbnailData resize_thumbnail(const Slic3r::ThumbnailData& src, unsigned int target_width,
+                                       unsigned int target_height)
+{
+    Slic3r::ThumbnailData dst;
+    dst.set(target_width, target_height);
+
+    // Guard against zero-dimension inputs: empty thumbnails produce no output
+    if (src.width == 0 || src.height == 0 || target_width == 0 || target_height == 0)
+        return dst;
+
+    if (src.width == target_width && src.height == target_height)
+    {
+        std::copy(src.pixels.begin(), src.pixels.end(), dst.pixels.begin());
+        return dst;
+    }
+
+    const double scale_x = static_cast<double>(src.width) / target_width;
+    const double scale_y = static_cast<double>(src.height) / target_height;
+
+    for (unsigned int dy = 0; dy < target_height; ++dy)
+    {
+        for (unsigned int dx = 0; dx < target_width; ++dx)
+        {
+            double sx = (dx + 0.5) * scale_x - 0.5;
+            double sy = (dy + 0.5) * scale_y - 0.5;
+
+            if (sx < 0)
+                sx = 0;
+            if (sy < 0)
+                sy = 0;
+            if (sx >= src.width - 1)
+                sx = src.width - 1.001;
+            if (sy >= src.height - 1)
+                sy = src.height - 1.001;
+
+            unsigned int x0 = static_cast<unsigned int>(sx);
+            unsigned int y0 = static_cast<unsigned int>(sy);
+            unsigned int x1 = x0 + 1;
+            unsigned int y1 = y0 + 1;
+            if (x1 >= src.width)
+                x1 = src.width - 1;
+            if (y1 >= src.height)
+                y1 = src.height - 1;
+
+            double fx = sx - x0;
+            double fy = sy - y0;
+
+            for (int c = 0; c < 4; ++c)
+            {
+                double v00 = src.pixels[(y0 * src.width + x0) * 4 + c];
+                double v10 = src.pixels[(y0 * src.width + x1) * 4 + c];
+                double v01 = src.pixels[(y1 * src.width + x0) * 4 + c];
+                double v11 = src.pixels[(y1 * src.width + x1) * 4 + c];
+
+                double val =
+                    v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
+
+                dst.pixels[(dy * target_width + dx) * 4 + c] =
+                    static_cast<unsigned char>(std::min(255.0, std::max(0.0, val)));
+            }
+        }
+    }
+    return dst;
+}
+
+void add_log_file_sink(const std::string& file_path, unsigned int level)
+{
+    namespace logging = boost::log;
+    namespace keywords = boost::log::keywords;
+    namespace expr = boost::log::expressions;
+    namespace attrs = boost::log::attributes;
+
+    logging::add_file_log(
+        keywords::file_name = file_path,
+        keywords::format =
+            (expr::stream << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
+                          << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
+                          << "[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
+                          << ":" << expr::smessage));
+    logging::add_common_attributes();
+
+    // Map libslic3r integer level (0=fatal..5=trace) to Boost severity enum.
+    // Boost.Log enum values: trace=0, debug=1, info=2, warning=3, error=4, fatal=5.
+    // libslic3r mapping: 0=fatal, 1=error, 2=warning, 3=info, 4=debug, 5=trace.
+    boost::log::trivial::severity_level sev;
+    switch (level)
+    {
+    case 0: sev = boost::log::trivial::fatal;   break;
+    case 1: sev = boost::log::trivial::error;   break;
+    case 2: sev = boost::log::trivial::warning; break;
+    case 3: sev = boost::log::trivial::info;    break;
+    case 4: sev = boost::log::trivial::debug;   break;
+    case 5: sev = boost::log::trivial::trace;   break;
+    default: sev = boost::log::trivial::info;   break;
+    }
+    logging::core::get()->set_filter(logging::trivial::severity >= sev);
 }

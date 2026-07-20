@@ -2,7 +2,8 @@
 
 #include <vector>
 
-namespace Slic3r {
+namespace Slic3r
+{
 class Model;
 class ModelObject;
 class ModelVolume;
