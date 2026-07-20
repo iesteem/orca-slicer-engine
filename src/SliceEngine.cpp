@@ -12,6 +12,7 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <typeinfo>
 
 #include <boost/log/trivial.hpp>
 
@@ -1890,6 +1891,10 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     // into subsequent plates (m_config is shared across the pipeline).
     DynamicPrintConfig merged_config = m_config;
 
+    // NOTE: Relies on filter_instances(plate_id) (called at process_plate:1533)
+    // having already marked off-plate instances printable=false. The
+    // is_printable() guard below is the per-plate filter — do not remove
+    // without replacing it with an explicit plate_id check.
     std::set<int> used_extruders;
     for (ModelObject* obj : m_model.objects)
     {
@@ -1961,80 +1966,7 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
                                 << " to 1 (keeping slot " << keep_idx
                                 << ") to match single-extruder model";
 
-        merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-
-        // Truncate all filament-related array options to 1 entry.
-        // This prevents Print::has_wipe_tower() from returning true due to
-        // filament_diameter.size() > 1, which is the root cause of the
-        // "append_tcr was asked to do a toolchange it didn't expect" error.
-        // flush_volumes_matrix (N*N flat vector) and wiping_volumes_extruders
-        // must also be trimmed to keep the config internally consistent:
-        // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
-        constexpr const char* trim_keys[] = {
-            "filament_diameter",          "filament_density",
-            "filament_cost",              "filament_colour",
-            "filament_type",              "filament_is_support",
-            "filament_settings_id",       "nozzle_diameter",
-            "flush_volumes_matrix",       "wiping_volumes_extruders",
-            "filament_is_high_temperature", "temperature_vitrification",
-        };
-        for (const char* key : trim_keys)
-        {
-            auto* opt = merged_config.option(key, true);
-            if (!opt)
-                continue;
-
-            // Helper: remap keep_idx to index 0, then truncate to 1.
-            auto remap_floats = [&](std::vector<double>& vals) {
-                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
-                    vals[0] = vals[keep_idx];
-                vals.resize(1);
-            };
-            auto remap_ints = [&](std::vector<int>& vals) {
-                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
-                    vals[0] = vals[keep_idx];
-                vals.resize(1);
-            };
-            auto remap_strings = [&](std::vector<std::string>& vals) {
-                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
-                    vals[0] = vals[keep_idx];
-                vals.resize(1);
-            };
-            auto remap_bools = [&](std::vector<unsigned char>& vals) {
-                if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
-                    vals[0] = vals[keep_idx];
-                vals.resize(1);
-            };
-
-            if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt))
-            {
-                if (!fs->values.empty()) {
-                    remap_floats(fs->values);
-                    merged_config.set_key_value(key, new ConfigOptionFloats(fs->values));
-                }
-            }
-            else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt))
-            {
-                if (!ss->values.empty()) {
-                    remap_strings(ss->values);
-                    merged_config.set_key_value(key, new ConfigOptionStrings(ss->values));
-                }
-            }
-            else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt))
-            {
-                if (!bs->values.empty()) {
-                    remap_bools(bs->values);
-                    merged_config.set_key_value(key, new ConfigOptionBools(bs->values));
-                }
-            }
-            else if (auto* is_opt = dynamic_cast<ConfigOptionInts*>(opt))
-            {
-                if (!is_opt->values.empty()) {
-                    remap_ints(is_opt->values);
-                    merged_config.set_key_value(key, new ConfigOptionInts(is_opt->values));
-                }
-            }
-        }
+        trim_filament_config_to_single(merged_config, keep_idx);
     }
     else if (used_extruders.size() <= 1)
     {
@@ -2052,6 +1984,85 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
         }
     }
     return merged_config;
+}
+
+void SliceEngine::trim_filament_config_to_single(DynamicPrintConfig& config, int keep_idx) const
+{
+    // Truncate all filament-related array options in `config` to a single
+    // entry, preserving the values of slot `keep_idx` at index 0.  This
+    // prevents Print::has_wipe_tower() from returning true due to
+    // filament_diameter.size() > 1, which is the root cause of the
+    // "append_tcr was asked to do a toolchange it didn't expect" error.
+    // flush_volumes_matrix (N*N flat vector) and wiping_volumes_extruders
+    // must also be trimmed to keep the config internally consistent:
+    // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
+    // Also disables the prime tower (no multi-extruder wipe needed).
+
+    config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
+
+    constexpr const char* trim_keys[] = {
+        "filament_diameter",            "filament_density",
+        "filament_cost",                "filament_colour",
+        "filament_type",                "filament_is_support",
+        "filament_settings_id",         "nozzle_diameter",
+        "flush_volumes_matrix",         "wiping_volumes_extruders",
+        "filament_is_high_temperature", "temperature_vitrification",
+    };
+
+    // Generic remap: move slot keep_idx to index 0, then truncate to size 1.
+    auto remap = [keep_idx](auto& vals) {
+        if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
+            vals[0] = vals[keep_idx];
+        vals.resize(1);
+    };
+
+    for (const char* key : trim_keys)
+    {
+        auto* opt = config.option(key, true);
+        if (!opt)
+            continue;
+
+        if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt))
+        {
+            if (!fs->values.empty())
+            {
+                remap(fs->values);
+                config.set_key_value(key, new ConfigOptionFloats(fs->values));
+            }
+        }
+        else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt))
+        {
+            if (!ss->values.empty())
+            {
+                remap(ss->values);
+                config.set_key_value(key, new ConfigOptionStrings(ss->values));
+            }
+        }
+        else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt))
+        {
+            if (!bs->values.empty())
+            {
+                remap(bs->values);
+                config.set_key_value(key, new ConfigOptionBools(bs->values));
+            }
+        }
+        else if (auto* is_opt = dynamic_cast<ConfigOptionInts*>(opt))
+        {
+            if (!is_opt->values.empty())
+            {
+                remap(is_opt->values);
+                config.set_key_value(key, new ConfigOptionInts(is_opt->values));
+            }
+        }
+        else
+        {
+            // Unknown ConfigOption derivation: log so future additions to
+            // trim_keys (or new option types) are not silently skipped.
+            BOOST_LOG_TRIVIAL(warning) << "trim_filament_config_to_single: key \""
+                                       << key << "\" has unsupported ConfigOption type ("
+                                       << typeid(*opt).name() << "), skipped — trim incomplete";
+        }
+    }
 }
 
 bool SliceEngine::run_validation(int plate_id, Print& print)
@@ -2303,6 +2314,11 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     // Also track whether any object relies on the global default extruder —
     // when it does, per-feature defaults (wall / infill filaments) affect
     // the slicing output and must be collected.
+    //
+    // NOTE: Per-plate filtering relies on filter_instances(plate_id) at
+    // process_plate:1533 having marked off-plate instances printable=false.
+    // The is_printable() guard inside this loop is the per-plate filter —
+    // equivalent to desktop model_object_is_on_plate().
     bool uses_default_extruder = false;
     for (ModelObject* obj : m_model.objects)
     {

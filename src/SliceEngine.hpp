@@ -351,6 +351,12 @@ private:
     // print_sequence, …) from PlateData on top.
     Slic3r::DynamicPrintConfig prepare_merged_config_for_plate(int plate_id);
 
+    // Trim the multi-filament arrays in `config` down to a single slot, keeping
+    // the data for `keep_idx` (0-based) at index 0. Called by
+    // prepare_merged_config_for_plate when the plate uses a single extruder.
+    // `keep_idx` must already be in [0, num_filaments); the caller validates.
+    void trim_filament_config_to_single(Slic3r::DynamicPrintConfig& config, int keep_idx) const;
+
     // Run Print::validate and classify all resulting warnings and errors into
     // m_stats.issues. Returns false if any validation error is fatal.
     bool run_validation(int plate_id, Slic3r::Print& print);
