@@ -757,7 +757,34 @@ bool SliceEngine::apply_printer_official_preset()
         return std::string(buf.data());
     };
     std::string preset_name = "Snapmaker U1 (" + fmt_nozzle(nozzle) + " nozzle)";
-    const Preset* official = m_preset_bundle->printers.find_preset(preset_name, false);
+
+    // Priority 1: inherits_group[last] — direct pointer to the official
+    // printer preset that the user's printer inherits from. Recorded by
+    // Orca desktop at export time, so more reliable than reconstructing
+    // from nozzle diameter. Falls back to the nozzle-based name if the
+    // field is absent, empty, or does not resolve to an official Snapmaker
+    // printer preset.
+    std::string official_printer_name;
+    if (auto* ig_opt = m_config.option<ConfigOptionStrings>("inherits_group"))
+    {
+        if (!ig_opt->values.empty())
+        {
+            const std::string& parent = ig_opt->values.back();
+            if (!parent.empty())
+            {
+                const Preset* candidate = m_preset_bundle->printers.find_preset(parent, false);
+                if (candidate && candidate->name == parent &&
+                    candidate->vendor && candidate->vendor->name == PresetBundle::SM_BUNDLE)
+                {
+                    official_printer_name = parent;
+                }
+            }
+        }
+    }
+    if (official_printer_name.empty())
+        official_printer_name = preset_name;
+
+    const Preset* official = m_preset_bundle->printers.find_preset(official_printer_name, false);
     if (!official)
     {
         std::string msg = "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
@@ -943,7 +970,64 @@ bool SliceEngine::resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_
         return false;
     };
 
-    const std::string& name = filament_ids->values[i];
+    // Capture the user's original filament name BEFORE any overwrite.
+    // Two timing hazards fixed by defining `name` here (above Case 0) and
+    // copying by value instead of by reference:
+    //   (1) Case 0 (inherits_group) is now above the original definition
+    //       point, so `name` must exist before the Guard block.
+    //   (2) overwriteExtruderFrom mutates filament_ids->values[i] to the
+    //       source preset name (PresetRollback.cpp:194-195). A `const
+    //       std::string&` reference into that vector would observe the
+    //       mutated value, making substituted[{name, ...}] record
+    //       (target, target) — collapsing the warning to "verified
+    //       against" and hiding the real "substituted from X to Y" swap.
+    //       Copy by value to snapshot the original name.
+    const std::string name = filament_ids->values[i];
+
+    // Case 0: inherits_group — direct pointer to the official system preset
+    // that the user's filament inherits from. This is the most reliable
+    // signal because Orca desktop records it at export time after already
+    // resolving the inheritance chain. Positional mapping:
+    //   inherits_group[i+1] is the parent of filament_settings_id[i].
+    //
+    // Read via ForwardCompatibilitySubstitutionRule::Enable (same mechanism
+    // as different_settings_to_system at L1178). The field has no schema
+    // registration; grep will not find it.
+    //
+    // Five guards ensure format drift does not cause silent mis-resolution.
+    // Any guard failure → fall through to Case 1/2/rollback below.
+    //   Guard 1: ig_opt exists
+    //   Guard 2: parent index in bounds (NOT asserting inherits_size == N+2,
+    //            because old desktop versions may write shorter arrays)
+    //   Guard 3: parent name non-empty (empty = slot IS official)
+    //   Guard 4: parent resolves in system presets (exact match)
+    //   Guard 5: parent is Snapmaker-official vendor
+    if (auto* ig_opt = m_config.option<ConfigOptionStrings>("inherits_group"))
+    {
+        const int inherits_size = static_cast<int>(ig_opt->values.size());
+        const int parent_idx = i + 1;
+        if (parent_idx < inherits_size)
+        {
+            const std::string& parent_name = ig_opt->values[parent_idx];
+            if (!parent_name.empty())
+            {
+                if (Preset* parent = find_in_system(parent_name))
+                {
+                    if (is_official_preset(*parent))
+                    {
+                        PresetRollback::overwriteExtruderFrom(m_config, *parent, i, filament_ids);
+                        substituted[{name, parent->name}].push_back(i);
+                        return true;
+                    }
+                    // Non-official vendor → fall through to Case 1/2/rollback
+                }
+                // parent_name not found in system → fall through
+            }
+            // parent_name empty → this slot IS official → fall through to Case 1
+        }
+        // parent_idx out of bounds → inherits_group shorter than expected → fall through
+    }
+    // inherits_group absent → fall through
 
     // Case 1: Direct system preset match
     if (Preset* sys = find_in_system(name))
@@ -1067,7 +1151,30 @@ void SliceEngine::apply_process_official_preset()
     }
 
     const std::string preset_name = dpp->value;
-    const Preset* official = find_official_process_preset(preset_name);
+
+    // Priority 1: inherits_group[0] — direct pointer to the official process
+    // preset that the user's process inherits from. Recorded by Orca desktop
+    // at export time. Falls back to preset_name if the field is absent, empty,
+    // or does not resolve to an official Snapmaker process preset.
+    std::string process_system_name = preset_name;
+    if (auto* ig_opt = m_config.option<ConfigOptionStrings>("inherits_group"))
+    {
+        if (!ig_opt->values.empty())
+        {
+            const std::string& parent = ig_opt->values[0];
+            if (!parent.empty())
+            {
+                const Preset* candidate = m_preset_bundle->prints.find_preset(parent, false);
+                if (candidate && candidate->name == parent &&
+                    candidate->vendor && candidate->vendor->name == PresetBundle::SM_BUNDLE)
+                {
+                    process_system_name = parent;
+                }
+            }
+        }
+    }
+
+    const Preset* official = find_official_process_preset(process_system_name);
 
     if (official)
     {
