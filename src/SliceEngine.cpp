@@ -1467,6 +1467,24 @@ void SliceEngine::ensure_models_on_bed()
                 BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
                                         << " z_shift=" << z_shift;
             }
+
+            // Inform the user when the object was stored below the bed and got
+            // auto-raised. Sinking may be unintended (bad model origin), and
+            // without this note the silent Z correction is invisible in the
+            // output. Emitted as a warning, not an error: slicing proceeds.
+            // Not deduplicated: each ModelObject reports independently, so a
+            // project with two same-named objects (e.g. 亭子4.obj_12 / _13)
+            // shows two warnings -- both genuinely sank and were raised.
+            if (before < -1e-4)
+            {
+                char buf[160];
+                std::snprintf(buf, sizeof(buf),
+                              "Object \"%s\" was stored below the print bed (min Z=%.2fmm); auto-raised by %.2fmm to sit on the bed.",
+                              obj->name.c_str(), before, z_shift);
+                m_stats.issues.push_back(make_warning(
+                    -1, "OBJECT_BELOW_BED_ADJUSTED", buf, obj->name,
+                    "If the sinking was intentional, reposition the object's Z in your slicer before exporting."));
+            }
         }
     }
 }
@@ -1805,14 +1823,14 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
 
             if (inst->print_volume_state == ModelInstancePVS_Partly_Outside)
             {
+                // The instance offsets were shifted to plate-local above, so
+                // instance_bounding_box returns plate-local coordinates here.
+                BoundingBoxf3 wb = obj->instance_bounding_box(*inst);
+                push_build_volume_issues(plate_id, obj->name, wb, build_volume);
                 log_plate_message("[Pre-processing]", "ERROR", plate_id,
                                   "Object \"" + obj->name +
-                                      "\" is placed on the boundary of or exceeds the build volume.");
+                                      "\" exceeds the build volume (see issues for direction).");
                 has_partly_outside = true;
-                m_stats.issues.push_back(
-                    make_error(plate_id, "BUILD_VOLUME_PARTLY_OUTSIDE",
-                               "Object \"" + obj->name + "\" is placed on the boundary of or exceeds the build volume",
-                               obj->name));
             }
             else if (inst->print_volume_state == ModelInstancePVS_Fully_Outside)
             {
@@ -1853,6 +1871,73 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
         return false;
     }
     return true;
+}
+
+void SliceEngine::push_build_volume_issues(int plate_id, const std::string& object_name,
+                                           const BoundingBoxf3& bbox, const BuildVolume& build_volume)
+{
+    // Directional subdivision of a Partly_Outside instance. The build_volume
+    // itself already concluded the instance collides with the volume boundary
+    // (calc_print_volume_state); here we classify WHICH axis, so the JSON
+    // consumer can act (raise / lower / reposition) without re-deriving it.
+    constexpr double eps = BuildVolume::SceneEpsilon;
+    const double max_z = build_volume.printable_height();
+    const BoundingBoxf bed2d = build_volume.bounding_volume2d();
+
+    const auto fmt_mm = [](double v) {
+        // One decimal matches desktop precision; guard against -0.0.
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.1f", v);
+        return std::string(buf);
+    };
+
+    // --- Z too high (top exceeds printable height) ---
+    if (bbox.max.z() > max_z + eps)
+    {
+        Issue issue = make_error(
+            plate_id, "BUILD_VOLUME_TOO_HIGH",
+            "Object \"" + object_name + "\" top is at Z=" + fmt_mm(bbox.max.z()) +
+                "mm, exceeding the printable height of " + fmt_mm(max_z) + "mm",
+            object_name,
+            "Lower the object's Z position, reduce its height, or scale it down so the top fits under the print height.");
+        issue.z_height = bbox.max.z(); // offending top Z
+        m_stats.issues.push_back(std::move(issue));
+    }
+
+    // --- Z below bed (bottom sinks below the print bed) ---
+    if (bbox.min.z() < -eps)
+    {
+        Issue issue = make_error(
+            plate_id, "BUILD_VOLUME_BELOW_BED",
+            "Object \"" + object_name + "\" bottom is at Z=" + fmt_mm(bbox.min.z()) +
+                "mm, below the print bed surface (Z=0)",
+            object_name,
+            "Raise the object so its bottom sits on or above the bed, or fix the model origin in CAD.");
+        issue.z_height = bbox.min.z(); // offending bottom Z
+        m_stats.issues.push_back(std::move(issue));
+    }
+
+    // --- XY outside the bed footprint ---
+    if (bbox.min.x() < bed2d.min.x() - eps || bbox.max.x() > bed2d.max.x() + eps ||
+        bbox.min.y() < bed2d.min.y() - eps || bbox.max.y() > bed2d.max.y() + eps)
+    {
+        std::string detail;
+        if (bbox.min.x() < bed2d.min.x() - eps)
+            detail += "X=" + fmt_mm(bbox.min.x()) + " < " + fmt_mm(bed2d.min.x()) + "; ";
+        if (bbox.max.x() > bed2d.max.x() + eps)
+            detail += "X=" + fmt_mm(bbox.max.x()) + " > " + fmt_mm(bed2d.max.x()) + "; ";
+        if (bbox.min.y() < bed2d.min.y() - eps)
+            detail += "Y=" + fmt_mm(bbox.min.y()) + " < " + fmt_mm(bed2d.min.y()) + "; ";
+        if (bbox.max.y() > bed2d.max.y() + eps)
+            detail += "Y=" + fmt_mm(bbox.max.y()) + " > " + fmt_mm(bed2d.max.y()) + "; ";
+        if (!detail.empty() && detail.back() == ' ')
+            detail.pop_back(); // trim trailing "; "
+        m_stats.issues.push_back(make_error(
+            plate_id, "BUILD_VOLUME_OUTSIDE_XY",
+            "Object \"" + object_name + "\" extends beyond the bed footprint (" + detail + ")",
+            object_name,
+            "Reposition the object within the bed area, or scale it down to fit."));
+    }
 }
 
 bool SliceEngine::check_timeout(int plate_id)
