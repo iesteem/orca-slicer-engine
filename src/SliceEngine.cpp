@@ -1374,22 +1374,27 @@ bool SliceEngine::validate_input()
 
 void SliceEngine::ensure_models_on_bed()
 {
-    // Seat every object flat on the bed before slicing.
+    // Seat every object on the bed before slicing, using the desktop app's
+    // "intentional sinking" rule (ModelObject::ensure_on_bed(allow_negative_z=
+    // true), the same path Plater.cpp takes when opening a 3MF project).
     //
-    // The desktop app, when opening a 3MF project, calls
-    // ModelObject::ensure_on_bed(allow_negative_z=true) (Plater.cpp), which
-    // PRESERVES intentional sinking — a model stored below the bed stays sunk
-    // and is sliced clipped at z=0. That is correct for an interactive editor
-    // (sinking is a deliberate tool, e.g. flattening a base against the bed),
-    // but wrong for cloud slicing: the user uploads a model expecting the whole
-    // thing printed and has no way to reposition it. A stored Z that sinks the
-    // model would silently drop the bottom of the G-code.
+    // With allow_negative_z=true:
+    //   - single-part object whose bottom is at/above the bed (min_z >= -0.001)
+    //     or fully buried below it (max_z < 0)  -> raised to sit on the bed;
+    //   - single-part object straddling the bed (min_z < 0 AND max_z >= 0)
+    //     -> left untouched: this is treated as an intentional sinking (e.g. a
+    //        base flattened against the bed) and is preserved as the author
+    //        stored it. Multi-part objects follow the analogous rule.
     //
-    // So we pass allow_negative_z=false (the same path the Snapmaker CLI takes
-    // when its `ensure_on_bed` option is enabled): each object's lowest point is
-    // snapped to z=0. Partly-sunk, fully-sunk and floating objects are all
-    // corrected. We deliberately diverge from the desktop *default* here; this
-    // matches the desktop's force-on-bed behaviour.
+    // This matches the desktop default and respects the author's intent. A
+    // straddling object whose XY footprint is within the bed slices normally
+    // (calc_print_volume_state returns Inside; the below-bed portion is clipped
+    // at z=0 by the slicer and not printed); only an object that ALSO exceeds
+    // the bed in Z-height or XY is flagged by run_build_volume_check. We
+    // previously passed false (unconditional snap-to-zero), but that silently
+    // raised intentional sinkings and could manufacture spurious too-high
+    // errors (e.g. a model whose top was in-range got pushed past
+    // printable_height by the raise).
     for (ModelObject* obj : m_model.objects)
     {
         if (obj->instances.empty())
@@ -1442,7 +1447,8 @@ void SliceEngine::ensure_models_on_bed()
         {
             obj->invalidate_bounding_box();
             double before = obj->min_z();
-            obj->ensure_on_bed(false);
+            double max_z_before = obj->max_z(); // captured before ensure_on_bed mutates geometry
+            obj->ensure_on_bed(true);
             double after = obj->min_z();
             double z_shift = after - before;
 
@@ -1468,22 +1474,40 @@ void SliceEngine::ensure_models_on_bed()
                                         << " z_shift=" << z_shift;
             }
 
-            // Inform the user when the object was stored below the bed and got
-            // auto-raised. Sinking may be unintended (bad model origin), and
-            // without this note the silent Z correction is invisible in the
-            // output. Emitted as a warning, not an error: slicing proceeds.
+            // An object stored below the bed falls into one of two cases under
+            // the desktop allow_negative_z=true rule:
+            //   (a) it was raised (z_shift != 0) -- fully buried below the bed,
+            //       or its bottom was essentially on the bed and got snapped to
+            //       zero. Warn so the silent correction is visible.
+            //   (b) it straddles the bed (min_z<0 AND max_z>=0) and was left in
+            //       place -- the author intentionally sank it. Emit a tip: the
+            //       geometry is preserved as-is, and the below-bed portion will
+            //       not be printed (run_build_volume_check flags it separately).
             // Not deduplicated: each ModelObject reports independently, so a
             // project with two same-named objects (e.g. 亭子4.obj_12 / _13)
-            // shows two warnings -- both genuinely sank and were raised.
+            // emits two issues -- both genuinely sank.
             if (before < -1e-4)
             {
-                char buf[160];
-                std::snprintf(buf, sizeof(buf),
-                              "Object \"%s\" was stored below the print bed (min Z=%.2fmm); auto-raised by %.2fmm to sit on the bed.",
-                              obj->name.c_str(), before, z_shift);
-                m_stats.issues.push_back(make_warning(
-                    -1, "OBJECT_BELOW_BED_ADJUSTED", buf, obj->name,
-                    "If the sinking was intentional, reposition the object's Z in your slicer before exporting."));
+                if (std::abs(z_shift) > 1e-4)
+                {
+                    char buf[160];
+                    std::snprintf(buf, sizeof(buf),
+                                  "Object \"%s\" was stored below the print bed (min Z=%.2fmm); auto-raised by %.2fmm to sit on the bed.",
+                                  obj->name.c_str(), before, z_shift);
+                    m_stats.issues.push_back(make_warning(
+                        -1, "OBJECT_BELOW_BED_ADJUSTED", buf, obj->name,
+                        "If the sinking was intentional, reposition the object's Z in your slicer before exporting."));
+                }
+                else
+                {
+                    char buf[192];
+                    std::snprintf(buf, sizeof(buf),
+                                  "Object \"%s\" intentionally straddles the print bed (Z %.2f to %.2fmm); preserved as-is, the below-bed portion will not be printed.",
+                                  obj->name.c_str(), before, max_z_before);
+                    m_stats.issues.push_back(make_warning(
+                        -1, "OBJECT_INTENTIONALLY_BELOW_BED", buf, obj->name,
+                        "Reposition the object in your slicer if the below-bed portion was meant to be printed."));
+                }
             }
         }
     }
