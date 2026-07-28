@@ -2731,6 +2731,15 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         result.gcode_path = exported;
 
+        // Capture the post-trim filament colours the slicer actually used (print.config()
+        // reflects the merged_config after apply, including any single-extruder remap).
+        // assemble_plate_stats reads these so the reported colour matches the G-code header
+        // instead of the raw, pre-trim m_config (whose index 0 may point at a different slot).
+        if (print.config().has("filament_colour")) {
+            const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
+            if (fc) result.filament_colours = fc->values;
+        }
+
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
@@ -3174,7 +3183,12 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
             size_t idx = static_cast<size_t>(info.id);
             if (filament_types && idx < filament_types->values.size())
                 info.type = filament_types->values[idx];
-            if (filament_colors && idx < filament_colors->values.size())
+            // Use the post-trim colours captured at slice time (result.filament_colours),
+            // which match the G-code header. m_config holds the raw pre-trim array, whose
+            // index 0 may point at a different slot after single-extruder remap.
+            if (idx < result.filament_colours.size())
+                info.color = result.filament_colours[idx];
+            else if (filament_colors && idx < filament_colors->values.size())
                 info.color = filament_colors->values[idx];
             if (filament_ids && idx < filament_ids->values.size())
                 info.filament_id = filament_ids->values[idx];
@@ -3347,6 +3361,15 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     const ConfigOptionStrings* fcolors =
         m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
 
+    // Filament colours must match what was actually used at slice time, not the raw
+    // m_config.  prepare_merged_config_for_plate may trim a multi-filament config down
+    // to the single extruder a plate uses (remap slot keep_idx → 0), so m_config's
+    // index 0 can point at a different colour than the one in the emitted G-code.
+    // result.filament_colours holds the post-trim values captured in export_gcode from
+    // print.config() (which mirrors the merged_config the slicer really applied) — read
+    // from there first, fall back to m_config.
+    const auto& result_colors = result.filament_colours;
+
     for (const auto& [extruder_id, used_g] : plate_stats.filament_used_g)
     {
         SliceOutputStats::FilamentDetail detail;
@@ -3361,7 +3384,9 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
         else
             detail.type = "Unknown";
 
-        if (fcolors && ext_sz < fcolors->values.size())
+        if (ext_sz < result_colors.size())
+            detail.color = result_colors[extruder_id];
+        else if (fcolors && ext_sz < fcolors->values.size())
             detail.color = fcolors->values[extruder_id];
         else
             detail.color = "#000000";
