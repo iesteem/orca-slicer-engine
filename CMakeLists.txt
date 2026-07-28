@@ -64,7 +64,7 @@ if(ORCA_STATIC)
 
     target_compile_definitions(orca-slice-engine PRIVATE
         ${ORCA_STATIC_DEFINES}
-        ENGINE_VERSION="02.01.03"
+        ENGINE_VERSION="02.01.04"
     )
 
     # Match libslic3r's translation-unit flags so our sources agree with its headers.
