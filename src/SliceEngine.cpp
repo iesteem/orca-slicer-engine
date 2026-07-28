@@ -2682,6 +2682,17 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
 
+        // Capture the filament colours actually used by this slice. print.config()
+        // reflects the post-apply merged_config, which for a single-extruder plate has
+        // been trim-remapped (the real slot's colour moved to index 0). This is the
+        // same value written to the gcode "; filament_colour" header. Stash a copy
+        // (by value) before the print object goes out of scope so downstream stats/export
+        // read the slice-correct colours instead of the un-trimmed global m_config.
+        if (print.config().has("filament_colour")) {
+            const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
+            if (fc) result.filament_colours = fc->values;
+        }
+
         return true;
     }
     catch (const std::exception& e)
@@ -3065,7 +3076,11 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
             size_t idx = static_cast<size_t>(info.id);
             if (filament_types && idx < filament_types->values.size())
                 info.type = filament_types->values[idx];
-            if (filament_colors && idx < filament_colors->values.size())
+            // Prefer slice-correct colours from print.config() (matches gcode header);
+            // fall back to the global m_config when not captured for this index.
+            if (idx < result.filament_colours.size())
+                info.color = result.filament_colours[idx];
+            else if (filament_colors && idx < filament_colors->values.size())
                 info.color = filament_colors->values[idx];
             if (filament_ids && idx < filament_ids->values.size())
                 info.filament_id = filament_ids->values[idx];
@@ -3252,7 +3267,12 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
         else
             detail.type = "Unknown";
 
-        if (fcolors && ext_sz < fcolors->values.size())
+        // Prefer the slice-correct colours captured from print.config() (trim-remapped
+        // to match the gcode header). Fall back to the global m_config only when the
+        // captured vector is missing or shorter than the extruder index.
+        if (ext_sz < result.filament_colours.size())
+            detail.color = result.filament_colours[extruder_id];
+        else if (fcolors && ext_sz < fcolors->values.size())
             detail.color = fcolors->values[extruder_id];
         else
             detail.color = "#000000";
