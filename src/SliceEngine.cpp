@@ -2682,15 +2682,19 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
 
-        // Capture the filament colours actually used by this slice. print.config()
+        // Capture the filament colours/types actually used by this slice. print.config()
         // reflects the post-apply merged_config, which for a single-extruder plate has
-        // been trim-remapped (the real slot's colour moved to index 0). This is the
-        // same value written to the gcode "; filament_colour" header. Stash a copy
-        // (by value) before the print object goes out of scope so downstream stats/export
-        // read the slice-correct colours instead of the un-trimmed global m_config.
+        // been trim-remapped (the real slot's values moved to index 0). These are the
+        // same values written to the gcode "; filament_colour" / "; filament_type"
+        // headers. Stash by value before the print object goes out of scope so downstream
+        // stats/export read the slice-correct values instead of the un-trimmed m_config.
         if (print.config().has("filament_colour")) {
             const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
             if (fc) result.filament_colours = fc->values;
+        }
+        if (print.config().has("filament_type")) {
+            const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
+            if (ft) result.filament_types = ft->values;
         }
 
         return true;
@@ -3074,7 +3078,11 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         for (auto& info : pd->slice_filaments_info)
         {
             size_t idx = static_cast<size_t>(info.id);
-            if (filament_types && idx < filament_types->values.size())
+            // Prefer slice-correct type from print.config() (matches gcode header);
+            // fall back to the global m_config when not captured for this index.
+            if (idx < result.filament_types.size())
+                info.type = result.filament_types[idx];
+            else if (filament_types && idx < filament_types->values.size())
                 info.type = filament_types->values[idx];
             // Prefer slice-correct colours from print.config() (matches gcode header);
             // fall back to the global m_config when not captured for this index.
@@ -3262,7 +3270,12 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
             plate_stats.filament_used_m.count(extruder_id) ? plate_stats.filament_used_m.at(extruder_id) : 0.0;
 
         const size_t ext_sz = static_cast<size_t>(extruder_id);
-        if (ftypes && ext_sz < ftypes->values.size())
+        // Prefer the slice-correct type captured from print.config() (trim-remapped
+        // to match the gcode header). Fall back to the global m_config when the
+        // captured vector is missing or shorter than the extruder index.
+        if (ext_sz < result.filament_types.size())
+            detail.type = result.filament_types[extruder_id];
+        else if (ftypes && ext_sz < ftypes->values.size())
             detail.type = ftypes->values[extruder_id];
         else
             detail.type = "Unknown";

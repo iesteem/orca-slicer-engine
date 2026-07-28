@@ -44,11 +44,12 @@ struct PlateSliceResult
     double total_used_filament = 0.0;
     double total_cost = 0.0;
     std::map<size_t, double> filament_volumes; // per extruder
-    // Filament colours captured from print.config() right after slicing, i.e. the
+    // Filament colours/types captured from print.config() right after slicing, i.e. the
     // trim-remapped values actually written to the gcode header. Indexed identically
     // to filament_volumes / FilamentDetail.id (gcode extruder id, 0-based). Empty when
     // the option is absent; callers fall back to the global m_config.
     std::vector<std::string> filament_colours;
+    std::vector<std::string> filament_types;
     std::vector<Issue> issues; // collected issues for this plate
 };
 
