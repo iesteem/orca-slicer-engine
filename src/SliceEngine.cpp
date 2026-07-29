@@ -2746,6 +2746,22 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
             const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
             if (ft) result.filament_types = ft->values;
         }
+        // Capture post-trim nozzle / filament diameters / densities so downstream stats
+        // compute length/weight against the values the slicer actually used, not the raw
+        // pre-trim m_config (whose index 0 may point at a different slot after single-extruder
+        // remap). Same rationale as colours/types above.
+        if (print.config().has("nozzle_diameter")) {
+            const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
+            if (nd) result.nozzle_diameters = nd->values;
+        }
+        if (print.config().has("filament_diameter")) {
+            const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
+            if (fd) result.filament_diameters = fd->values;
+        }
+        if (print.config().has("filament_density")) {
+            const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
+            if (fden) result.filament_densities = fden->values;
+        }
 
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
@@ -2820,6 +2836,20 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         if (print.config().has("filament_type")) {
             const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
             if (ft) result.filament_types = ft->values;
+        }
+        // Same post-trim snapshots as the early-capture block above; duplicated here so the
+        // values survive even on this late-return path.
+        if (print.config().has("nozzle_diameter")) {
+            const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
+            if (nd) result.nozzle_diameters = nd->values;
+        }
+        if (print.config().has("filament_diameter")) {
+            const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
+            if (fd) result.filament_diameters = fd->values;
+        }
+        if (print.config().has("filament_density")) {
+            const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
+            if (fden) result.filament_densities = fden->values;
         }
 
         return true;
@@ -3055,24 +3085,7 @@ void SliceEngine::package_output()
     if (m_config.has("printer_model"))
         printer_model_id = m_config.opt_string("printer_model");
 
-    std::string nozzle_diameters_str;
-    if (m_config.has("nozzle_diameter"))
-    {
-        auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
-        if (nozzle_opt && !nozzle_opt->values.empty())
-        {
-            std::ostringstream ss;
-            ss << std::fixed << std::setprecision(2);
-            for (size_t i = 0; i < nozzle_opt->values.size(); ++i)
-            {
-                if (i > 0) ss << ",";
-                ss << nozzle_opt->values[i];
-            }
-            nozzle_diameters_str = ss.str();
-        }
-    }
-
-    populate_plate_data_for_export(printer_model_id, nozzle_diameters_str);
+    populate_plate_data_for_export(printer_model_id);
 
     StoreParams params;
     params.path = m_output_path.c_str();
@@ -3161,8 +3174,7 @@ void SliceEngine::package_output()
     }
 }
 
-void SliceEngine::populate_plate_data_for_export(const std::string& printer_model_id,
-                                                 const std::string& nozzle_diameters_str)
+void SliceEngine::populate_plate_data_for_export(const std::string& printer_model_id)
 {
     const ConfigOptionStrings* filament_types =
         m_config.has("filament_type") ? m_config.option<ConfigOptionStrings>("filament_type") : nullptr;
@@ -3170,6 +3182,36 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
     const ConfigOptionStrings* filament_ids =
         m_config.has("filament_ids") ? m_config.option<ConfigOptionStrings>("filament_ids") : nullptr;
+
+    // Fallback nozzle string from the raw m_config (N slots) for plates whose
+    // snapshot wasn't populated (e.g. failed before export_gcode).
+    std::string fallback_nozzle_str;
+    if (m_config.has("nozzle_diameter"))
+    {
+        auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+        if (nozzle_opt && !nozzle_opt->values.empty())
+        {
+            std::ostringstream ss;
+            ss << std::fixed << std::setprecision(2);
+            for (size_t i = 0; i < nozzle_opt->values.size(); ++i)
+            {
+                if (i > 0) ss << ",";
+                ss << nozzle_opt->values[i];
+            }
+            fallback_nozzle_str = ss.str();
+        }
+    }
+
+    auto join_nozzles = [](const std::vector<double>& vals) {
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(2);
+        for (size_t i = 0; i < vals.size(); ++i)
+        {
+            if (i > 0) ss << ",";
+            ss << vals[i];
+        }
+        return ss.str();
+    };
 
     for (auto& pd : m_plate_data)
     {
@@ -3180,7 +3222,11 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         pd->gcode_file = result.gcode_path;
         pd->is_sliced_valid = true;
         pd->printer_model_id = printer_model_id;
-        pd->nozzle_diameters = nozzle_diameters_str;
+        // Per-plate nozzle string: prefer the post-trim snapshot (matches the single value
+        // the slicer actually used on this plate), fall back to the raw m_config N-slot string.
+        pd->nozzle_diameters = !result.nozzle_diameters.empty()
+                                   ? join_nozzles(result.nozzle_diameters)
+                                   : fallback_nozzle_str;
 
         auto& modes = result.gcode_result.print_statistics.modes;
         int print_time = static_cast<int>(modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time);
@@ -3333,8 +3379,13 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
     plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
 
-    const auto& fd = result.gcode_result.filament_diameters;
-    const auto& fdens = result.gcode_result.filament_densities;
+    // Prefer the post-trim diameters/densities captured at slice time (result.filament_*),
+    // which match what the slicer applied. gcode_result mirrors the same merged config but
+    // is kept as a fallback for paths that don't populate the snapshot (e.g. failed plates).
+    const auto& fd_snapshot = result.filament_diameters;
+    const auto& fdens_snapshot = result.filament_densities;
+    const auto& fd = fd_snapshot.empty() ? result.gcode_result.filament_diameters : fd_snapshot;
+    const auto& fdens = fdens_snapshot.empty() ? result.gcode_result.filament_densities : fdens_snapshot;
 
     for (const auto& [extruder_id, volume] : result.filament_volumes)
     {
@@ -3376,7 +3427,14 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.model_filament_g =
         plate_stats.total_filament_g - total_support_g - total_flush_g - total_wipe_tower_g;
 
-    if (m_config.has("nozzle_diameter"))
+    // Prefer the post-trim nozzle diameters captured at slice time; fall back to the raw
+    // m_config (which on a single-extruder plate still has N slots) for paths that never
+    // populated the snapshot.
+    if (!result.nozzle_diameters.empty())
+    {
+        plate_stats.nozzle_diameters = result.nozzle_diameters;
+    }
+    else if (m_config.has("nozzle_diameter"))
     {
         auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
         if (nozzle_opt)
