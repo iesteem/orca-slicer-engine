@@ -44,6 +44,11 @@ struct PlateSliceResult
     double total_used_filament = 0.0;
     double total_cost = 0.0;
     std::map<size_t, double> filament_volumes; // per extruder
+    std::vector<std::string> filament_colours; // post-trim colours actually used (matches G-code header)
+    std::vector<std::string> filament_types;   // post-trim types actually used (matches G-code header)
+    std::vector<double> nozzle_diameters;      // post-trim nozzle diameters (matches what slicer used)
+    std::vector<double> filament_diameters;    // post-trim filament diameters (matches G-code generation)
+    std::vector<double> filament_densities;    // post-trim filament densities (matches G-code generation)
     std::vector<Issue> issues; // collected issues for this plate
 };
 
@@ -276,8 +281,7 @@ private:
     // support/toolpath flags, filament info (overlaid with config-sourced
     // type/colour/id), and the rebuilt objects_and_instances list. One pass
     // over m_plate_data matching entries to m_plate_results.
-    void populate_plate_data_for_export(const std::string& printer_model_id,
-                                        const std::string& nozzle_diameters_str);
+    void populate_plate_data_for_export(const std::string& printer_model_id);
 
     // Build SliceOutputStats from m_plate_results: per-plate issue aggregation,
     // filament usage, success flags, and derived error message. Called once
