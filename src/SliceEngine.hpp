@@ -45,6 +45,7 @@ struct PlateSliceResult
     double total_cost = 0.0;
     std::map<size_t, double> filament_volumes; // per extruder
     std::vector<std::string> filament_colours; // post-trim colours actually used (matches G-code header)
+    std::vector<std::string> filament_types;   // post-trim types actually used (matches G-code header)
     std::vector<Issue> issues; // collected issues for this plate
 };
 
