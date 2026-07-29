@@ -2807,6 +2807,21 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
 
+        // Capture the filament colours/types actually used by this slice. print.config()
+        // reflects the post-apply merged_config, which for a single-extruder plate has
+        // been trim-remapped (the real slot's values moved to index 0). These are the
+        // same values written to the gcode "; filament_colour" / "; filament_type"
+        // headers. Stash by value before the print object goes out of scope so downstream
+        // stats/export read the slice-correct values instead of the un-trimmed m_config.
+        if (print.config().has("filament_colour")) {
+            const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
+            if (fc) result.filament_colours = fc->values;
+        }
+        if (print.config().has("filament_type")) {
+            const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
+            if (ft) result.filament_types = ft->values;
+        }
+
         return true;
     }
     catch (const std::exception& e)
