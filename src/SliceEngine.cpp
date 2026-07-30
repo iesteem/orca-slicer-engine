@@ -2078,6 +2078,7 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
     print.set_plate_origin(origin);
 
     DynamicPrintConfig merged_config = prepare_merged_config_for_plate(plate_id);
+
     print.apply(m_model, merged_config);
 
     if (print.num_object_instances() == 0)
@@ -2106,6 +2107,23 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     // Work on a per-plate copy so extruder-count trimming does not leak
     // into subsequent plates (m_config is shared across the pipeline).
     DynamicPrintConfig merged_config = m_config;
+
+    // Backfill any PrintConfig keys the 3MF / preset chain left undefined.
+    // Print::apply() and GCode::_do_export() dereference several options without a
+    // null check (e.g. seam_slope_type, thumbnails), so a config that omits them
+    // SEGVs deep inside libslic3r. The desktop GUI never sees this because it
+    // always operates on a full PrintConfig; the CLI path must add the missing
+    // keys from FullPrintConfig defaults itself. Only keys absent from
+    // merged_config are taken — values the project/preset already set are kept.
+    {
+        const auto& defaults = FullPrintConfig::defaults();
+        t_config_option_keys missing;
+        for (const std::string& key : defaults.keys())
+            if (!merged_config.has(key))
+                missing.emplace_back(key);
+        if (!missing.empty())
+            merged_config.apply_only(defaults, missing, true);
+    }
 
     // NOTE: Relies on filter_instances(plate_id) (called at process_plate:1533)
     // having already marked off-plate instances printable=false. The
@@ -2731,38 +2749,6 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         result.gcode_path = exported;
 
-        // Capture the post-trim filament colours the slicer actually used (print.config()
-        // reflects the merged_config after apply, including any single-extruder remap).
-        // assemble_plate_stats reads these so the reported colour matches the G-code header
-        // instead of the raw, pre-trim m_config (whose index 0 may point at a different slot).
-        if (print.config().has("filament_colour")) {
-            const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
-            if (fc) result.filament_colours = fc->values;
-        }
-        // Capture the post-trim filament types for the same reason as colours above:
-        // the slicer applies the merged_config after single-extruder remap, so print.config()
-        // holds the type array indexed the way the G-code header is, unlike the raw m_config.
-        if (print.config().has("filament_type")) {
-            const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
-            if (ft) result.filament_types = ft->values;
-        }
-        // Capture post-trim nozzle / filament diameters / densities so downstream stats
-        // compute length/weight against the values the slicer actually used, not the raw
-        // pre-trim m_config (whose index 0 may point at a different slot after single-extruder
-        // remap). Same rationale as colours/types above.
-        if (print.config().has("nozzle_diameter")) {
-            const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
-            if (nd) result.nozzle_diameters = nd->values;
-        }
-        if (print.config().has("filament_diameter")) {
-            const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
-            if (fd) result.filament_diameters = fd->values;
-        }
-        if (print.config().has("filament_density")) {
-            const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
-            if (fden) result.filament_densities = fden->values;
-        }
-
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
@@ -2837,8 +2823,9 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
             const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
             if (ft) result.filament_types = ft->values;
         }
-        // Same post-trim snapshots as the early-capture block above; duplicated here so the
-        // values survive even on this late-return path.
+        // Same rationale as colours/types: capture the post-trim nozzle / filament
+        // diameters / densities so downstream stats compute length/weight against the
+        // values the slicer actually used, not the un-trimmed m_config.
         if (print.config().has("nozzle_diameter")) {
             const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
             if (nd) result.nozzle_diameters = nd->values;
@@ -3382,23 +3369,37 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     // Prefer the post-trim diameters/densities captured at slice time (result.filament_*),
     // which match what the slicer applied. gcode_result mirrors the same merged config but
     // is kept as a fallback for paths that don't populate the snapshot (e.g. failed plates).
-    const auto& fd_snapshot = result.filament_diameters;
-    const auto& fdens_snapshot = result.filament_densities;
-    const auto& fd = fd_snapshot.empty() ? result.gcode_result.filament_diameters : fd_snapshot;
-    const auto& fdens = fdens_snapshot.empty() ? result.gcode_result.filament_densities : fdens_snapshot;
+    // Note: result.filament_* are std::vector<double> (from ConfigOptionFloats) while
+    // gcode_result.filament_* are std::vector<float> (libslic3r GCodeProcessorResult), so the
+    // snapshot-vs-fallback choice must stay as a runtime branch, not a ?: over mismatched types.
+    const auto& fd_snapshot = result.filament_diameters;        // vector<double>
+    const auto& fdens_snapshot = result.filament_densities;     // vector<double>
+    const auto& fd_fallback = result.gcode_result.filament_diameters;    // vector<float>
+    const auto& fdens_fallback = result.gcode_result.filament_densities; // vector<float>
+    bool use_snapshot = !fd_snapshot.empty() && !fdens_snapshot.empty();
+
+    // Lookup helpers: return the per-extruder diameter/density as double from whichever
+    // source is active, with an out-of-range guard (size_t idx, never negative here).
+    auto diameter_of = [&](size_t i) -> double {
+        return use_snapshot ? (i < fd_snapshot.size() ? fd_snapshot[i] : 0.0)
+                            : (i < fd_fallback.size() ? fd_fallback[i] : 0.0);
+    };
+    auto density_of = [&](size_t i) -> double {
+        return use_snapshot ? (i < fdens_snapshot.size() ? fdens_snapshot[i] : 0.0)
+                            : (i < fdens_fallback.size() ? fdens_fallback[i] : 0.0);
+    };
 
     for (const auto& [extruder_id, volume] : result.filament_volumes)
     {
-        if (extruder_id < fd.size() && extruder_id < fdens.size())
-        {
-            double diameter = fd[extruder_id];
-            double density = fdens[extruder_id];
-            double cross_section = M_PI * 0.25 * diameter * diameter;
-            double used_m = (volume / cross_section) * 0.001;
-            double used_g = volume * density * 0.001;
-            plate_stats.filament_used_m[extruder_id] = used_m;
-            plate_stats.filament_used_g[extruder_id] = used_g;
-        }
+        double diameter = diameter_of(extruder_id);
+        double density = density_of(extruder_id);
+        if (diameter <= 0.0)
+            continue;
+        double cross_section = M_PI * 0.25 * diameter * diameter;
+        double used_m = (volume / cross_section) * 0.001;
+        double used_g = volume * density * 0.001;
+        plate_stats.filament_used_m[extruder_id] = used_m;
+        plate_stats.filament_used_g[extruder_id] = used_g;
     }
 
     double total_support_m = 0.0, total_support_g = 0.0;
@@ -3410,12 +3411,13 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     {
         for (const auto& [extruder_id, volume] : volumes)
         {
-            if (extruder_id < fd.size() && extruder_id < fdens.size())
-            {
-                double cross_section = M_PI * 0.25 * fd[extruder_id] * fd[extruder_id];
-                m_acc += (volume / cross_section) * 0.001;
-                g_acc += volume * fdens[extruder_id] * 0.001;
-            }
+            double diameter = diameter_of(extruder_id);
+            if (diameter <= 0.0)
+                continue;
+            double density = density_of(extruder_id);
+            double cross_section = M_PI * 0.25 * diameter * diameter;
+            m_acc += (volume / cross_section) * 0.001;
+            g_acc += volume * density * 0.001;
         }
     };
     accumulate(ps.support_volumes_per_extruder, total_support_m, total_support_g);
@@ -3469,16 +3471,16 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 
         const size_t ext_sz = static_cast<size_t>(extruder_id);
         if (ext_sz < result_types.size())
-            detail.type = result_types[extruder_id];
+            detail.type = result_types[ext_sz];
         else if (ftypes && ext_sz < ftypes->values.size())
-            detail.type = ftypes->values[extruder_id];
+            detail.type = ftypes->values[ext_sz];
         else
             detail.type = "Unknown";
 
         if (ext_sz < result_colors.size())
-            detail.color = result_colors[extruder_id];
+            detail.color = result_colors[ext_sz];
         else if (fcolors && ext_sz < fcolors->values.size())
-            detail.color = fcolors->values[extruder_id];
+            detail.color = fcolors->values[ext_sz];
         else
             detail.color = "#000000";
 
