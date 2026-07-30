@@ -3278,10 +3278,21 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     // Prefer the post-trim diameters/densities captured at slice time (result.filament_*),
     // which match what the slicer applied. gcode_result mirrors the same merged config but
     // is kept as a fallback for paths that don't populate the snapshot (e.g. failed plates).
-    const auto& fd_snapshot = result.filament_diameters;
-    const auto& fdens_snapshot = result.filament_densities;
-    const auto& fd = fd_snapshot.empty() ? result.gcode_result.filament_diameters : fd_snapshot;
-    const auto& fdens = fdens_snapshot.empty() ? result.gcode_result.filament_densities : fdens_snapshot;
+    //
+    // NOTE: result.filament_diameters/densities are std::vector<double> (post-trim snapshot),
+    // while GCodeProcessorResult::filament_diameters/densities are std::vector<float>. The two
+    // cannot share one ?: branch. Downstream consumes both as `double`, so normalise to a
+    // stable vector<double> owned by a named local (avoids a dangling reference to a temporary).
+    auto pick_doubles = [](const std::vector<double>& snapshot,
+                           const std::vector<float>& gcode) -> std::vector<double> {
+        if (!snapshot.empty())
+            return snapshot;                       // copy: vector<double> -> vector<double>
+        return std::vector<double>(gcode.begin(), gcode.end());  // widen float -> double
+    };
+    const std::vector<double> fd    = pick_doubles(result.filament_diameters,
+                                                   result.gcode_result.filament_diameters);
+    const std::vector<double> fdens = pick_doubles(result.filament_densities,
+                                                   result.gcode_result.filament_densities);
 
     for (const auto& [extruder_id, volume] : result.filament_volumes)
     {
