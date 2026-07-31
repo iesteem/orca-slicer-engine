@@ -1748,8 +1748,12 @@ void SliceEngine::process_plate(int plate_id)
         return;
 
     // --- Empty G-code layers check ---
-    if (!check_empty_gcode_layers(plate_id, slice_result))
+    if (!all_gcode_layers_valid(slice_result))
+    {
+        remove_unusable_gcode(plate_id, slice_result);  // discard: delete the unusable G-code file
+        finalise_plate_result(plate_id, slice_result); // archive: mirrors the normal path (issues left for build_statistics)
         return;
+    }
 
     // --- Post-processing ---
     do_postprocessing(plate_id, slice_result);
@@ -2916,34 +2920,24 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     }
 }
 
-bool SliceEngine::check_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
+bool SliceEngine::all_gcode_layers_valid(const PlateSliceResult& slice_result) const
 {
     // EmptyGcodeLayers means the plate has no valid layers; the G-code file
-    // exists but is effectively empty. Skip post-processing and flag as failed.
-    bool has_empty_gcode_layers = false;
+    // exists but is effectively empty. export_gcode pushes this issue during
+    // the slice pipeline; here we only read the flag (pure query).
     for (const auto& iss : slice_result.issues)
     {
         if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
-        {
-            has_empty_gcode_layers = true;
-            break;
-        }
+            return false;
     }
-    if (!has_empty_gcode_layers)
-        return true;
+    return true;
+}
 
+void SliceEngine::remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
+{
     boost::filesystem::remove(slice_result.gcode_path);
     BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
                                << ": empty G-code layers, G-code file discarded";
-    for (auto& iss : slice_result.issues)
-        m_stats.issues.push_back(std::move(iss));
-    slice_result.issues.clear();
-    slice_result.gcode_result.moves.clear();
-    slice_result.gcode_result.moves.shrink_to_fit();
-    slice_result.gcode_result.lines_ends.clear();
-    slice_result.gcode_result.lines_ends.shrink_to_fit();
-    m_plate_results[plate_id] = slice_result;
-    return false;
 }
 
 void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result)

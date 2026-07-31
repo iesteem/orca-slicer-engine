@@ -363,8 +363,14 @@ private:
     // Assign sequential arrange_order values to all model instances.
     void assign_arrange_order();
 
-    // Set global extruder parameters and print speed table from config.
-    void setup_extruder_params(Slic3r::Print& print);
+    // Count filaments from config and populate Model::extruderParamsMap
+    // (per-extruder material / bed / end temperatures). Config-only, no Print
+    // dependency.
+    void setup_extruder_params();
+
+    // Populate Model::printSpeedMap (per-structure speeds, bed poly, exclude
+    // areas) from config; needs the plate's Print config for bed_exclude_area.
+    void setup_print_speed_table(Slic3r::Print& print);
 
     // Build the per-plate merged DynamicPrintConfig consumed by print.apply().
     // Starts from m_config, then trims filament arrays down to a single
@@ -420,11 +426,19 @@ private:
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
-    // Check for the EmptyGcodeLayers condition: the G-code file exists but
-    // contains no valid layers. On detection, removes the empty file, drains
-    // per-plate issues into m_stats, and stores the result. Returns false when
-    // empty layers are found (caller should abort); true for normal results.
-    bool check_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result);
+    // Guard: returns true when every G-code layer is valid, i.e. export_gcode
+    // produced no PRINT_EMPTY_GCODE_LAYERS issue. Pure query -- does not mutate
+    // state. `!all_gcode_layers_valid` is logically equivalent to "some layer is
+    // empty", which is what the call-site discard path checks.
+    bool all_gcode_layers_valid(const PlateSliceResult& slice_result) const;
+
+    // Remove the G-code file produced for a plate whose layers are all invalid
+    // (empty-layer plate) -- the file is unusable, so delete it rather than
+    // ship it. Only removes the file (plate_id is just for the log line);
+    // issues stay in slice_result for finalise_plate_result + build_statistics
+    // to collect, matching the normal path. Named after its single side effect
+    // so the call site shows the action explicitly.
+    void remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result);
 
     // Post-slicing analysis: extract filament usage, compute cost, embed
     // thumbnails, and collect per-plate issues into result.issues.
