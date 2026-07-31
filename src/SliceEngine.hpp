@@ -213,6 +213,15 @@ private:
     // Drop any floating objects onto the print bed by adjusting instance Z offsets.
     void ensure_models_on_bed();
 
+    // Assign sequential arrange_order values to all model instances. Run-once
+    // (global, plate-agnostic) -- called from run() before the per-plate loop.
+    void assign_arrange_order();
+
+    // Count filaments from config and populate Model::extruderParamsMap
+    // (per-extruder material / bed / end temperatures). Config-only, no Print
+    // dependency. Run-once from run() before the per-plate loop.
+    void setup_extruder_params();
+
     /**
      * @brief Load and decode plate thumbnails from disk for the current plate set.
      *
@@ -360,14 +369,6 @@ private:
     // no printable objects result.
     bool prepare_plate_print(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
 
-    // Assign sequential arrange_order values to all model instances.
-    void assign_arrange_order();
-
-    // Count filaments from config and populate Model::extruderParamsMap
-    // (per-extruder material / bed / end temperatures). Config-only, no Print
-    // dependency.
-    void setup_extruder_params();
-
     // Populate Model::printSpeedMap (per-structure speeds, bed poly, exclude
     // areas) from config; needs the plate's Print config for bed_exclude_area.
     void setup_print_speed_table(Slic3r::Print& print);
@@ -426,12 +427,10 @@ private:
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
-    // Snapshot the post-trim filament colour/type, nozzle diameter, filament
-    // diameter/density from print.config() into result. print.config() reflects
-    // the merged config the slicer actually applied (single-extruder plates are
-    // trim-remapped), so these values match the gcode headers and let downstream
-    // stats compute length/weight correctly instead of reading un-trimmed m_config.
-    void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
+    // Build the thumbnail list for a plate G-code export request: locate this
+    // plate's loaded thumbnail in m_plate_data and resize it to each requested
+    // size. Returns an empty vector if the plate has no valid thumbnail.
+    std::vector<Slic3r::ThumbnailData> make_plate_thumbnails(const Slic3r::ThumbnailsParams& params) const;
 
     // Collect PrintBase slicing warnings (Print + per-PrintObject step states) into
     // result.issues with message_id-aware grading: EmptyGcodeLayers -> error,
@@ -439,10 +438,12 @@ private:
     // EmptyGcodeLayers; the cloud engine flags the plate but keeps going.
     void collect_print_warnings(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
-    // Build the thumbnail list for a plate G-code export request: locate this
-    // plate's loaded thumbnail in m_plate_data and resize it to each requested
-    // size. Returns an empty vector if the plate has no valid thumbnail.
-    std::vector<Slic3r::ThumbnailData> make_plate_thumbnails(const Slic3r::ThumbnailsParams& params) const;
+    // Snapshot the post-trim filament colour/type, nozzle diameter, filament
+    // diameter/density from print.config() into result. print.config() reflects
+    // the merged config the slicer actually applied (single-extruder plates are
+    // trim-remapped), so these values match the gcode headers and let downstream
+    // stats compute length/weight correctly instead of reading un-trimmed m_config.
+    void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
 
     // Guard: returns true when every G-code layer is valid, i.e. export_gcode
     // produced no PRINT_EMPTY_GCODE_LAYERS issue. Pure query -- does not mutate

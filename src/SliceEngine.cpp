@@ -1529,6 +1529,29 @@ void SliceEngine::ensure_models_on_bed()
     }
 }
 
+// Global model/config preparation, run once from run() before the per-plate loop
+// (after ensure_models_on_bed, before decode_plate_thumbnails).
+
+void SliceEngine::assign_arrange_order()
+{
+    int order = 1;
+    for (ModelObject* obj : m_model.objects)
+        for (ModelInstance* inst : obj->instances)
+            inst->arrange_order = order++;
+}
+
+void SliceEngine::setup_extruder_params()
+{
+    int num_extruders = 0;
+    if (m_config.has("filament_diameter"))
+    {
+        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
+        if (fd)
+            num_extruders = static_cast<int>(fd->values.size());
+    }
+    Model::setExtruderParams(m_config, num_extruders);
+}
+
 // ============================================================================
 // Stage 3: Global preprocessing (decode plate thumbnails)
 // ============================================================================
@@ -2004,55 +2027,6 @@ void SliceEngine::push_build_volume_issues(int plate_id, const std::string& obje
     }
 }
 
-bool SliceEngine::within_slicing_deadline(int plate_id)
-{
-    if (!m_has_timeout || std::chrono::steady_clock::now() <= m_timeout_deadline)
-        return true;
-
-    BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
-    m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
-                                        "Slicing timed out. The model may be too complex. If you believe this is "
-                                        "an error, please submit an appeal for review."));
-    m_any_error = true;
-    set_error_type(EXIT_SLICING_ERROR);
-    return false;
-}
-
-void SliceEngine::init_print(Print& print)
-{
-    print.set_status_callback(
-        [&print, this](const PrintBase::SlicingStatus& s)
-        {
-            default_status_callback(s, &print, &m_cfg.cancel_file);
-        });
-    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
-}
-
-void SliceEngine::assign_arrange_order()
-{
-    int order = 1;
-    for (ModelObject* obj : m_model.objects)
-        for (ModelInstance* inst : obj->instances)
-            inst->arrange_order = order++;
-}
-
-void SliceEngine::setup_extruder_params()
-{
-    int num_extruders = 0;
-    if (m_config.has("filament_diameter"))
-    {
-        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
-        if (fd)
-            num_extruders = static_cast<int>(fd->values.size());
-    }
-    Model::setExtruderParams(m_config, num_extruders);
-}
-
-void SliceEngine::setup_print_speed_table(Print& print)
-{
-    Model::setPrintSpeedTable(m_config, print.config());
-}
-
 void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
                                                   const std::set<int>& identify_ids)
 {
@@ -2110,6 +2084,30 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
             }
         }
     }
+}
+
+bool SliceEngine::within_slicing_deadline(int plate_id)
+{
+    if (!m_has_timeout || std::chrono::steady_clock::now() <= m_timeout_deadline)
+        return true;
+
+    BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
+    m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
+                                        "Slicing timed out. The model may be too complex. If you believe this is "
+                                        "an error, please submit an appeal for review."));
+    m_any_error = true;
+    set_error_type(EXIT_SLICING_ERROR);
+    return false;
+}
+
+void SliceEngine::init_print(Print& print)
+{
+    print.set_status_callback(
+        [&print, this](const PrintBase::SlicingStatus& s)
+        {
+            default_status_callback(s, &print, &m_cfg.cancel_file);
+        });
+    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
 }
 
 bool SliceEngine::prepare_plate_print(int plate_id, Print& print, const Vec3d& origin)
@@ -2347,6 +2345,11 @@ void SliceEngine::trim_filament_config_to_single(DynamicPrintConfig& config, int
                                        << typeid(*opt).name() << "), skipped — trim incomplete";
         }
     }
+}
+
+void SliceEngine::setup_print_speed_table(Print& print)
+{
+    Model::setPrintSpeedTable(m_config, print.config());
 }
 
 bool SliceEngine::run_validation(int plate_id, Print& print)
@@ -2829,36 +2832,24 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     }
 }
 
-void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResult& result)
+std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsParams& params) const
 {
-    // print.config() reflects the post-apply merged config the slicer used. For a
-    // single-extruder plate it has been trim-remapped (the real slot's values moved
-    // to index 0) -- the same values written to the gcode "; filament_colour" /
-    // "; filament_type" headers. Stash by value so downstream stats/export read the
-    // slice-correct values instead of the un-trimmed m_config.
-    if (print.config().has("filament_colour")) {
-        const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
-        if (fc) result.filament_colours = fc->values;
+    std::vector<ThumbnailData> thumbnails;
+    const ThumbnailData* source = nullptr;
+    for (const auto& pd : m_plate_data)
+    {
+        if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
+        {
+            source = &pd->plate_thumbnail;
+            break;
+        }
     }
-    if (print.config().has("filament_type")) {
-        const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
-        if (ft) result.filament_types = ft->values;
-    }
-    // Same rationale as colours/types: capture the post-trim nozzle / filament
-    // diameters / densities so downstream stats compute length/weight against the
-    // values the slicer actually used, not the un-trimmed m_config.
-    if (print.config().has("nozzle_diameter")) {
-        const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
-        if (nd) result.nozzle_diameters = nd->values;
-    }
-    if (print.config().has("filament_diameter")) {
-        const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
-        if (fd) result.filament_diameters = fd->values;
-    }
-    if (print.config().has("filament_density")) {
-        const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
-        if (fden) result.filament_densities = fden->values;
-    }
+    if (!source)
+        return thumbnails;
+    for (const auto& size : params.sizes)
+        thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
+                                              static_cast<unsigned int>(size.y())));
+    return thumbnails;
 }
 
 void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceResult& result)
@@ -2912,24 +2903,36 @@ void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceR
     }
 }
 
-std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsParams& params) const
+void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResult& result)
 {
-    std::vector<ThumbnailData> thumbnails;
-    const ThumbnailData* source = nullptr;
-    for (const auto& pd : m_plate_data)
-    {
-        if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
-        {
-            source = &pd->plate_thumbnail;
-            break;
-        }
+    // print.config() reflects the post-apply merged config the slicer used. For a
+    // single-extruder plate it has been trim-remapped (the real slot's values moved
+    // to index 0) -- the same values written to the gcode "; filament_colour" /
+    // "; filament_type" headers. Stash by value so downstream stats/export read the
+    // slice-correct values instead of the un-trimmed m_config.
+    if (print.config().has("filament_colour")) {
+        const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
+        if (fc) result.filament_colours = fc->values;
     }
-    if (!source)
-        return thumbnails;
-    for (const auto& size : params.sizes)
-        thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
-                                              static_cast<unsigned int>(size.y())));
-    return thumbnails;
+    if (print.config().has("filament_type")) {
+        const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
+        if (ft) result.filament_types = ft->values;
+    }
+    // Same rationale as colours/types: capture the post-trim nozzle / filament
+    // diameters / densities so downstream stats compute length/weight against the
+    // values the slicer actually used, not the un-trimmed m_config.
+    if (print.config().has("nozzle_diameter")) {
+        const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
+        if (nd) result.nozzle_diameters = nd->values;
+    }
+    if (print.config().has("filament_diameter")) {
+        const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
+        if (fd) result.filament_diameters = fd->values;
+    }
+    if (print.config().has("filament_density")) {
+        const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
+        if (fden) result.filament_densities = fden->values;
+    }
 }
 
 bool SliceEngine::all_gcode_layers_valid(const PlateSliceResult& slice_result) const
