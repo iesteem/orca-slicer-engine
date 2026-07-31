@@ -307,10 +307,14 @@ private:
 
     // --- Per-plate sub-stages (in call order) ---
 
-    // Filter model instances: mark those belonging to the given plate as
-    // printable, insert their loaded_id into identify_ids. Returns false if
-    // the plate has no printable instances (empty plate).
-    bool filter_instances(int plate_id, std::set<int>& identify_ids);
+    // Collect the loaded_id of every model instance that belongs to the given
+    // plate (pure query; does not modify the model).
+    std::set<int> collect_plate_instance_ids(int plate_id) const;
+
+    // Mark every model instance printable according to whether its loaded_id is
+    // in plate_ids (on-plate -> printable + Inside, off-plate -> not printable +
+    // Fully_Outside). Returns false if no instance is on the plate (empty plate).
+    bool mark_printable_instances(const std::set<int>& plate_ids);
 
     // Compute the global coordinate origin for a plate in the grid layout.
     Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);

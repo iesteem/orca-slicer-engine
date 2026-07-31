@@ -1677,9 +1677,9 @@ void SliceEngine::process_plate(int plate_id)
     // (which in turn requires bundle availability). Not assert-guarded —
     // structural contract, no-op in Release.
 
-    // --- Filter instances for this plate ---
-    std::set<int> identify_ids;
-    if (!filter_instances(plate_id, identify_ids))
+    // --- Identify this plate's instances and mark printability ---
+    std::set<int> identify_ids = collect_plate_instance_ids(plate_id);
+    if (!mark_printable_instances(identify_ids))
         return;
 
     // Calculate plate dimensions and origin (done before build-volume check
@@ -1743,26 +1743,31 @@ void SliceEngine::process_plate(int plate_id)
 // Per-plate sub-stages (in call order)
 // ============================================================================
 
-bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids)
+std::set<int> SliceEngine::collect_plate_instance_ids(int plate_id) const
 {
+    std::set<int> ids;
     for (const auto& pd : m_plate_data)
     {
         if (pd->plate_index == plate_id)
         {
             for (const auto& [object_id, inst_info] : pd->obj_inst_map)
             {
-                identify_ids.insert(inst_info.second);
+                ids.insert(inst_info.second);
             }
             break;
         }
     }
+    return ids;
+}
 
+bool SliceEngine::mark_printable_instances(const std::set<int>& plate_ids)
+{
     int count = 0;
     for (ModelObject* obj : m_model.objects)
     {
         for (ModelInstance* inst : obj->instances)
         {
-            bool on_plate = (identify_ids.find(static_cast<int>(inst->loaded_id)) != identify_ids.end());
+            bool on_plate = (plate_ids.find(static_cast<int>(inst->loaded_id)) != plate_ids.end());
             inst->printable = on_plate;
             inst->print_volume_state = on_plate ? ModelInstancePVS_Inside : ModelInstancePVS_Fully_Outside;
             if (on_plate)
@@ -1770,11 +1775,11 @@ bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids)
         }
     }
 
-    BOOST_LOG_TRIVIAL(info) << "Filtered model: " << count << " instances on plate " << (plate_id + 1);
+    BOOST_LOG_TRIVIAL(info) << "Marked " << count << " instances printable";
 
     if (count == 0)
     {
-        BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate " << (plate_id + 1);
+        BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate";
         return false;
     }
     return true;
@@ -2125,10 +2130,11 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
             merged_config.apply_only(defaults, missing, true);
     }
 
-    // NOTE: Relies on filter_instances(plate_id) (called at process_plate:1533)
-    // having already marked off-plate instances printable=false. The
-    // is_printable() guard below is the per-plate filter — do not remove
-    // without replacing it with an explicit plate_id check.
+    // NOTE: Relies on mark_printable_instances(plate_ids) (called in
+    // process_plate right after collect_plate_instance_ids) having already
+    // marked off-plate instances printable=false. The is_printable() guard
+    // below is the per-plate filter — do not remove without replacing it with
+    // an explicit plate_id check.
     std::set<int> used_extruders;
     for (ModelObject* obj : m_model.objects)
     {
@@ -2554,8 +2560,8 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     // when it does, per-feature defaults (wall / infill filaments) affect
     // the slicing output and must be collected.
     //
-    // NOTE: Per-plate filtering relies on filter_instances(plate_id) at
-    // process_plate:1533 having marked off-plate instances printable=false.
+    // NOTE: Per-plate filtering relies on mark_printable_instances(plate_ids)
+    // in process_plate having marked off-plate instances printable=false.
     // The is_printable() guard inside this loop is the per-plate filter —
     // equivalent to desktop model_object_is_on_plate().
     bool uses_default_extruder = false;
