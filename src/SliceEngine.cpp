@@ -2170,20 +2170,25 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     }
 
     // If still single, also check the single_extruder_multi_material config flag
-    // (used by non-Bambu printers for single-nozzle multi-filament).
+    // (used by non-Bambu printers for single-nozzle multi-filament). A model that
+    // genuinely drives multiple filaments through one nozzle must NOT be trimmed,
+    // or the wipe-tower tool-change sequence would no longer match actual extrusion.
+    //
+    // NOTE: Do not encode this "skip trim" decision by inserting sentinel extruder
+    // IDs into `used_extruders` (an earlier revision inserted {1, 2} to force
+    // size()==2). That collection carries real per-volume/AMS extruder statistics
+    // and is read back as the 1-based keep index at line (*) below; seeding it
+    // with fake values couples control flow to statistics and turns into a latent
+    // bug the moment a later refactor intersects the set. Keep the decision in a
+    // dedicated boolean instead.
+    bool semm_multi_material = false;
     if (used_extruders.size() <= 1 && num_filaments > 1)
     {
         auto* semm = m_config.option<ConfigOptionBool>("single_extruder_multi_material");
-        if (semm && semm->value)
-        {
-            // Model genuinely uses multiple filaments through one extruder.
-            // Insert sentinel values to prevent trimming.
-            used_extruders.insert(1);
-            used_extruders.insert(2);
-        }
+        semm_multi_material = semm && semm->value;
     }
 
-    if (used_extruders.size() <= 1 && num_filaments > 1)
+    if (!semm_multi_material && used_extruders.size() <= 1 && num_filaments > 1)
     {
         // Keep the filament data for the extruder actually used on this
         // plate, not just the first slot.  Without this remap, a plate
@@ -2192,7 +2197,7 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
         // which causes wrong chamber cooling mode and other downstream bugs.
         int keep_idx = 0;
         if (used_extruders.size() == 1)
-            keep_idx = *used_extruders.begin() - 1; // used_extruders stores 1-based
+            keep_idx = *used_extruders.begin() - 1; // (line *) 1-based extruder id -> 0-based slot
         if (keep_idx < 0 || keep_idx >= num_filaments)
             keep_idx = 0;
 
