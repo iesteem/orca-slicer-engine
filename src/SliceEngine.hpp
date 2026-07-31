@@ -335,9 +335,13 @@ private:
     void push_build_volume_issues(int plate_id, const std::string& object_name,
                                   const Slic3r::BoundingBoxf3& bbox, const Slic3r::BuildVolume& build_volume);
 
-    // Check whether the global slicing timeout has been exceeded. Returns false
-    // if timed out (fatal error), after logging and pushing SLICING_TIMEOUT.
-    bool check_timeout(int plate_id);
+    // Guard: returns true while the global slicing deadline has not expired
+    // (caller may proceed with heavy slicing). Returns false once it has --
+    // logging SLICING_TIMEOUT, pushing the issue, and setting the exit code
+    // before returning. Used as a precondition check, hence the question-style
+    // name and false-on-expiry convention shared with the other process_plate
+    // sub-steps.
+    bool within_slicing_deadline(int plate_id);
 
     // Create a Print object for the plate: set status callback and BBL flag.
     // Returns a configured Print ready for model application.

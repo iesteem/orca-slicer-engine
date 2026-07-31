@@ -1692,7 +1692,7 @@ void SliceEngine::process_plate(int plate_id)
         return;
 
     // --- Timeout check (before heavy slicing work) ---
-    if (!check_timeout(plate_id))
+    if (!within_slicing_deadline(plate_id))
         return;
 
     // --- Create Print ---
@@ -1977,7 +1977,7 @@ void SliceEngine::push_build_volume_issues(int plate_id, const std::string& obje
     }
 }
 
-bool SliceEngine::check_timeout(int plate_id)
+bool SliceEngine::within_slicing_deadline(int plate_id)
 {
     if (!m_has_timeout || std::chrono::steady_clock::now() <= m_timeout_deadline)
         return true;
