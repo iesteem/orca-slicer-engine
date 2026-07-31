@@ -1500,7 +1500,7 @@ void SliceEngine::ensure_models_on_bed()
             //       geometry is preserved as-is, and the below-bed portion will
             //       not be printed (run_build_volume_check flags it separately).
             // Not deduplicated: each ModelObject reports independently, so a
-            // project with two same-named objects (e.g. 亭子4.obj_12 / _13)
+            // project with two same-named objects (e.g. model.obj_12 / _13)
             // emits two issues -- both genuinely sank.
             if (before < -1e-4)
             {
