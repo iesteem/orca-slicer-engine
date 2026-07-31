@@ -196,6 +196,15 @@ bool SliceEngine::run()
             // desktop would.
             ensure_models_on_bed();
 
+            // Assign a global, monotonic arrange_order to every instance once per
+            // task. This is model-wide (plate-agnostic), so it belongs here rather
+            // than inside the per-plate process_plate loop, where it was previously
+            // re-written with identical values N times. Note libslic3r re-derives
+            // the final ordering during Print::validate() / GCode export
+            // (sort_object_instances_by_model_order); this just seeds a non-zero
+            // value on m_model before any Print copies it.
+            assign_arrange_order();
+
             decode_plate_thumbnails();
 
             m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
@@ -1682,16 +1691,26 @@ void SliceEngine::process_plate(int plate_id)
     if (!mark_printable_instances(identify_ids))
         return;
 
-    // Plate origin for this plate's grid-layout offset (used by the build-volume
-    // check to translate instances into plate-local coordinates). Plate
+    // Plate origin = this plate's grid-layout offset. Shared by two downstream
+    // steps: run_build_volume_check (translates instances into plate-local
+    // coordinates) and prepare_plate_print (positions the plate in global space). Plate
     // dimensions are derived from printable_area inside setup_print_origin.
     Vec3d origin = setup_print_origin(plate_id);
-
-    // --- Build volume check (uses plate-local coordinates) ---
     if (!run_build_volume_check(plate_id, identify_ids, origin))
         return;
 
     // --- Timeout check (before heavy slicing work) ---
+    // Deliberately placed AFTER the cheap pre-stage checks
+    // (collect_plate_instance_ids / mark_printable_instances /
+    // setup_print_origin / run_build_volume_check), not at the top of
+    // process_plate. within_slicing_deadline() depends only on
+    // m_has_timeout / m_timeout_deadline (no local state), so moving it up
+    // would be data-safe -- but those pre-stages also push diagnostics
+    // (empty-plate / build-volume warnings) into m_stats. Keeping the
+    // timeout gate just before the heavy Print work means those warnings
+    // still land in the JSON alongside the SLICING_TIMEOUT error, instead
+    // of being skipped. build_statistics() runs unconditionally in run(),
+    // so the timeout error is emitted either way.
     if (!within_slicing_deadline(plate_id))
         return;
 
@@ -1699,12 +1718,9 @@ void SliceEngine::process_plate(int plate_id)
     Print print;
     init_print(print);
 
-    // --- Apply model ---
-    if (!apply_model(plate_id, print, origin))
+    // --- Prepare plate print ---
+    if (!prepare_plate_print(plate_id, print, origin))
         return;
-
-    // --- Assign arrange_order ---
-    assign_arrange_order();
 
     // --- Set global extruder params & speed table ---
     setup_extruder_params(print);
@@ -2081,7 +2097,7 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
     }
 }
 
-bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
+bool SliceEngine::prepare_plate_print(int plate_id, Print& print, const Vec3d& origin)
 {
     // plate_index from m_plate_data is already 0-based (import does -1 conversion)
     print.set_plate_index(plate_id);
