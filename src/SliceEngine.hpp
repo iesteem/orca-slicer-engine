@@ -426,6 +426,24 @@ private:
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
+    // Snapshot the post-trim filament colour/type, nozzle diameter, filament
+    // diameter/density from print.config() into result. print.config() reflects
+    // the merged config the slicer actually applied (single-extruder plates are
+    // trim-remapped), so these values match the gcode headers and let downstream
+    // stats compute length/weight correctly instead of reading un-trimmed m_config.
+    void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
+
+    // Collect PrintBase slicing warnings (Print + per-PrintObject step states) into
+    // result.issues with message_id-aware grading: EmptyGcodeLayers -> error,
+    // GcodeOverlap -> warning, others by level. Desktop CLI hard-exits on
+    // EmptyGcodeLayers; the cloud engine flags the plate but keeps going.
+    void collect_print_warnings(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
+
+    // Build the thumbnail list for a plate G-code export request: locate this
+    // plate's loaded thumbnail in m_plate_data and resize it to each requested
+    // size. Returns an empty vector if the plate has no valid thumbnail.
+    std::vector<Slic3r::ThumbnailData> make_plate_thumbnails(const Slic3r::ThumbnailsParams& params) const;
+
     // Guard: returns true when every G-code layer is valid, i.e. export_gcode
     // produced no PRINT_EMPTY_GCODE_LAYERS issue. Pure query -- does not mutate
     // state. `!all_gcode_layers_valid` is logically equivalent to "some layer is

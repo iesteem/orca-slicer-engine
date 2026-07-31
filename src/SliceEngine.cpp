@@ -2776,24 +2776,8 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     {
         GCodeProcessor::s_IsBBLPrinter = print.is_BBL_printer();
 
-        auto thumbnail_cb = [this](const Slic3r::ThumbnailsParams& params) -> std::vector<Slic3r::ThumbnailData>
-        {
-            std::vector<Slic3r::ThumbnailData> thumbnails;
-            const Slic3r::ThumbnailData* source = nullptr;
-            for (const auto& pd : m_plate_data)
-            {
-                if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
-                {
-                    source = &pd->plate_thumbnail;
-                    break;
-                }
-            }
-            if (!source)
-                return thumbnails;
-            for (const auto& size : params.sizes)
-                thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
-                                                      static_cast<unsigned int>(size.y())));
-            return thumbnails;
+        auto thumbnail_cb = [this](const Slic3r::ThumbnailsParams& params) {
+            return make_plate_thumbnails(params);
         };
 
         std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
@@ -2803,54 +2787,7 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
-        // Collect PrintBase warnings with message_id-aware grading.
-        // Desktop CLI treats EmptyGcodeLayers and GcodeOverlap as
-        // CLI_SLICING_ERROR (hard exit). Cloud engine flags the plate
-        // but continues processing remaining plates.
-        auto grade_warning = [&](const PrintStateBase::Warning& w)
-        {
-            if (!w.current)
-                return;
-            auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
-            if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers)
-            {
-                result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
-                                                   "Empty G-code layers detected: " + w.message));
-                m_any_error = true;
-                set_error_type(EXIT_POSTPROCESS_ERROR);
-            }
-            else if (msg_type == PrintStateBase::SlicingGcodeOverlap)
-            {
-                result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
-                                                     "G-code overlap detected: " + w.message));
-                m_any_postprocess_warning = true;
-            }
-            else if (w.level == PrintStateBase::WarningLevel::CRITICAL)
-            {
-                result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
-            }
-            else
-            {
-                result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
-            }
-        };
-
-        for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step)
-        {
-            const auto& wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
-            for (const auto& w : wstate.warnings)
-                grade_warning(w);
-        }
-
-        for (const PrintObject* obj : print.objects())
-        {
-            for (int step = 0; step < static_cast<int>(PrintObjectStep::posCount); ++step)
-            {
-                const auto& wstate = obj->step_state_with_warnings(static_cast<PrintObjectStep>(step));
-                for (const auto& w : wstate.warnings)
-                    grade_warning(w);
-            }
-        }
+        collect_print_warnings(plate_id, print, result);
 
         const PrintStatistics& ps = print.print_statistics();
         result.total_weight = ps.total_weight;
@@ -2859,35 +2796,7 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
 
-        // Capture the filament colours/types actually used by this slice. print.config()
-        // reflects the post-apply merged_config, which for a single-extruder plate has
-        // been trim-remapped (the real slot's values moved to index 0). These are the
-        // same values written to the gcode "; filament_colour" / "; filament_type"
-        // headers. Stash by value before the print object goes out of scope so downstream
-        // stats/export read the slice-correct values instead of the un-trimmed m_config.
-        if (print.config().has("filament_colour")) {
-            const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
-            if (fc) result.filament_colours = fc->values;
-        }
-        if (print.config().has("filament_type")) {
-            const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
-            if (ft) result.filament_types = ft->values;
-        }
-        // Same rationale as colours/types: capture the post-trim nozzle / filament
-        // diameters / densities so downstream stats compute length/weight against the
-        // values the slicer actually used, not the un-trimmed m_config.
-        if (print.config().has("nozzle_diameter")) {
-            const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
-            if (nd) result.nozzle_diameters = nd->values;
-        }
-        if (print.config().has("filament_diameter")) {
-            const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
-            if (fd) result.filament_diameters = fd->values;
-        }
-        if (print.config().has("filament_density")) {
-            const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
-            if (fden) result.filament_densities = fden->values;
-        }
+        capture_post_trim_config_snapshot(print, result);
 
         return true;
     }
@@ -2918,6 +2827,109 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         m_plate_results[plate_id] = result;
         return false;
     }
+}
+
+void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResult& result)
+{
+    // print.config() reflects the post-apply merged config the slicer used. For a
+    // single-extruder plate it has been trim-remapped (the real slot's values moved
+    // to index 0) -- the same values written to the gcode "; filament_colour" /
+    // "; filament_type" headers. Stash by value so downstream stats/export read the
+    // slice-correct values instead of the un-trimmed m_config.
+    if (print.config().has("filament_colour")) {
+        const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
+        if (fc) result.filament_colours = fc->values;
+    }
+    if (print.config().has("filament_type")) {
+        const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
+        if (ft) result.filament_types = ft->values;
+    }
+    // Same rationale as colours/types: capture the post-trim nozzle / filament
+    // diameters / densities so downstream stats compute length/weight against the
+    // values the slicer actually used, not the un-trimmed m_config.
+    if (print.config().has("nozzle_diameter")) {
+        const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
+        if (nd) result.nozzle_diameters = nd->values;
+    }
+    if (print.config().has("filament_diameter")) {
+        const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
+        if (fd) result.filament_diameters = fd->values;
+    }
+    if (print.config().has("filament_density")) {
+        const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
+        if (fden) result.filament_densities = fden->values;
+    }
+}
+
+void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceResult& result)
+{
+    // message_id-aware grading. Desktop CLI treats EmptyGcodeLayers and
+    // GcodeOverlap as CLI_SLICING_ERROR (hard exit). The cloud engine flags the
+    // plate but continues processing remaining plates.
+    auto grade_warning = [&](const PrintStateBase::Warning& w)
+    {
+        if (!w.current)
+            return;
+        auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
+        if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers)
+        {
+            result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
+                                               "Empty G-code layers detected: " + w.message));
+            m_any_error = true;
+            set_error_type(EXIT_POSTPROCESS_ERROR);
+        }
+        else if (msg_type == PrintStateBase::SlicingGcodeOverlap)
+        {
+            result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
+                                                 "G-code overlap detected: " + w.message));
+            m_any_postprocess_warning = true;
+        }
+        else if (w.level == PrintStateBase::WarningLevel::CRITICAL)
+        {
+            result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
+        }
+        else
+        {
+            result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+        }
+    };
+
+    for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step)
+    {
+        const auto& wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
+        for (const auto& w : wstate.warnings)
+            grade_warning(w);
+    }
+
+    for (const PrintObject* obj : print.objects())
+    {
+        for (int step = 0; step < static_cast<int>(PrintObjectStep::posCount); ++step)
+        {
+            const auto& wstate = obj->step_state_with_warnings(static_cast<PrintObjectStep>(step));
+            for (const auto& w : wstate.warnings)
+                grade_warning(w);
+        }
+    }
+}
+
+std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsParams& params) const
+{
+    std::vector<ThumbnailData> thumbnails;
+    const ThumbnailData* source = nullptr;
+    for (const auto& pd : m_plate_data)
+    {
+        if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
+        {
+            source = &pd->plate_thumbnail;
+            break;
+        }
+    }
+    if (!source)
+        return thumbnails;
+    for (const auto& size : params.sizes)
+        thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
+                                              static_cast<unsigned int>(size.y())));
+    return thumbnails;
 }
 
 bool SliceEngine::all_gcode_layers_valid(const PlateSliceResult& slice_result) const
