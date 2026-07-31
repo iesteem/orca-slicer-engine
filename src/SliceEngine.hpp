@@ -467,19 +467,14 @@ private:
     // into m_plate_results. Must be called after post-processing for each plate.
     void finalise_plate_result(int plate_id, PlateSliceResult& result);
 
-    // --- State ---
+    // --- Input (frozen at construction) ---
     EngineConfig m_cfg;
     std::string m_output_path;
-    SliceOutputStats m_stats;
-    std::chrono::steady_clock::time_point m_timeout_deadline;
-    bool m_has_timeout = false;
+    // Reference: temp G-code files are tracked here so the caller can clean them
+    // up; the engine appends, the caller owns the storage.
     std::vector<std::string>& m_temp_files;
-    std::map<int, PlateSliceResult> m_plate_results;
-    bool m_any_error = false;
-    bool m_any_postprocess_warning = false;
-    int m_error_type = EXIT_OK; // most severe exit code encountered
 
-    // Loaded data
+    // --- Loaded model & config (filled by load_3mf) ---
     Slic3r::Model m_model;
     Slic3r::DynamicPrintConfig m_config;
     Slic3r::ConfigSubstitutionContext m_config_substitutions{Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
@@ -492,7 +487,22 @@ private:
     bool m_is_bbl_3mf = false;
     Slic3r::Semver m_file_version;
 
-    // Preset validation (requires system profiles at resources_dir/profiles/)
+    // --- Preset system (loaded from resources/profiles/) ---
     std::unique_ptr<Slic3r::PresetBundle> m_preset_bundle;
     bool m_presets_available = false;
+
+    // --- Per-plate results (produced during slicing) ---
+    std::map<int, PlateSliceResult> m_plate_results;
+
+    // --- Statistics & diagnostics (aggregated for JSON output) ---
+    SliceOutputStats m_stats;
+
+    // --- Run control: timeout ---
+    std::chrono::steady_clock::time_point m_timeout_deadline;
+    bool m_has_timeout = false;
+
+    // --- Run control: error & exit code ---
+    bool m_any_error = false;
+    bool m_any_postprocess_warning = false;
+    int m_error_type = EXIT_OK; // most severe exit code encountered
 };
