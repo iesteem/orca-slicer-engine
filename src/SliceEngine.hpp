@@ -355,9 +355,10 @@ private:
     void check_spiral_lift_near_boundary(int plate_id, const Slic3r::BuildVolume& build_volume,
                                          const std::set<int>& identify_ids);
 
-    // Set plate index and origin on the Print, build the merged config, and
-    // apply the model objects. Returns false if no printable objects result.
-    bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
+    // Prepare this plate's Print: stamp plate index + grid-layout origin, build
+    // the per-plate merged config, and apply the model objects. Returns false if
+    // no printable objects result.
+    bool prepare_plate_print(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
 
     // Assign sequential arrange_order values to all model instances.
     void assign_arrange_order();
