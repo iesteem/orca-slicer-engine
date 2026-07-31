@@ -317,7 +317,10 @@ private:
     bool mark_printable_instances(const std::set<int>& plate_ids);
 
     // Compute the global coordinate origin for a plate in the grid layout.
-    Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);
+    // Plate dimensions are derived internally from m_config "printable_area";
+    // returns Zero if printable_area is absent/empty (the build-volume check
+    // short-circuits on the same condition, so the origin is unused then).
+    Slic3r::Vec3d setup_print_origin(int plate_id);
 
     // Check all instances on this plate against the build volume: flag objects
     // outside/partly outside the printable area, and check spiral-lift

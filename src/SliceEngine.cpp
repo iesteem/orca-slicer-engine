@@ -1682,14 +1682,10 @@ void SliceEngine::process_plate(int plate_id)
     if (!mark_printable_instances(identify_ids))
         return;
 
-    // Calculate plate dimensions and origin (done before build-volume check
-    // so the check can translate instances into plate-local coordinates).
-    // printable_area is guaranteed valid by apply_printer_official_preset().
-    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
-    BoundingBoxf bbox;
-    for (const Vec2d& pt : pa->values)
-        bbox.merge(pt);
-    Vec3d origin = setup_print_origin(plate_id, bbox.size().x(), bbox.size().y());
+    // Plate origin for this plate's grid-layout offset (used by the build-volume
+    // check to translate instances into plate-local coordinates). Plate
+    // dimensions are derived from printable_area inside setup_print_origin.
+    Vec3d origin = setup_print_origin(plate_id);
 
     // --- Build volume check (uses plate-local coordinates) ---
     if (!run_build_volume_check(plate_id, identify_ids, origin))
@@ -1785,8 +1781,21 @@ bool SliceEngine::mark_printable_instances(const std::set<int>& plate_ids)
     return true;
 }
 
-Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id, double plate_width, double plate_depth)
+Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id)
 {
+    // Derive plate dimensions from printable_area. Guarded the same way as
+    // run_build_volume_check: if printable_area is absent/empty, return a zero
+    // origin -- the build-volume check short-circuits on the same condition, so
+    // the origin is never consumed in that case.
+    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.empty())
+        return Vec3d::Zero();
+    BoundingBoxf bbox;
+    for (const Vec2d& pt : pa->values)
+        bbox.merge(pt);
+    double plate_width  = bbox.size().x();
+    double plate_depth  = bbox.size().y();
+
     // Compute plate origin using the same grid layout formula as the desktop GUI
     // (PartPlate::update_plate_layout_arrange). Each plate occupies a cell in a
     // row-major grid with LOGICAL_PART_PLATE_GAP spacing between plates.
@@ -1798,8 +1807,7 @@ Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id, double plate_width, 
     double origin_x = col * (plate_width * (1.0 + LOGICAL_PART_PLATE_GAP));
     double origin_y = -row * (plate_depth * (1.0 + LOGICAL_PART_PLATE_GAP));
 
-    Vec3d origin(origin_x, origin_y, 0.0);
-    return origin;
+    return Vec3d(origin_x, origin_y, 0.0);
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)
