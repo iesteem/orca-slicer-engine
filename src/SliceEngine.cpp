@@ -205,6 +205,13 @@ bool SliceEngine::run()
             // value on m_model before any Print copies it.
             assign_arrange_order();
 
+            // Populate Model::extruderParamsMap once per task. Config-only (reads
+            // m_config, which is final after apply_filament_official_preset in
+            // validate_input above), writes a static Model member, no Print or
+            // plate dependency -- so it belongs here, not in the per-plate loop
+            // where it was previously re-run with identical results N times.
+            setup_extruder_params();
+
             decode_plate_thumbnails();
 
             m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
@@ -1722,8 +1729,8 @@ void SliceEngine::process_plate(int plate_id)
     if (!prepare_plate_print(plate_id, print, origin))
         return;
 
-    // --- Set global extruder params & speed table ---
-    setup_extruder_params(print);
+    // --- Set print speed table (needs this plate's Print config) ---
+    setup_print_speed_table(print);
 
     // --- Validation ---
     if (!run_validation(plate_id, print))
@@ -2025,7 +2032,7 @@ void SliceEngine::assign_arrange_order()
             inst->arrange_order = order++;
 }
 
-void SliceEngine::setup_extruder_params(Print& print)
+void SliceEngine::setup_extruder_params()
 {
     int num_extruders = 0;
     if (m_config.has("filament_diameter"))
@@ -2035,6 +2042,10 @@ void SliceEngine::setup_extruder_params(Print& print)
             num_extruders = static_cast<int>(fd->values.size());
     }
     Model::setExtruderParams(m_config, num_extruders);
+}
+
+void SliceEngine::setup_print_speed_table(Print& print)
+{
     Model::setPrintSpeedTable(m_config, print.config());
 }
 
