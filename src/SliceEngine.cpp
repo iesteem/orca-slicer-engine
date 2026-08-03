@@ -2009,13 +2009,20 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
         {
             if (!inst->is_printable())
                 continue;
+            // ModelVolume::get_extruders() already excludes INVALID /
+            // NEGATIVE_VOLUME / SUPPORT_BLOCKER / SUPPORT_ENFORCER and returns
+            // the extruder(s) for both MODEL_PART and PARAMETER_MODIFIER
+            // volumes. Do NOT add an is_model_part() guard here — a model whose
+            // multi-colour assignment lives entirely in modifier volumes (e.g.
+            // "扭扭眼球玩具": normal_part extruder=0 + modifiers extruder=1..4)
+            // would otherwise collapse to a single extruder, triggering a
+            // wrong trim_filament_config_to_single() that strips the multi-colour
+            // config before slicing. This mirrors libslic3r's authoritative
+            // Print::object_extruders() (Print.cpp), which iterates mo->volumes
+            // without filtering modifiers.
             for (ModelVolume* vol : obj->volumes)
-            {
-                if (!vol->is_model_part())
-                    continue;
                 for (int eid : vol->get_extruders())
                     used_extruders.insert(eid);
-            }
         }
     }
 
