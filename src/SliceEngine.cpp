@@ -121,6 +121,18 @@ inline void overwrite_all_keys_from_except(DynamicPrintConfig& dst, const Dynami
 
 } // namespace
 
+// ----------------------------------------------------------------------------
+// File-local free-function forward declarations.
+//
+// These helpers do not touch any SliceEngine member state (pure input→output),
+// so they are kept as file-local `static` functions rather than members. They
+// are defined further down but declared here because call sites in member
+// functions appear before their definitions.
+// ----------------------------------------------------------------------------
+static void decode_one_plate_thumbnail(Slic3r::PlateData& pd);
+static bool  all_gcode_layers_valid(const PlateSliceResult& slice_result);
+static void  remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result);
+
 SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files)
     : m_cfg(cfg), m_temp_files(temp_files)
 {
@@ -1582,7 +1594,7 @@ void SliceEngine::decode_plate_thumbnails()
     }
 }
 
-void SliceEngine::decode_one_plate_thumbnail(PlateData& pd)
+static void decode_one_plate_thumbnail(PlateData& pd)
 {
     // PNG file signature (PNG spec section 5.2, first 8 bytes are fixed).
     static constexpr unsigned char PNG_SIGNATURE[] =
@@ -2845,7 +2857,10 @@ void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResu
     }
 }
 
-bool SliceEngine::all_gcode_layers_valid(const PlateSliceResult& slice_result) const
+// Guard: returns true when every G-code layer is valid, i.e. export_gcode
+// produced no PRINT_EMPTY_GCODE_LAYERS issue. Pure query of slice_result -- no
+// member state. File-local free function.
+static bool all_gcode_layers_valid(const PlateSliceResult& slice_result)
 {
     // EmptyGcodeLayers means the plate has no valid layers; the G-code file
     // exists but is effectively empty. export_gcode pushes this issue during
@@ -2858,7 +2873,12 @@ bool SliceEngine::all_gcode_layers_valid(const PlateSliceResult& slice_result) c
     return true;
 }
 
-void SliceEngine::remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
+// Remove the G-code file produced for a plate whose layers are all invalid
+// (empty-layer plate) -- the file is unusable, so delete it rather than ship it.
+// Only removes the file (plate_id is just for the log line); issues stay in
+// slice_result for finalise_plate_result + build_statistics to collect. File-local
+// free function: no member state.
+static void remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
 {
     boost::filesystem::remove(slice_result.gcode_path);
     BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)

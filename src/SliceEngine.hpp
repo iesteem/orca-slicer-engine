@@ -270,13 +270,6 @@ private:
      */
     void decode_plate_thumbnails();
 
-    // Decode a single plate's thumbnail PNG from disk into
-    // PlateData::plate_thumbnail.pixels. Runs the full trust-boundary
-    // validation chain (path extension, canonicalisation under system temp
-    // root, size bounds, PNG magic, decode). On any failure, leaves
-    // plate_thumbnail in its prior empty state. Used by decode_plate_thumbnails.
-    void decode_one_plate_thumbnail(Slic3r::PlateData& pd);
-
     // Run the full slicing pipeline for a single plate: filter instances, check
     // build volume, slice, export G-code, and post-process. Results are stored
     // in m_plate_results[plate_id].
@@ -437,20 +430,6 @@ private:
     // these values match the gcode headers and let downstream stats — which run post-slice
     // with no Print in scope — read slice-accurate values instead of the un-merged m_config.
     void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
-
-    // Guard: returns true when every G-code layer is valid, i.e. export_gcode
-    // produced no PRINT_EMPTY_GCODE_LAYERS issue. Pure query -- does not mutate
-    // state. `!all_gcode_layers_valid` is logically equivalent to "some layer is
-    // empty", which is what the call-site discard path checks.
-    bool all_gcode_layers_valid(const PlateSliceResult& slice_result) const;
-
-    // Remove the G-code file produced for a plate whose layers are all invalid
-    // (empty-layer plate) -- the file is unusable, so delete it rather than
-    // ship it. Only removes the file (plate_id is just for the log line);
-    // issues stay in slice_result for finalise_plate_result + build_statistics
-    // to collect, matching the normal path. Named after its single side effect
-    // so the call site shows the action explicitly.
-    void remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result);
 
     // Post-slicing analysis: extract filament usage, compute cost, embed
     // thumbnails, and collect per-plate issues into result.issues.
