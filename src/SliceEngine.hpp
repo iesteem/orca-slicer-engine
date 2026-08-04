@@ -431,11 +431,11 @@ private:
     // EmptyGcodeLayers; the cloud engine flags the plate but keeps going.
     void collect_print_warnings(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
-    // Snapshot the post-trim filament colour/type, nozzle diameter, filament
-    // diameter/density from print.config() into result. print.config() reflects
-    // the merged config the slicer actually applied (single-extruder plates are
-    // trim-remapped), so these values match the gcode headers and let downstream
-    // stats compute length/weight correctly instead of reading un-trimmed m_config.
+    // Snapshot filament colour/type, nozzle diameter, filament diameter/density from
+    // print.config() into result. print.config() is the merged config the slicer actually
+    // applied (m_config + backfill + per-plate override, normalised by print.apply()), so
+    // these values match the gcode headers and let downstream stats — which run post-slice
+    // with no Print in scope — read slice-accurate values instead of the un-merged m_config.
     void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
 
     // Guard: returns true when every G-code layer is valid, i.e. export_gcode

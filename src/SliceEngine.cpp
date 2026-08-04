@@ -2750,11 +2750,15 @@ void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceR
 
 void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResult& result)
 {
-    // print.config() reflects the post-apply merged config the slicer used. For a
-    // single-extruder plate it has been trim-remapped (the real slot's values moved
-    // to index 0) -- the same values written to the gcode "; filament_colour" /
-    // "; filament_type" headers. Stash by value so downstream stats/export read the
-    // slice-correct values instead of the un-trimmed m_config.
+    // print.config() is the merged config the slicer actually applied: m_config plus
+    // FullPrintConfig::defaults() backfill plus per-plate overrides, normalised by
+    // print.apply(). This is the source of truth for the "; filament_colour" /
+    // "; filament_type" headers emitted in the G-code. The downstream stats/export
+    // consumers (populate_plate_data_for_export, assemble_plate_stats) run post-slice
+    // with no Print object in scope, so the only way they can read print.config() is
+    // via this snapshot. m_config itself is NOT equivalent — it predates apply(), so
+    // it lacks the backfill/override normalisation and can diverge even without any
+    // per-extruder remap. Stash by value so consumers read the slice-accurate values.
     if (print.config().has("filament_colour")) {
         const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
         if (fc) result.filament_colours = fc->values;
@@ -2763,9 +2767,10 @@ void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResu
         const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
         if (ft) result.filament_types = ft->values;
     }
-    // Same rationale as colours/types: capture the post-trim nozzle / filament
-    // diameters / densities so downstream stats compute length/weight against the
-    // values the slicer actually used, not the un-trimmed m_config.
+    // Same rationale as colours/types: snapshot the nozzle / filament diameters /
+    // densities from the post-apply print.config() so downstream stats compute
+    // length/weight against the values the slicer actually used, not the un-merged
+    // m_config.
     if (print.config().has("nozzle_diameter")) {
         const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
         if (nd) result.nozzle_diameters = nd->values;
@@ -3109,7 +3114,7 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         pd->gcode_file = result.gcode_path;
         pd->is_sliced_valid = true;
         pd->printer_model_id = printer_model_id;
-        // Per-plate nozzle string: prefer the post-trim snapshot (matches the single value
+        // Per-plate nozzle string: prefer the snapshot (the post-apply print.config() value
         // the slicer actually used on this plate), fall back to the raw m_config N-slot string.
         pd->nozzle_diameters = !result.nozzle_diameters.empty()
                                    ? join_nozzles(result.nozzle_diameters)
@@ -3136,16 +3141,18 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         for (auto& info : pd->slice_filaments_info)
         {
             size_t idx = static_cast<size_t>(info.id);
-            // Prefer the post-trim types captured at slice time (result.filament_types),
-            // mirroring the colour handling above. m_config is the raw pre-trim array, whose
-            // index 0 may point at a different slot after single-extruder remap.
+            // Prefer the types captured at slice time (result.filament_types), which mirror
+            // the post-apply print.config() values written to the G-code header. m_config is
+            // the raw pre-apply array, which lacks backfill/per-plate overrides and (on a
+            // single-extruder plate) may have its index 0 point at a different slot.
             if (idx < result.filament_types.size())
                 info.type = result.filament_types[idx];
             else if (filament_types && idx < filament_types->values.size())
                 info.type = filament_types->values[idx];
-            // Use the post-trim colours captured at slice time (result.filament_colours),
-            // which match the G-code header. m_config holds the raw pre-trim array, whose
-            // index 0 may point at a different slot after single-extruder remap.
+            // Use the colours captured at slice time (result.filament_colours), which match
+            // the G-code header. m_config holds the raw pre-apply array, which lacks
+            // backfill/per-plate overrides and (on a single-extruder plate) may have its
+            // index 0 point at a different slot.
             if (idx < result.filament_colours.size())
                 info.color = result.filament_colours[idx];
             else if (filament_colors && idx < filament_colors->values.size())
@@ -3266,9 +3273,10 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
     plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
 
-    // Prefer the post-trim diameters/densities captured at slice time (result.filament_*),
-    // which match what the slicer applied. gcode_result mirrors the same merged config but
-    // is kept as a fallback for paths that don't populate the snapshot (e.g. failed plates).
+    // Prefer the diameters/densities captured at slice time (result.filament_*), which
+    // mirror the post-apply print.config() the slicer applied. gcode_result mirrors the
+    // same merged config but is kept as a fallback for paths that don't populate the
+    // snapshot (e.g. failed plates).
     // Note: result.filament_* are std::vector<double> (from ConfigOptionFloats) while
     // gcode_result.filament_* are std::vector<float> (libslic3r GCodeProcessorResult), so the
     // snapshot-vs-fallback choice must stay as a runtime branch, not a ?: over mismatched types.
@@ -3329,9 +3337,9 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.model_filament_g =
         plate_stats.total_filament_g - total_support_g - total_flush_g - total_wipe_tower_g;
 
-    // Prefer the post-trim nozzle diameters captured at slice time; fall back to the raw
-    // m_config (which on a single-extruder plate still has N slots) for paths that never
-    // populated the snapshot.
+    // Prefer the nozzle diameters captured at slice time (the post-apply print.config()
+    // values); fall back to the raw m_config (which still has N slots) for paths that
+    // never populated the snapshot.
     if (!result.nozzle_diameters.empty())
     {
         plate_stats.nozzle_diameters = result.nozzle_diameters;
@@ -3349,16 +3357,16 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
         m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
 
     // Filament colours must match what was actually used at slice time, not the raw
-    // m_config.  prepare_merged_config_for_plate may trim a multi-filament config down
-    // to the single extruder a plate uses (remap slot keep_idx → 0), so m_config's
-    // index 0 can point at a different colour than the one in the emitted G-code.
-    // result.filament_colours holds the post-trim values captured in export_gcode from
-    // print.config() (which mirrors the merged_config the slicer really applied) — read
-    // from there first, fall back to m_config.
+    // m_config. prepare_merged_config_for_plate builds the per-plate merged config
+    // (m_config + backfill + per-plate override, plus a possible single-extruder remap
+    // that keeps slot keep_idx → 0), so m_config's index 0 can point at a different
+    // colour than the one in the emitted G-code. result.filament_colours holds the
+    // post-apply values captured in export_gcode from print.config() — read from there
+    // first, fall back to m_config.
     const auto& result_colors = result.filament_colours;
-    // Post-trim filament types captured at slice time — same rationale as the colours:
-    // m_config's index 0 may point at a different slot after single-extruder remap, so read
-    // the values that actually went into the G-code first, fall back to m_config.
+    // Filament types captured at slice time — same rationale as the colours: m_config's
+    // index 0 may point at a different slot after single-extruder remap, so read the
+    // values that actually went into the G-code first, fall back to m_config.
     const auto& result_types = result.filament_types;
 
     for (const auto& [extruder_id, used_g] : plate_stats.filament_used_g)
