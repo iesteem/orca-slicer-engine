@@ -28,14 +28,13 @@
 #include "libslic3r/FilamentHotBedNozzleRules.hpp"
 
 #include "PresetRollback.hpp"
+#include "PlateGrid.hpp"
+#include "SlicingDeadline.hpp"
 
 using namespace Slic3r;
 
 namespace
 {
-
-// 1/5, same as GUI's LOGICAL_PART_PLATE_GAP
-constexpr double LOGICAL_PART_PLATE_GAP = 0.2;
 
 // Check if a plate result indicates a wipe tower tool change mismatch.
 // CGAL/float differences on some platforms cause non-consecutive extruder
@@ -1858,18 +1857,13 @@ Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id)
     double plate_width  = bbox.size().x();
     double plate_depth  = bbox.size().y();
 
-    // Compute plate origin using the same grid layout formula as the desktop GUI
-    // (PartPlate::update_plate_layout_arrange). Each plate occupies a cell in a
-    // row-major grid with LOGICAL_PART_PLATE_GAP spacing between plates.
+    // Grid-layout origin (row-major, LOGICAL_PART_PLATE_GAP spacing). Pure
+    // arithmetic lives in orca::compute_plate_origin (unit-tested); this thin
+    // wrapper only bridges m_config/m_plate_data to its arguments.
     int total_plates = static_cast<int>(m_plate_data.size());
-    int cols = compute_column_count(total_plates);
-    int row = plate_id / cols;
-    int col = plate_id % cols;
+    orca::PlateOrigin o = orca::compute_plate_origin(plate_id, total_plates, plate_width, plate_depth);
 
-    double origin_x = col * (plate_width * (1.0 + LOGICAL_PART_PLATE_GAP));
-    double origin_y = -row * (plate_depth * (1.0 + LOGICAL_PART_PLATE_GAP));
-
-    return Vec3d(origin_x, origin_y, 0.0);
+    return Vec3d(o.x, o.y, 0.0);
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)
@@ -2100,7 +2094,12 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
 
 bool SliceEngine::within_slicing_deadline(int plate_id)
 {
-    if (!m_has_timeout || std::chrono::steady_clock::now() <= m_timeout_deadline)
+    // Pure time comparison lives in orca::deadline_expired (unit-tested). The
+    // m_has_timeout guard is essential: with no timeout requested,
+    // m_timeout_deadline is a default (epoch) time_point and must never trigger
+    // an expiry. Sample now() once to match the original single-read semantics.
+    auto now = std::chrono::steady_clock::now();
+    if (!(m_has_timeout && orca::deadline_expired(now, m_timeout_deadline)))
         return true;
 
     BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);

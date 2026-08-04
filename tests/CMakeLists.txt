@@ -12,16 +12,23 @@
 #   cmake --build <build-dir> --target engine-tests
 #   ctest --test-dir <build-dir> -R engine-tests --output-on-failure
 #
-# These tests only exercise utility functions and inline factory helpers.
-# They do NOT depend on libslic3r or any heavy dependencies. Linking against
-# Utils.cpp is needed for format_time_hhmmss() and generate_output_path(),
-# both of which live in Utils.cpp.
+# These tests only exercise pure helpers that do NOT depend on libslic3r:
+#   - Utils.cpp:          format_time_hhmmss(), generate_output_path()
+#   - Types.hpp:          Issue factory functions (make_error/warning/tip)
+#   - PlateGrid.hpp:      compute_column_count(), plate_grid_cell(),
+#                         compute_plate_origin() (extracted from SliceEngine)
+#   - SlicingDeadline.hpp: deadline_expired() (extracted from SliceEngine)
+# Utils.cpp is the only .cpp linked (for format_time_hhmmss/generate_output_path);
+# the rest are header-only inline. gc-sections drops Utils.cpp's unused
+# libslic3r references so the test binary stays free of libslic3r.
 # ============================================================================
 
 add_executable(engine-tests
     catch2/catch_amalgamated.cpp
     test_utils.cpp
     test_types.cpp
+    test_plate_grid.cpp
+    test_slicing_deadline.cpp
 )
 
 # Utils.cpp also contains resize_thumbnail()/format_exception_context() which
