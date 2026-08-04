@@ -76,6 +76,19 @@ if(ORCA_STATIC)
 
     target_link_libraries(orca-slice-engine PRIVATE ${ORCA_STATIC_LIBS})
 
+    # Extract the boost static archives from ORCA_STATIC_LIBS so the unit-test
+    # target (which does NOT link the full engine) can reuse the same private
+    # boost build without hard-coding absolute paths. boost.log pulls in
+    # boost.thread -> chrono -> atomic transitively, so grab the whole boost
+    # set rather than a minimal subset (link order within one list is handled
+    # by the linker's rescan of static archives).
+    set(ORCA_STATIC_BOOST_LIBS "")
+    foreach(_lib IN LISTS ORCA_STATIC_LIBS)
+        if(_lib MATCHES "libboost_.*\\.a$")
+            list(APPEND ORCA_STATIC_BOOST_LIBS "${_lib}")
+        endif()
+    endforeach()
+
     message(STATUS "ORCA_STATIC enabled — single static executable")
 endif()
 
@@ -154,3 +167,13 @@ endif()
 endif()
 
 message(STATUS "orca-slice-engine configured (C API consumer)")
+
+# ==================================================================
+# Unit tests — independent of the engine targets above. Only exercises
+# the utility/inline-factory code in src/, links boost (not libslic3r).
+# Build & run:
+#   cmake --build build-static --target engine-tests
+#   ctest --test-dir build-static -R engine-tests --output-on-failure
+# ==================================================================
+enable_testing()
+add_subdirectory(tests)

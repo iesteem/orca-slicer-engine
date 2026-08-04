@@ -2,51 +2,58 @@
 # Unit tests for the cloud slicing engine
 # ============================================================================
 #
-# Usage:
-#   1. Download Catch2 single-header:
-#        wget https://github.com/catchorg/Catch2/releases/download/v3.5.2/catch_amalgamated.hpp
-#      Place it alongside this file or in a location added to the include path.
+# Catch2 v3.5.2 is vendored as the single-header amalgamation under
+# tests/catch2/ (catch_amalgamated.hpp + catch_amalgamated.cpp). The .cpp
+# translation unit unconditionally supplies `main()`, so no CATCH_CONFIG_MAIN
+# define or separate test_main.cpp is needed — test files just include
+# <catch_amalgamated.hpp>.
 #
-#   2. Add to the parent CMakeLists.txt (not done automatically):
-#        add_subdirectory(tests)
+# Build and run:
+#   cmake --build <build-dir> --target engine-tests
+#   ctest --test-dir <build-dir> -R engine-tests --output-on-failure
 #
-#   3. Build and run:
-#        cmake --build <build-dir> --target engine-tests
-#        ctest --test-dir <build-dir> -R engine-tests
-#
-# NOTE: The main CMakeLists.txt must be configured with ORCASLICER_BUILD_DIR
-#       and ORCASLICER_SOURCE_DIR for the tests to link against libslic3r.a
-#       and its dependencies.  The ENGINE_INCLUDE_DIRS variable must also be
-#       propagated (currently it is scoped to the parent directory).
+# These tests only exercise utility functions and inline factory helpers.
+# They do NOT depend on libslic3r or any heavy dependencies. Linking against
+# Utils.cpp is needed for format_time_hhmmss() and generate_output_path(),
+# both of which live in Utils.cpp.
 # ============================================================================
 
-enable_testing()
-
 add_executable(engine-tests
-    test_main.cpp
+    catch2/catch_amalgamated.cpp
     test_utils.cpp
     test_types.cpp
 )
 
+# Utils.cpp also contains resize_thumbnail()/format_exception_context() which
+# reference libslic3r symbols (ThumbnailData, ModelObject). The tests only
+# exercise the pure helpers (format_time_hhmmss, compute_column_count,
+# generate_output_path), so drop unreferenced functions at link time via
+# --gc-sections instead of dragging in all of libslic3r.
+target_compile_options(engine-tests PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(engine-tests PRIVATE -Wl,--gc-sections)
+
 target_include_directories(engine-tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/catch2     # <catch_amalgamated.hpp>
+    ${CMAKE_CURRENT_SOURCE_DIR}            # test_utils.hpp (if added later)
+    ${CMAKE_SOURCE_DIR}/src                # Utils.hpp, Types.hpp
 )
 
-# These tests only exercise utility functions and inline factory helpers.
-# They do NOT depend on libslic3r or any heavy dependencies.
-# Linking against Utils.cpp is needed for format_time_hhmmss() and
-# generate_output_path(), both of which live in Utils.cpp.
+# Boost headers + archives (Utils.hpp includes <boost/filesystem.hpp>). On this
+# host Boost is built privately under the OrcaSlicer deps tree; reuse the same
+# headers and archives the static engine uses (captured in StaticConfig.cmake),
+# so the test target never hard-codes absolute paths.
+if(ORCA_STATIC)
+    target_include_directories(engine-tests PRIVATE ${ORCA_STATIC_INCLUDES})
+    target_link_libraries(engine-tests PRIVATE ${ORCA_STATIC_BOOST_LIBS})
+else()
+    find_package(Boost REQUIRED COMPONENTS filesystem log log_setup)
+    target_link_libraries(engine-tests PRIVATE Boost::filesystem Boost::log Boost::log_setup)
+endif()
+
 target_sources(engine-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/Utils.cpp
 )
 
-target_link_libraries(engine-tests PRIVATE
-    boost_filesystem
-    boost_log
-    boost_log_setup
-    boost_date_time
-    pthread
-)
+target_link_libraries(engine-tests PRIVATE pthread)
 
 add_test(NAME engine-tests COMMAND engine-tests)
