@@ -2133,6 +2133,59 @@ bool SliceEngine::prepare_plate_print(int plate_id, Print& print, const Vec3d& o
     return true;
 }
 
+// Normalise flush_volumes_matrix / flush_volumes_vector to match the actual
+// filament slot count. 3MF files authored by editing the AMS colour palette
+// sometimes ship a flush matrix whose dimension no longer matches the filament
+// count (e.g. a 3x3 matrix with 4 filament slots). The desktop GUI repairs this
+// in PresetBundle::update_multi_material_filament_presets; the headless engine
+// has no GUI, so it must do the same here. Without it, Print::_make_wipe_tower
+// (libslic3r) hits its `filament_diameter.size() > sqrt(matrix.size())` guard,
+// skips wipe-tower/tool-ordering construction, and the subsequent skirt&brim
+// step dereferences an empty ToolOrdering -> SIGSEGV. Ported from
+// PresetBundle.cpp:3650-3675 (upstream OrcaSlicer).
+static void normalize_flush_volumes_matrix(DynamicPrintConfig& config)
+{
+    constexpr double kEps = 1e-4; // matches libslic3r EPSILON (libslic3r.h)
+
+    const auto* fd_opt = config.option<ConfigOptionFloats>("filament_diameter");
+    if (!fd_opt) return;
+    const size_t num_filaments = fd_opt->values.size();
+    if (num_filaments == 0) return;
+
+    auto* m_opt = config.option<ConfigOptionFloats>("flush_volumes_matrix");
+    if (!m_opt) return; // absent → backfill already supplied the 4x4 default
+    const std::vector<double> old_matrix = m_opt->values;
+    const size_t old_n = static_cast<size_t>(std::sqrt(static_cast<double>(old_matrix.size())) + kEps);
+    if (num_filaments == old_n) return;
+
+    // Resize flush_volumes_vector to 2*num_filaments (default 140. per upstream).
+    auto* v_opt = config.option<ConfigOptionFloats>("flush_volumes_vector");
+    std::vector<double> filaments = v_opt ? v_opt->values : std::vector<double>{};
+    while (filaments.size() < 2 * num_filaments) {
+        filaments.push_back(filaments.size() > 1 ? filaments[0] : 140.);
+        filaments.push_back(filaments.size() > 1 ? filaments[1] : 140.);
+    }
+    while (filaments.size() > 2 * num_filaments) {
+        filaments.pop_back();
+        filaments.pop_back();
+    }
+
+    // Rebuild the matrix to num_filaments x num_filaments: copy old pairs that
+    // still fit, synthesise the rest (diagonal=0, off-diagonal=load+unload).
+    std::vector<double> new_matrix;
+    new_matrix.reserve(num_filaments * num_filaments);
+    for (size_t i = 0; i < num_filaments; ++i)
+        for (size_t j = 0; j < num_filaments; ++j) {
+            if (i < old_n && j < old_n)
+                new_matrix.push_back(old_matrix[i * old_n + j]);
+            else
+                new_matrix.push_back(i == j ? 0. : filaments[2 * i] + filaments[2 * j + 1]);
+        }
+
+    m_opt->values = std::move(new_matrix);
+    if (v_opt) v_opt->values = std::move(filaments);
+}
+
 DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
 {
     // Multi-extruder / wipe-tower handling is delegated entirely to libslic3r.
@@ -2189,6 +2242,13 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
             break;
         }
     }
+
+    // Repair a flush_volumes_matrix whose dimension doesn't match the filament
+    // slot count (common in 3MFs whose AMS palette was edited). Mirrors the
+    // desktop GUI's PresetBundle::update_multi_material_filament_presets, which
+    // the headless engine never runs. See normalize_flush_volumes_matrix.
+    normalize_flush_volumes_matrix(merged_config);
+
     return merged_config;
 }
 
