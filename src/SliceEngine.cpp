@@ -30,6 +30,8 @@
 #include "PresetRollback.hpp"
 #include "PlateGrid.hpp"
 #include "SlicingDeadline.hpp"
+#include "BuildVolumeClassify.hpp"
+#include "ValidateClassify.hpp"
 
 using namespace Slic3r;
 
@@ -1973,64 +1975,22 @@ void SliceEngine::push_build_volume_issues(int plate_id, const std::string& obje
     // itself already concluded the instance collides with the volume boundary
     // (calc_print_volume_state); here we classify WHICH axis, so the JSON
     // consumer can act (raise / lower / reposition) without re-deriving it.
-    constexpr double eps = BuildVolume::SceneEpsilon;
-    const double max_z = build_volume.printable_height();
+    //
+    // Pure classification lives in orca::classify_build_volume_issues
+    // (unit-tested). This thin wrapper only bridges the libslic3r types
+    // (BoundingBoxf3 / BuildVolume) to the raw-double inputs the pure function
+    // expects, then folds the results into m_stats.issues.
     const BoundingBoxf bed2d = build_volume.bounding_volume2d();
-
-    const auto fmt_mm = [](double v) {
-        // One decimal matches desktop precision; guard against -0.0.
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.1f", v);
-        return std::string(buf);
-    };
-
-    // --- Z too high (top exceeds printable height) ---
-    if (bbox.max.z() > max_z + eps)
-    {
-        Issue issue = make_error(
-            plate_id, "BUILD_VOLUME_TOO_HIGH",
-            "Object \"" + object_name + "\" top is at Z=" + fmt_mm(bbox.max.z()) +
-                "mm, exceeding the printable height of " + fmt_mm(max_z) + "mm",
-            object_name,
-            "Lower the object's Z position, reduce its height, or scale it down so the top fits under the print height.");
-        issue.z_height = bbox.max.z(); // offending top Z
+    auto issues = orca::classify_build_volume_issues(
+        plate_id, object_name,
+        bbox.min.x(), bbox.max.x(),
+        bbox.min.y(), bbox.max.y(),
+        bbox.min.z(), bbox.max.z(),
+        build_volume.printable_height(),
+        bed2d.min.x(), bed2d.max.x(),
+        bed2d.min.y(), bed2d.max.y());
+    for (auto& issue : issues)
         m_stats.issues.push_back(std::move(issue));
-    }
-
-    // --- Z below bed (bottom sinks below the print bed) ---
-    if (bbox.min.z() < -eps)
-    {
-        Issue issue = make_error(
-            plate_id, "BUILD_VOLUME_BELOW_BED",
-            "Object \"" + object_name + "\" bottom is at Z=" + fmt_mm(bbox.min.z()) +
-                "mm, below the print bed surface (Z=0)",
-            object_name,
-            "Raise the object so its bottom sits on or above the bed, or fix the model origin in CAD.");
-        issue.z_height = bbox.min.z(); // offending bottom Z
-        m_stats.issues.push_back(std::move(issue));
-    }
-
-    // --- XY outside the bed footprint ---
-    if (bbox.min.x() < bed2d.min.x() - eps || bbox.max.x() > bed2d.max.x() + eps ||
-        bbox.min.y() < bed2d.min.y() - eps || bbox.max.y() > bed2d.max.y() + eps)
-    {
-        std::string detail;
-        if (bbox.min.x() < bed2d.min.x() - eps)
-            detail += "X=" + fmt_mm(bbox.min.x()) + " < " + fmt_mm(bed2d.min.x()) + "; ";
-        if (bbox.max.x() > bed2d.max.x() + eps)
-            detail += "X=" + fmt_mm(bbox.max.x()) + " > " + fmt_mm(bed2d.max.x()) + "; ";
-        if (bbox.min.y() < bed2d.min.y() - eps)
-            detail += "Y=" + fmt_mm(bbox.min.y()) + " < " + fmt_mm(bed2d.min.y()) + "; ";
-        if (bbox.max.y() > bed2d.max.y() + eps)
-            detail += "Y=" + fmt_mm(bbox.max.y()) + " > " + fmt_mm(bed2d.max.y()) + "; ";
-        if (!detail.empty() && detail.back() == ' ')
-            detail.pop_back(); // trim trailing "; "
-        m_stats.issues.push_back(make_error(
-            plate_id, "BUILD_VOLUME_OUTSIDE_XY",
-            "Object \"" + object_name + "\" extends beyond the bed footprint (" + detail + ")",
-            object_name,
-            "Reposition the object within the bed area, or scale it down to fit."));
-    }
 }
 
 void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
@@ -2342,99 +2302,55 @@ void SliceEngine::emit_validate_warning(int plate_id, const StringObjectExceptio
     auto [obj_name, opt_hint] = format_exception_context(warning);
     BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
 
-    std::string wcode;
-    switch (warning.type)
+    // Pure classification (warning-path code table) lives in
+    // orca::classify_validate_exception (unit-tested). NOTE: the ORGANIC type
+    // escalates to error level on the warning path too.
+    auto cls = orca::classify_validate_exception(static_cast<int>(warning.type), /*is_error_path=*/false, warning.string);
+    std::string message = cls.fixed_message.empty() ? (warning.string + opt_hint) : cls.fixed_message;
+
+    if (cls.level == IssueLevel::error)
     {
-    case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-        wcode = "PRINT_VALIDATE_WARNING_FILAMENT_BED_MISMATCH";
-        break;
-    case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-        wcode = "PRINT_VALIDATE_WARNING_FILAMENT_TEMP_MISMATCH";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-        wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_SEQ";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-        wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_LAYER";
-        break;
-    case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-        wcode = "PRINT_VALIDATE_WARNING_LAYER_HEIGHT_LIMIT";
-        break;
-    case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
-        m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
-            "Organic supports do not support variable layer height. "
-            "Please disable variable layer height or switch to non-organic support type.",
-            obj_name,
-            "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
+        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
+        m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
-        break;
-    default:
-        wcode = "PRINT_VALIDATE_WARNING";
-        break;
     }
-    if (!wcode.empty())
-        m_stats.issues.push_back(make_warning(plate_id, wcode, warning.string + opt_hint, obj_name));
+    else
+    {
+        m_stats.issues.push_back(make_warning(plate_id, cls.code, message, obj_name));
+    }
 }
 
 bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException& err)
 {
     auto [obj_name, opt_hint] = format_exception_context(err);
-    // STRING_EXCEPT_NOT_DEFINED (type 0) is used by the library for generic
-    // checks (e.g. exceeds-build-volume-height) that the desktop GUI treats
-    // as non-fatal warnings. Match that behaviour.
-    if (err.type == STRING_EXCEPT_NOT_DEFINED)
-    {
-        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-        if (err.string.find("Variable layer height is not supported with Organic supports") != std::string::npos)
-        {
-            m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
-                "Organic supports do not support variable layer height. "
-                "Please disable variable layer height or switch to non-organic support type.",
-                obj_name,
-                "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-        }
-        else
-        {
-            m_stats.issues.push_back(make_warning(plate_id, "PRINT_VALIDATE_WARNING",
-                                                  err.string + opt_hint, obj_name));
-        }
-        // NOT_DEFINED never aborts slicing — falls through to subsequent checks.
-        return true;
-    }
+    // Pure classification (error-path code table, NOT_DEFINED substring match,
+    // continue/abort contract) lives in orca::classify_validate_exception
+    // (unit-tested). This thin wrapper adds logging, Issue construction and the
+    // member side effects (m_any_error / set_error_type).
+    auto cls = orca::classify_validate_exception(static_cast<int>(err.type), /*is_error_path=*/true, err.string);
 
-    BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-    std::string ecode;
-    switch (err.type)
+    // NOT_DEFINED (continue_slicing=true) is logged at warning level, matching
+    // the original code; all other error-path types are logged at error level.
+    // (BOOST_LOG_TRIVIAL needs a literal severity name, so branch explicitly.)
+    if (cls.continue_slicing)
+        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+    else
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+
+    std::string message = cls.fixed_message.empty() ? (err.string + opt_hint) : cls.fixed_message;
+    if (cls.level == IssueLevel::error)
     {
-    case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-        ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH";
-        break;
-    case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-        ecode = "PRINT_VALIDATE_FILAMENT_TEMP_MISMATCH";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-        ecode = "PRINT_VALIDATE_OBJECT_COLLISION_SEQ";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-        ecode = "PRINT_VALIDATE_OBJECT_COLLISION_LAYER";
-        break;
-    case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-        ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
-        break;
-    case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
-        ecode = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
-        break;
-    default:
-        ecode = "PRINT_VALIDATE_ERROR";
-        break;
+        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
+        m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
     }
-    m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
-    m_any_error = true;
-    set_error_type(EXIT_PREPROCESS_ERROR);
-    return false;
+    else
+    {
+        m_stats.issues.push_back(make_warning(plate_id, cls.code, message, obj_name));
+    }
+    return cls.continue_slicing;
 }
 
 bool SliceEngine::check_print_by_object(int plate_id, Print& print)

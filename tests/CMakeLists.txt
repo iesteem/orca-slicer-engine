@@ -13,11 +13,13 @@
 #   ctest --test-dir <build-dir> -R engine-tests --output-on-failure
 #
 # These tests only exercise pure helpers that do NOT depend on libslic3r:
-#   - Utils.cpp:          format_time_hhmmss(), generate_output_path()
-#   - Types.hpp:          Issue factory functions (make_error/warning/tip)
-#   - PlateGrid.hpp:      compute_column_count(), plate_grid_cell(),
-#                         compute_plate_origin() (extracted from SliceEngine)
-#   - SlicingDeadline.hpp: deadline_expired() (extracted from SliceEngine)
+#   - Utils.cpp:            format_time_hhmmss(), generate_output_path()
+#   - Types.hpp:            Issue factory functions (make_error/warning/tip)
+#   - PlateGrid.hpp:        compute_column_count(), plate_grid_cell(),
+#                           compute_plate_origin() (extracted from SliceEngine)
+#   - SlicingDeadline.hpp:  deadline_expired() (extracted from SliceEngine)
+#   - BuildVolumeClassify.hpp: classify_build_volume_issues() (from SliceEngine)
+#   - ValidateClassify.hpp: classify_validate_exception() (from SliceEngine)
 # Utils.cpp is the only .cpp linked (for format_time_hhmmss/generate_output_path);
 # the rest are header-only inline. gc-sections drops Utils.cpp's unused
 # libslic3r references so the test binary stays free of libslic3r.
@@ -29,6 +31,8 @@ add_executable(engine-tests
     test_types.cpp
     test_plate_grid.cpp
     test_slicing_deadline.cpp
+    test_build_volume_classify.cpp
+    test_validate_classify.cpp
 )
 
 # Utils.cpp also contains resize_thumbnail()/format_exception_context() which
