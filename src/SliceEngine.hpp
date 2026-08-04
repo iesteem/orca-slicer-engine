@@ -44,11 +44,11 @@ struct PlateSliceResult
     double total_used_filament = 0.0;
     double total_cost = 0.0;
     std::map<size_t, double> filament_volumes; // per extruder
-    std::vector<std::string> filament_colours; // post-trim colours actually used (matches G-code header)
-    std::vector<std::string> filament_types;   // post-trim types actually used (matches G-code header)
-    std::vector<double> nozzle_diameters;      // post-trim nozzle diameters (matches what slicer used)
-    std::vector<double> filament_diameters;    // post-trim filament diameters (matches G-code generation)
-    std::vector<double> filament_densities;    // post-trim filament densities (matches G-code generation)
+    std::vector<std::string> filament_colours; // colours actually used (matches G-code header)
+    std::vector<std::string> filament_types;   // types actually used (matches G-code header)
+    std::vector<double> nozzle_diameters;      // nozzle diameters actually used (matches what slicer used)
+    std::vector<double> filament_diameters;    // filament diameters actually used (matches G-code generation)
+    std::vector<double> filament_densities;    // filament densities actually used (matches G-code generation)
     std::vector<Issue> issues; // collected issues for this plate
 };
 
@@ -348,18 +348,11 @@ private:
     void setup_extruder_params(Slic3r::Print& print);
 
     // Build the per-plate merged DynamicPrintConfig consumed by print.apply().
-    // Starts from m_config, then trims filament arrays down to a single
-    // extruder when the model only uses one (avoids wipe-tower tool-change
-    // mismatch on multi-filament configs paired with single-extruder geometry),
-    // and finally layers per-plate config overrides (curr_bed_type,
-    // print_sequence, …) from PlateData on top.
+    // Starts from m_config and layers per-plate config overrides (curr_bed_type,
+    // print_sequence, …) from PlateData on top. Multi-extruder / wipe-tower
+    // handling is delegated to libslic3r's ToolOrdering — no filament trimming
+    // is performed here (see prepare_merged_config_for_plate impl for rationale).
     Slic3r::DynamicPrintConfig prepare_merged_config_for_plate(int plate_id);
-
-    // Trim the multi-filament arrays in `config` down to a single slot, keeping
-    // the data for `keep_idx` (0-based) at index 0. Called by
-    // prepare_merged_config_for_plate when the plate uses a single extruder.
-    // `keep_idx` must already be in [0, num_filaments); the caller validates.
-    void trim_filament_config_to_single(Slic3r::DynamicPrintConfig& config, int keep_idx) const;
 
     // Run Print::validate and classify all resulting warnings and errors into
     // m_stats.issues. Returns false if any validation error is fatal.

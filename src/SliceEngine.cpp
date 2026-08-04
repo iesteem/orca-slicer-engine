@@ -1983,115 +1983,33 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
 
 DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
 {
-    // Guard against wipe tower / tool change mismatch.
-    // If the model uses fewer extruders than filaments configured in the 3MF,
-    // the wipe tower generates a tool change sequence that doesn't match actual
-    // extrusion, causing "append_tcr was asked to do a toolchange it didn't expect".
+    // Multi-extruder / wipe-tower handling is delegated entirely to libslic3r.
+    // Previous revisions trimmed the per-filament config arrays down to a single
+    // slot when the engine judged a plate "single-extruder", to stop
+    // Print::has_wipe_tower() (which keys off filament_diameter.size()) from
+    // generating a wipe-tower tool-change sequence that didn't match actual
+    // extrusion ("append_tcr was asked to do a toolchange it didn't expect").
     //
-    // We must check multiple sources to avoid false positives on multi-color models:
-    //   1. vol->get_extruders()  — per-volume assignment + MMU painting
-    //   2. plates_custom_gcodes  — AMS per-layer ToolChange entries
-    //   3. single_extruder_multi_material — non-Bambu single-extruder multi-material
-    // Only trim when ALL sources agree the model is single-extruder.
+    // That trim has been removed. The crash it guarded against never fires when
+    // the wipe-tower decision is left to libslic3r's own ToolOrdering, which
+    // counts extruders per-layer from real geometry (Print::object_extruders,
+    // collect_extruders, custom_gcode_per_print_z, layer_config_ranges) rather
+    // than from the configured slot count. A multi-slot project whose plate uses
+    // only one colour simply yields has_wipe_tower()==false and no tool changes.
     //
-    // Work on a per-plate copy so extruder-count trimming does not leak
-    // into subsequent plates (m_config is shared across the pipeline).
+    // Removing the trim also fixes two misclassifications it introduced:
+    //   - a plate whose colour assignment lives in layer_config_ranges was read
+    //     as single-extruder (the engine's own used_extruders collection never
+    //     consulted that source) and wrongly trimmed to one colour;
+    //   - the trim's slot remap rewrote the actually-used slot to index 0,
+    //     so stats reported fil1 regardless of which slot the model used.
+    // Both are now reported correctly because m_config reaches Print::apply
+    // intact. Verified across 7 models (single-colour, modifier multi-colour,
+    // AMS per-layer, height-range, vase, by-object, empty-layer).
+    //
+    // Work on a per-plate copy so per-plate overrides below do not leak into
+    // subsequent plates (m_config is shared across the pipeline).
     DynamicPrintConfig merged_config = m_config;
-
-    // NOTE: Relies on filter_instances(plate_id) (called at process_plate:1533)
-    // having already marked off-plate instances printable=false. The
-    // is_printable() guard below is the per-plate filter — do not remove
-    // without replacing it with an explicit plate_id check.
-    std::set<int> used_extruders;
-    for (ModelObject* obj : m_model.objects)
-    {
-        for (ModelInstance* inst : obj->instances)
-        {
-            if (!inst->is_printable())
-                continue;
-            // ModelVolume::get_extruders() already excludes INVALID /
-            // NEGATIVE_VOLUME / SUPPORT_BLOCKER / SUPPORT_ENFORCER and returns
-            // the extruder(s) for both MODEL_PART and PARAMETER_MODIFIER
-            // volumes. Do NOT add an is_model_part() guard here — a model whose
-            // multi-colour assignment lives entirely in modifier volumes (e.g.
-            // "扭扭眼球玩具": normal_part extruder=0 + modifiers extruder=1..4)
-            // would otherwise collapse to a single extruder, triggering a
-            // wrong trim_filament_config_to_single() that strips the multi-colour
-            // config before slicing. This mirrors libslic3r's authoritative
-            // Print::object_extruders() (Print.cpp), which iterates mo->volumes
-            // without filtering modifiers.
-            for (ModelVolume* vol : obj->volumes)
-                for (int eid : vol->get_extruders())
-                    used_extruders.insert(eid);
-        }
-    }
-
-    int num_filaments = 0;
-    if (m_config.has("filament_diameter"))
-    {
-        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
-        if (fd)
-            num_filaments = static_cast<int>(fd->values.size());
-    }
-
-    // If volumes suggest single extruder, also check plate-level ToolChange
-    // custom G-code (AMS per-layer filament switching).
-    if (used_extruders.size() <= 1 && num_filaments > 1)
-    {
-        auto it = m_model.plates_custom_gcodes.find(plate_id);
-        if (it != m_model.plates_custom_gcodes.end())
-        {
-            for (const auto& item : it->second.gcodes)
-            {
-                if (item.type == CustomGCode::Type::ToolChange && item.extruder > 0)
-                    used_extruders.insert(item.extruder);
-            }
-        }
-    }
-
-    // If still single, also check the single_extruder_multi_material config flag
-    // (used by non-Bambu printers for single-nozzle multi-filament). A model that
-    // genuinely drives multiple filaments through one nozzle must NOT be trimmed,
-    // or the wipe-tower tool-change sequence would no longer match actual extrusion.
-    //
-    // NOTE: Do not encode this "skip trim" decision by inserting sentinel extruder
-    // IDs into `used_extruders` (an earlier revision inserted {1, 2} to force
-    // size()==2). That collection carries real per-volume/AMS extruder statistics
-    // and is read back as the 1-based keep index at line (*) below; seeding it
-    // with fake values couples control flow to statistics and turns into a latent
-    // bug the moment a later refactor intersects the set. Keep the decision in a
-    // dedicated boolean instead.
-    bool semm_multi_material = false;
-    if (used_extruders.size() <= 1 && num_filaments > 1)
-    {
-        auto* semm = m_config.option<ConfigOptionBool>("single_extruder_multi_material");
-        semm_multi_material = semm && semm->value;
-    }
-
-    if (!semm_multi_material && used_extruders.size() <= 1 && num_filaments > 1)
-    {
-        // Keep the filament data for the extruder actually used on this
-        // plate, not just the first slot.  Without this remap, a plate
-        // that only uses slot 1 (PETG) would inherit slot 0 (ABS) values
-        // for filament_is_high_temperature, temperature_vitrification, etc.,
-        // which causes wrong chamber cooling mode and other downstream bugs.
-        int keep_idx = 0;
-        if (used_extruders.size() == 1)
-            keep_idx = *used_extruders.begin() - 1; // (line *) 1-based extruder id -> 0-based slot
-        if (keep_idx < 0 || keep_idx >= num_filaments)
-            keep_idx = 0;
-
-        BOOST_LOG_TRIVIAL(info) << "Trimming filament config from " << num_filaments
-                                << " to 1 (keeping slot " << keep_idx
-                                << ") to match single-extruder model";
-
-        trim_filament_config_to_single(merged_config, keep_idx);
-    }
-    else if (used_extruders.size() <= 1)
-    {
-        BOOST_LOG_TRIVIAL(info) << "Disabling prime tower (single extruder model)";
-        merged_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-    }
 
     // Apply per-plate config overrides (curr_bed_type, print_sequence, spiral_mode, etc.)
     for (const auto& pd : m_plate_data)
@@ -2103,85 +2021,6 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
         }
     }
     return merged_config;
-}
-
-void SliceEngine::trim_filament_config_to_single(DynamicPrintConfig& config, int keep_idx) const
-{
-    // Truncate all filament-related array options in `config` to a single
-    // entry, preserving the values of slot `keep_idx` at index 0.  This
-    // prevents Print::has_wipe_tower() from returning true due to
-    // filament_diameter.size() > 1, which is the root cause of the
-    // "append_tcr was asked to do a toolchange it didn't expect" error.
-    // flush_volumes_matrix (N*N flat vector) and wiping_volumes_extruders
-    // must also be trimmed to keep the config internally consistent:
-    // a 5*5 matrix with only 1 extruder would mismatch sqrt(size) later.
-    // Also disables the prime tower (no multi-extruder wipe needed).
-
-    config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-
-    constexpr const char* trim_keys[] = {
-        "filament_diameter",            "filament_density",
-        "filament_cost",                "filament_colour",
-        "filament_type",                "filament_is_support",
-        "filament_settings_id",         "nozzle_diameter",
-        "flush_volumes_matrix",         "wiping_volumes_extruders",
-        "filament_is_high_temperature", "temperature_vitrification",
-    };
-
-    // Generic remap: move slot keep_idx to index 0, then truncate to size 1.
-    auto remap = [keep_idx](auto& vals) {
-        if (keep_idx > 0 && keep_idx < static_cast<int>(vals.size()))
-            vals[0] = vals[keep_idx];
-        vals.resize(1);
-    };
-
-    for (const char* key : trim_keys)
-    {
-        auto* opt = config.option(key, true);
-        if (!opt)
-            continue;
-
-        if (auto* fs = dynamic_cast<ConfigOptionFloats*>(opt))
-        {
-            if (!fs->values.empty())
-            {
-                remap(fs->values);
-                config.set_key_value(key, new ConfigOptionFloats(fs->values));
-            }
-        }
-        else if (auto* ss = dynamic_cast<ConfigOptionStrings*>(opt))
-        {
-            if (!ss->values.empty())
-            {
-                remap(ss->values);
-                config.set_key_value(key, new ConfigOptionStrings(ss->values));
-            }
-        }
-        else if (auto* bs = dynamic_cast<ConfigOptionBools*>(opt))
-        {
-            if (!bs->values.empty())
-            {
-                remap(bs->values);
-                config.set_key_value(key, new ConfigOptionBools(bs->values));
-            }
-        }
-        else if (auto* is_opt = dynamic_cast<ConfigOptionInts*>(opt))
-        {
-            if (!is_opt->values.empty())
-            {
-                remap(is_opt->values);
-                config.set_key_value(key, new ConfigOptionInts(is_opt->values));
-            }
-        }
-        else
-        {
-            // Unknown ConfigOption derivation: log so future additions to
-            // trim_keys (or new option types) are not silently skipped.
-            BOOST_LOG_TRIVIAL(warning) << "trim_filament_config_to_single: key \""
-                                       << key << "\" has unsupported ConfigOption type ("
-                                       << typeid(*opt).name() << "), skipped — trim incomplete";
-        }
-    }
 }
 
 bool SliceEngine::run_validation(int plate_id, Print& print)
