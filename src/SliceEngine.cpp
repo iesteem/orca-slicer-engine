@@ -286,6 +286,46 @@ bool SliceEngine::run()
     return !m_plate_results.empty();
 }
 
+bool SliceEngine::run_preset_substitution_only()
+{
+    // Config-only prefix of run(): load the project, validate the printer
+    // model, load system/project presets, and apply official substitution.
+    // No geometry checks, slicing, or export. The call sequence mirrors the
+    // prefix of run() (SliceEngine.cpp:146-183) and MUST stay in sync with it.
+    if (!load_3mf())
+    {
+        build_statistics();
+        return false;
+    }
+
+    if (!validate_printer_model())
+    {
+        build_statistics();
+        return false;
+    }
+
+    // Collect config warnings (never blocks the pipeline).
+    collect_config_warnings();
+
+    // Load vendor + project presets so apply_*_official_preset can resolve.
+    load_system_presets();
+    load_project_presets();
+
+    if (!m_cfg.skip_preset_substitution)
+    {
+        if (!apply_preset_substitution())
+        {
+            build_statistics();
+            return false;
+        }
+    }
+
+    // m_config now holds the substitution result; run()'s later stages do not
+    // modify the preset keys, so callers can read it via config().
+    build_statistics();
+    return !m_any_error;
+}
+
 // ============================================================================
 // Stage 0: Load 3MF
 // ============================================================================

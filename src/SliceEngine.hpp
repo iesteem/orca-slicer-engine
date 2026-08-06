@@ -67,6 +67,23 @@ public:
     // m_cfg.skip_preset_substitution is set.
     bool apply_preset_substitution();
 
+    // Run only the load + preset-substitution prefix of the pipeline (load_3mf,
+    // validate_printer_model, collect_config_warnings, load_system_presets,
+    // load_project_presets, apply_preset_substitution), then stop — no geometry
+    // checks, no slicing, no export. Intended for config-only inspection / cloud
+    // preflight: after it returns, m_config holds the substitution result and is
+    // readable via config(). Returns false on any failure in the prefix (same
+    // per-step error handling as run()). The call sequence MUST stay in sync
+    // with the prefix of run(); see SliceEngine.cpp.
+    bool run_preset_substitution_only();
+
+    // Read-only access to the merged config (final after
+    // apply_preset_substitution; run() leaves it unchanged past that point).
+    const Slic3r::DynamicPrintConfig& config() const
+    {
+        return m_config;
+    }
+
     // Results after run()
     const SliceOutputStats& stats() const
     {

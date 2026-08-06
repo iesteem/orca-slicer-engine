@@ -68,3 +68,54 @@ target_sources(engine-tests PRIVATE
 target_link_libraries(engine-tests PRIVATE pthread)
 
 add_test(NAME engine-tests COMMAND engine-tests)
+
+# ============================================================================
+# Integration test target — links the FULL libslic3r (unlike the lightweight
+# engine-tests above). Exercises SliceEngine stages that need PresetBundle /
+# real 3MF input / resources. Only built in ORCA_STATIC mode (needs libslic3r.a).
+# Sources mirror the orca-slice-engine target (CMakeLists.txt:45-54) MINUS
+# main.c / slic3r_c_api.cpp — the test drives SliceEngine directly in C++.
+# ============================================================================
+if(ORCA_STATIC)
+    add_executable(engine-integration
+        catch2/catch_amalgamated.cpp
+        test_preset_substitution.cpp
+        ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
+        ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
+        ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
+        ${CMAKE_SOURCE_DIR}/src/GeometryCheck.cpp
+        ${CMAKE_SOURCE_DIR}/src/Utils.cpp
+        ${CMAKE_SOURCE_DIR}/src/nanosvg.cpp
+    )
+
+    # Reuse the exact include dirs / defines / flags / link list of the static
+    # engine (see CMakeLists.txt:56-77). Drop non-existent include dirs.
+    # Also add tests/catch2 (for <catch_amalgamated.hpp>) and tests/ itself.
+    set(_int_inc_dirs
+        "${CMAKE_CURRENT_SOURCE_DIR}/catch2"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_SOURCE_DIR}/src")
+    foreach(_d IN LISTS ORCA_STATIC_INCLUDES)
+        if(EXISTS "${_d}")
+            list(APPEND _int_inc_dirs "${_d}")
+        endif()
+    endforeach()
+    target_include_directories(engine-integration PRIVATE ${_int_inc_dirs})
+
+    target_compile_definitions(engine-integration PRIVATE
+        ${ORCA_STATIC_DEFINES}
+        ENGINE_VERSION="02.01.05"
+        ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
+        ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
+    )
+
+    target_compile_options(engine-integration PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-fext-numeric-literals;-fsigned-char>)
+    set_target_properties(engine-integration PROPERTIES
+        CXX_STANDARD 17 CXX_EXTENSIONS ON
+        POSITION_INDEPENDENT_CODE ON)
+
+    target_link_libraries(engine-integration PRIVATE ${ORCA_STATIC_LIBS})
+
+    add_test(NAME engine-integration COMMAND engine-integration)
+endif()
