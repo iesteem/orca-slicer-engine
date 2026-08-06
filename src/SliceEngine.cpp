@@ -1247,6 +1247,8 @@ void SliceEngine::apply_process_official_preset()
 
     if (official)
     {
+        m_last_process_preset_name = official->name;
+
         std::set<std::string> user_overrides = parse_process_user_overrides();
 
         BOOST_LOG_TRIVIAL(info)
@@ -1279,6 +1281,7 @@ void SliceEngine::apply_process_official_preset()
     }
     else
     {
+        m_last_process_preset_name.clear();
         BOOST_LOG_TRIVIAL(warning)
             << "No system process preset found for \"" << preset_name
             << "\" (not in system presets and no system ancestor in"

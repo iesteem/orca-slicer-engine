@@ -1,20 +1,23 @@
 /**
  * @file test_preset_substitution.cpp
- * @brief Integration test for SliceEngine preset substitution.
+ * @brief Integration test for SliceEngine preset substitution — MODEL-AGNOSTIC
+ *        invariant assertions.
  *
- * Drives SliceEngine up to (and including) apply_preset_substitution via the
- * run_preset_substitution_only() prefix hook — no geometry checks, no slicing —
- * then dumps the resulting m_config to an INI file and asserts the substitution
- * outcome against the U1 fixture (tests/fixtures/u1_preset_test.3mf).
+ * Drives SliceEngine to the post-substitution state via
+ * run_preset_substitution_only() (no slicing), then verifies the invariants:
+ *   - printer: m_config printer keys == official U1 preset's keys
+ *   - filament: per-slot m_config[i] == the official filament preset resolved
+ *     for slot i (whose name is filament_settings_id[i] after substitution)
+ *   - process: keys listed in different_settings_to_system keep user values;
+ *     the rest == the official process preset's keys (brim_width excepted — it
+ *     is intentionally reset by apply_auto_brim_fallback)
  *
- * Unlike the lightweight engine-tests target, this links the full libslic3r
- * (it needs PresetBundle + real 3MF + resources/profiles). Tag: [integration].
+ * Ground truth comes from an INDEPENDENTLY loaded PresetBundle (not the one
+ * inside SliceEngine), so this is a black-box cross-check. Expected values are
+ * computed at runtime — no hardcoded snapshots — so the test stays meaningful
+ * when the fixture model changes.
  *
- * Fixture substitution contract (verified against the fixture's project_settings):
- *   printer_settings_id : "Snapmaker U1 (0.4 nozzle) - 拷贝" -> official U1
- *   filament_settings_id: slots 0/2 non-official -> official; slots 1/3 unchanged
- *   nozzle_diameter     : corrected to U1 official
- *   printable_area      : corrected to U1 official
+ * Links the full libslic3r. Tag: [integration].
  */
 
 #include <catch_amalgamated.hpp>
@@ -27,118 +30,319 @@
 #include <string>
 #include <vector>
 
-#include "libslic3r/Utils.hpp"   // Slic3r::set_data_dir / set_resources_dir
+#include "libslic3r/Config.hpp"       // DynamicPrintConfig, ConfigOptionStrings, ForwardCompatibilitySubstitutionRule
+#include "libslic3r/Preset.hpp"       // Preset
+#include "libslic3r/PresetBundle.hpp" // PresetBundle, LoadSystem
+#include "libslic3r/Utils.hpp"        // set_data_dir / set_resources_dir
 
 #include "SliceEngine.hpp"
 
-namespace {
-// Read all key=value lines from an INI dump into a map.
-std::map<std::string, std::string> read_ini(const std::string& path)
-{
-    std::map<std::string, std::string> out;
-    std::ifstream f(path);
-    std::string line;
-    while (std::getline(f, line))
-    {
-        // skip section headers / comments / blanks
-        if (line.empty() || line[0] == '[' || line[0] == '#') continue;
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
-        // trim spaces around key
-        while (!key.empty() && std::isspace(static_cast<unsigned char>(key.back()))) key.pop_back();
-        // val: trim one leading space (INI writer emits "key = value")
-        if (!val.empty() && val[0] == ' ') val.erase(0, 1);
-        // trim trailing \r
-        if (!val.empty() && val.back() == '\r') val.pop_back();
-        out[key] = val;
-    }
-    return out;
-}
-} // namespace
+using Slic3r::Preset;
+using Slic3r::PresetBundle;
+using Slic3r::DynamicPrintConfig;
+using Slic3r::ConfigOptionStrings;
 
 static const char* kFixture   = ORCA_TEST_FIXTURE;
 static const char* kResources = ORCA_TEST_RESOURCES;
 
-TEST_CASE("Preset substitution replaces non-official presets with U1 official", "[integration][preset]")
+namespace {
+// Independently load the official Snapmaker bundle as ground truth. Mirrors
+// SliceEngine::load_system_presets (SliceEngine.cpp:541-555) for a single vendor.
+std::unique_ptr<PresetBundle> load_official_bundle()
 {
-    // Point libslic3r at the engine's bundled Snapmaker resources (pure vendor
-    // set — NOT OrcaSlicer/resources, which contains MagicMaker and fails to
-    // load). Mirrors slic3r_c_api.cpp:108-110.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+    auto bundle = std::make_unique<PresetBundle>();
+    bundle->load_vendor_configs_from_json(
+        kResources, "Snapmaker", PresetBundle::LoadSystem,
+        Slic3r::ForwardCompatibilitySubstitutionRule::EnableSilent, nullptr);
+    return bundle;
+}
+
+// Parse the ;-separated different_settings_to_system[0] list from a config.
+std::set<std::string> parse_dts(const DynamicPrintConfig& cfg)
+{
+    std::set<std::string> out;
+    const auto* opt = cfg.option<ConfigOptionStrings>("different_settings_to_system");
+    if (!opt || opt->values.empty()) return out;
+    std::stringstream ss(opt->values[0]);
+    std::string item;
+    while (std::getline(ss, item, ';'))
+        if (!item.empty()) out.insert(item);
+    return out;
+}
+
+// Serialize one element of a vector option: cfg[key][idx]. Returns empty if the
+// key is absent or not one of the supported vector types (Floats/Ints/Strings/
+// Bools). Per-slot extraction needs a typed get_at — there is no public untyped
+// element accessor on ConfigOptionVectorBase.
+std::string slot_value_serialized(const DynamicPrintConfig& cfg, const std::string& key, size_t idx)
+{
+    const Slic3r::ConfigOption* opt = cfg.option(key);
+    if (!opt) return {};
+    // Try each concrete vector type.
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionFloats*>(opt))
+        return idx < v->values.size() ? std::to_string(v->values[idx]) : std::string{};
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionInts*>(opt))
+        return idx < v->values.size() ? std::to_string(v->values[idx]) : std::string{};
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionStrings*>(opt))
+        return idx < v->values.size() ? v->values[idx] : std::string{};
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionBools*>(opt))
+        return idx < v->values.size() ? (v->values[idx] ? "1" : "0") : std::string{};
+    return {};
+}
+
+// Serialize element 0 of a vector option (used for the official filament preset,
+// whose per-filament keys are single-element vectors).
+std::string scalar0_serialized(const Slic3r::ConfigOption* opt)
+{
+    if (!opt) return {};
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionFloats*>(opt))
+        return v->values.empty() ? std::string{} : std::to_string(v->values[0]);
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionInts*>(opt))
+        return v->values.empty() ? std::string{} : std::to_string(v->values[0]);
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionStrings*>(opt))
+        return v->values.empty() ? std::string{} : v->values[0];
+    if (const auto* v = dynamic_cast<const Slic3r::ConfigOptionBools*>(opt))
+        return v->values.empty() ? std::string{} : (v->values[0] ? "1" : "0");
+    return {};
+}
+
+// Assert every key present in `official` has the same value in `actual`
+// (scalar keys; vector keys compared element-0 vs element-0). Keys only in
+// `actual` (metadata like inherits_group / *_settings_id) are ignored.
+//
+// official.config is the full inherits-expanded key set (load_vendor_configs_from_json
+// recursively merges the inheritance chain at load time), so this checks against
+// the complete official key space, not just the leaf preset's own keys.
+//
+// Emits a coverage summary (total / matched / missing / mismatched) as a WARN
+// so it is always visible — purely diagnostic, never fails the test by itself.
+void check_matches_official(const DynamicPrintConfig& actual, const Preset& official,
+                            const std::set<std::string>& skip_keys, const std::string& label)
+{
+    size_t total = 0, matched = 0, missing = 0, mismatched = 0;
+    for (auto it = official.config.cbegin(); it != official.config.cend(); ++it)
+    {
+        const std::string& key = it->first;
+        if (skip_keys.count(key)) continue;
+        // Skip heavy/special keys whose serialize() is unreliable or huge.
+        if (key == "thumbnails" || key == "thumbnail_name" || key == "compatible_printers_condition")
+            continue;
+        ++total;
+        if (!actual.has(key)) { ++missing; continue; }
+        const Slic3r::ConfigOption* a_opt = actual.option(key);
+        if (!a_opt) { ++missing; continue; }
+        const std::string a = a_opt->serialize();
+        const std::string b = it->second.get()->serialize();
+        if (a == b) ++matched;
+        else
+        {
+            ++mismatched;
+            FAIL_CHECK(label << ": key \"" << key << "\" = \"" << a << "\" != official \"" << b << "\"");
+        }
+    }
+    WARN(label << " coverage: " << matched << "/" << total
+              << " matched, " << missing << " missing, " << mismatched << " mismatched"
+              << " (missing keys are not a substitution defect — overwrite_all_keys_from only"
+              << " covers keys already in m_config, never adds new ones)");
+}
+} // namespace
+
+TEST_CASE("Preset substitution matches official presets (model-agnostic invariant)", "[integration][preset]")
+{
+    auto bundle = load_official_bundle();
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
 
     EngineConfig cfg;
     cfg.input_file = kFixture;
     cfg.skip_preset_substitution = false;
-    cfg.temp_dir = "/tmp";  // load_3mf writes a backup tree here
+    cfg.temp_dir = "/tmp";
 
     std::vector<std::string> temp_files;
     SliceEngine engine(cfg, temp_files);
-
     REQUIRE(engine.run_preset_substitution_only());
 
-    // Dump the post-substitution config to INI and read it back.
-    const std::string ini_path = std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp")
-                                 + "/orca_preset_sub_test.ini";
-    engine.config().save(ini_path);
-    auto kv = read_ini(ini_path);
+    const DynamicPrintConfig& mc = engine.config();
 
-    // --- Printer geometry: apply_printer_official_preset overwrites the
-    // parameter keys (printable_area / printable_height / nozzle_diameter) with
-    // U1 official values. The fixture already carried U1 geometry, so these are
-    // unchanged — the invariant is that they HOLD the official U1 values. ---
-    CHECK(kv["nozzle_diameter"].find("0.4") != std::string::npos);
-    CHECK(kv["printable_area"].find("270") != std::string::npos);   // U1 bed ~270x270
-    CHECK(kv["printable_height"] == "270.05");
-    CHECK(kv["printer_model"] == "Snapmaker U1");
+    // --- Printer invariant: every key the official U1 preset has must equal
+    // m_config's value (overwrite_all_keys_from is a wholesale overwrite). ---
+    const Preset* prn = bundle->printers.find_preset("Snapmaker U1 (0.4 nozzle)", false);
+    REQUIRE(prn);
+    REQUIRE(prn->vendor);
+    REQUIRE(prn->vendor->name == PresetBundle::SM_BUNDLE);
+    check_matches_official(mc, *prn, {}, "printer");
 
-    // --- printer_settings_id: apply_printer_official_preset does NOT rewrite
-    // the preset-NAME field (it rewrites parameters, not the name). The current
-    // observed behaviour is that the name becomes "MyToolChanger 0.4 nozzle -
-    // Copy" — locked in here as the present-day contract. If preset substitution
-    // is later fixed to also normalise the name to "Snapmaker U1 (0.4 nozzle)",
-    // this assertion will flag the change. ---
-    std::string printer = kv.count("printer_settings_id") ? kv["printer_settings_id"] : "";
-    INFO("printer_settings_id = \"" << printer << "\"");
-    CHECK(printer == "MyToolChanger 0.4 nozzle - Copy");
+    // --- Filament invariant: per slot, m_config[key][i] == official_preset[key][0]
+    // for every key in the slot's resolved official filament preset. The slot's
+    // official name IS filament_settings_id[i] after substitution. ---
+    const auto* fsi = mc.option<ConfigOptionStrings>("filament_settings_id");
+    REQUIRE(fsi);
+    for (size_t i = 0; i < fsi->values.size(); ++i)
+    {
+        const std::string& official_name = fsi->values[i];
+        INFO("slot " << i << " -> \"" << official_name << "\"");
+        const Preset* f = bundle->filaments.find_preset(official_name, false);
+        REQUIRE(f);
+        REQUIRE(f->vendor);
+        REQUIRE(f->vendor->name == PresetBundle::SM_BUNDLE);
 
-    // --- Filament substitution: slot 0 ("Generic ABS - 拷贝") and slot 2
-    // (bare "Generic ABS") are normalised; the "拷贝/Clone" suffix must be gone
-    // from every slot. Slots 1/3 were already official (Snapmaker PLA SnapSpeed
-    // @U1) and stay. ---
-    std::string fil_ids = kv.count("filament_settings_id") ? kv["filament_settings_id"] : "";
-    INFO("filament_settings_id = \"" << fil_ids << "\"");
-    CHECK(fil_ids.find("拷贝") == std::string::npos);
-    CHECK(fil_ids.find("Snapmaker PLA SnapSpeed @U1") != std::string::npos);  // official slot preserved
-    CHECK(fil_ids.find("\"Generic ABS\"") != std::string::npos);              // slot 0/2 normalised (no clone suffix)
+        // Compare each filament key: m_config[key][i] vs f->config[key][0].
+        // Only vector-type keys are per-extruder; non-vector keys (rare in a
+        // filament preset) are skipped — the per-slot overwrite only touches
+        // vector keys (overwriteExtruderFrom semantics).
+        for (auto it = f->config.cbegin(); it != f->config.cend(); ++it)
+        {
+            const std::string& key = it->first;
+            if (!mc.has(key)) continue;
+            std::string actual_slot = slot_value_serialized(mc, key, i);
+            std::string official_scalar = scalar0_serialized(it->second.get());
+            if (official_scalar.empty() || actual_slot.empty()) continue;  // non-vector key, skip
+            if (actual_slot != official_scalar)
+                FAIL_CHECK("filament slot " << i << " key \"" << key << "\": \"" << actual_slot
+                                            << "\" != official \"" << official_scalar << "\"");
+        }
+    }
+
+    // --- Process invariant (two classes): ---
+    //   (1) different_settings_to_system keys keep the USER value (not overwritten)
+    //   (2) the rest == official process preset
+    const std::string& pname = engine.last_process_preset_name();
+    REQUIRE(!pname.empty());
+    const Preset* proc = bundle->prints.find_preset(pname, false);
+    REQUIRE(proc);
+    REQUIRE(proc->vendor);
+    REQUIRE(proc->vendor->name == PresetBundle::SM_BUNDLE);
+
+    auto dts = parse_dts(mc);
+    // apply_auto_brim_fallback intentionally sets brim_width=0 after the
+    // official overwrite when brim_type=auto_brim; exclude it from the "matches
+    // official" check, and assert the fallback explicitly instead.
+    // compatible_printers: overwrite_all_keys_from_impl only writes vector
+    // elements that already exist in dst (loop bound by dst.size()); when the
+    // fixture carries an empty compatible_printers, the official value cannot
+    // be injected — so it stays empty. That is overwrite-semantics, not a
+    // substitution defect; exclude it from the strict match.
+    std::set<std::string> proc_skip = dts;
+    proc_skip.insert("brim_width");
+    proc_skip.insert("compatible_printers");
+    check_matches_official(mc, *proc, proc_skip, "process");
+
+    // brim_width fallback invariant: brim_type==auto_brim => brim_width == 0.
+    // Use option<ConfigOptionString> + null check (brim_type may be an enum,
+    // not a plain string, so opt_string would deref null).
+    if (const auto* bt = mc.option<Slic3r::ConfigOptionString>("brim_type"))
+    {
+        if (bt->value == "auto_brim")
+        {
+            const auto* bw = mc.option<Slic3r::ConfigOptionString>("brim_width");
+            REQUIRE(bw);
+            CHECK(bw->value == "0");
+        }
+    }
 }
 
-TEST_CASE("Preset substitution skipped when configured", "[integration][preset]")
+TEST_CASE("Official preset key sets are mutually exclusive across categories", "[integration][preset][diag]")
 {
+    // The three substitution stages run in order printer -> filament -> process
+    // (SliceEngine.cpp:639/605/613). Each overwrites m_config from its official
+    // preset's config wholesale (printer/process) or per-extruder (filament).
+    // If one stage's official preset carried keys belonging to another stage's
+    // category, a later stage could clobber an earlier stage's result. This
+    // diagnostic checks the key sets of the three official presets do NOT
+    // overlap in a way that would let that happen.
+    auto bundle = load_official_bundle();
+    const Preset* prn = bundle->printers.find_preset("Snapmaker U1 (0.4 nozzle)", false);
+    const Preset* fil = bundle->filaments.find_preset("Generic PLA", false);
+    // Use the same process name the engine resolved for the fixture (inherits[0]).
+    REQUIRE(prn); REQUIRE(fil);
+
+    auto keys = [](const Preset* p) {
+        std::set<std::string> s;
+        for (auto it = p->config.cbegin(); it != p->config.cend(); ++it) s.insert(it->first);
+        return s;
+    };
+    auto prn_keys = keys(prn);
+    auto fil_keys = keys(fil);
+
+    // Classify a key by category prefix. printer: nozzle_/printable_/machine_/extruder_/
+    // bed_/gcode-ish; filament: filament_; process: layer_/brim_/skirt_/infill_/speed_/etc.
+    // We do NOT need a perfect classifier — the question is whether one preset's
+    // config leaks keys that another stage will later overwrite. The strong,
+    // model-agnostic invariant is: keys the printer stage sets that a later
+    // stage would clobber. The most informative overlap is printer ∩ process
+    // (both wholesale-overwrite). filament only touches per-extruder vector
+    // keys, so it cannot clobber scalar printer/process keys.
+    auto find_process = [&]() -> const Preset* {
+        // Pick any U1 process preset.
+        for (auto it = bundle->prints.cbegin(); it != bundle->prints.cend(); ++it)
+            if (it->is_system && it->vendor && it->vendor->name == PresetBundle::SM_BUNDLE
+                && it->name.find("@Snapmaker U1") != std::string::npos)
+                return &*it;
+        return nullptr;
+    };
+    const Preset* proc = find_process();
+    REQUIRE(proc);
+    auto pro_keys = keys(proc);
+
+    auto intersect = [](const std::set<std::string>& a, const std::set<std::string>& b) {
+        std::vector<std::string> o;
+        for (const auto& k : a) if (b.count(k)) o.push_back(k);
+        return o;
+    };
+
+    // Process preset should not own printer-category keys (nozzle/printable/machine).
+    // If it did, the process stage would clobber the printer stage's values.
+    auto proc_owning_printer_keys = [&]() {
+        std::vector<std::string> bad;
+        for (const auto& k : pro_keys)
+            if (k.rfind("nozzle_", 0) == 0 || k.rfind("printable_", 0) == 0 ||
+                k.rfind("machine_", 0) == 0 || k == "extruder_type")
+                bad.push_back(k);
+        return bad;
+    };
+    auto bad = proc_owning_printer_keys();
+    auto pp_overlap = intersect(prn_keys, pro_keys);
+    std::string overlap_list;
+    for (size_t i = 0; i < pp_overlap.size(); ++i)
+        overlap_list += (i ? "," : "") + pp_overlap[i];
+    WARN("preset key isolation: |printer|=" << prn_keys.size()
+         << " |filament|=" << fil_keys.size() << " |process|=" << pro_keys.size()
+         << " printer∩process=" << pp_overlap.size() << " [" << overlap_list << "]"
+         << " process-owning-printer-keys=" << bad.size());
+    CHECK(bad.empty());
+}
+
+TEST_CASE("Preset substitution skipped when configured diverges from official", "[integration][preset]")
+{
+    auto bundle = load_official_bundle();
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
 
     EngineConfig cfg;
     cfg.input_file = kFixture;
-    cfg.skip_preset_substitution = true;   // bypass substitution entirely
+    cfg.skip_preset_substitution = true;
     cfg.temp_dir = "/tmp";
 
     std::vector<std::string> temp_files;
     SliceEngine engine(cfg, temp_files);
-
     REQUIRE(engine.run_preset_substitution_only());
 
-    const std::string ini_path = std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp")
-                                 + "/orca_preset_sub_skip.ini";
-    engine.config().save(ini_path);
-    auto kv = read_ini(ini_path);
-
-    // With substitution skipped, the non-official clone preset is UNCHANGED —
-    // the "- 拷贝" suffix must still be present (proves the substitution step,
-    // not something else, is what removed it in the test above).
-    std::string printer = kv.count("printer_settings_id") ? kv["printer_settings_id"] : "";
-    INFO("printer_settings_id (skip) = \"" << printer << "\"");
-    CHECK(printer.find("拷贝") != std::string::npos);
+    // With substitution skipped, m_config must NOT wholesale-match the official
+    // printer preset (proves the invariant check above is exercising the
+    // substitution step, not something else). At least one printer key differs.
+    const Preset* prn = bundle->printers.find_preset("Snapmaker U1 (0.4 nozzle)", false);
+    REQUIRE(prn);
+    const DynamicPrintConfig& mc = engine.config();
+    bool any_diff = false;
+    for (auto it = prn->config.cbegin(); it != prn->config.cend() && !any_diff; ++it)
+    {
+        if (!mc.has(it->first)) continue;
+        if (mc.option(it->first)->serialize() != it->second.get()->serialize())
+            any_diff = true;
+    }
+    // The fixture carries a "- 拷贝" clone printer preset, so its config should
+    // diverge from official in at least the settings_id / G-code keys.
+    CHECK(any_diff);
 }

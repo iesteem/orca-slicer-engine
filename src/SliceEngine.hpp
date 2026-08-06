@@ -84,6 +84,16 @@ public:
         return m_config;
     }
 
+    // Name of the official process preset that apply_process_official_preset
+    // most recently resolved and applied. Empty if none was found/applied.
+    // Unlike filament (which writes the resolved name back to
+    // filament_settings_id), the process path keeps the name in a local, so
+    // expose it here for diagnostics / testing.
+    const std::string& last_process_preset_name() const
+    {
+        return m_last_process_preset_name;
+    }
+
     // Results after run()
     const SliceOutputStats& stats() const
     {
@@ -479,6 +489,7 @@ private:
     // --- Preset system (loaded from resources/profiles/) ---
     std::unique_ptr<Slic3r::PresetBundle> m_preset_bundle;
     bool m_presets_available = false;
+    std::string m_last_process_preset_name; // set by apply_process_official_preset
 
     // --- Per-plate results (produced during slicing) ---
     std::map<int, PlateSliceResult> m_plate_results;
