@@ -89,6 +89,7 @@ if(ORCA_STATIC)
         test_path_conflict.cpp
         test_temp_mode.cpp
         test_boundary.cpp
+        test_gcode_security.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
