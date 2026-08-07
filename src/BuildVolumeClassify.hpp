@@ -24,8 +24,18 @@ namespace orca {
 inline constexpr double kSceneEpsilon = 1e-4;
 
 // Classify which axis/axes a Partly_Outside instance violates. One bbox may
-// yield multiple Issues (e.g. too high AND outside XY), returned in the same
-// order the original code emitted them: TOO_HIGH, BELOW_BED, OUTSIDE_XY.
+// yield multiple Issues (e.g. too high AND outside XY), returned in the order
+// the original code emitted them: TOO_HIGH, OUTSIDE_XY.
+//
+// Note: sinking below the bed (min_z < 0) is intentionally NOT classified
+// here. libslic3r's print-volume test treats a Below volume as neither inside
+// nor outside (Model.cpp), so a pure sinking instance never reaches the
+// Partly_Outside path that calls this function; and ensure_models_on_bed
+// (SliceEngine.cpp) already handles every below-bed case via warnings
+// (OBJECT_BELOW_BED_ADJUSTED / OBJECT_INTENTIONALLY_BELOW_BED), including the
+// "only slice the above-bed portion" case. Keeping below-bed out of this
+// classifier avoids a redundant error that could never block slicing on its
+// own (the real blocker is always the accompanying TOO_HIGH / OUTSIDE_XY).
 //
 // bbox_* are plate-local mm; printable_height/bed_* describe the build volume.
 std::vector<Issue> classify_build_volume_issues(
@@ -39,6 +49,10 @@ std::vector<Issue> classify_build_volume_issues(
     double             bed_min_y,  double bed_max_y)
 {
     const double eps = kSceneEpsilon;
+    // bbox_min_z is retained in the signature for symmetry with bbox_max_z
+    // and future extension, but is unused now that below-bed is handled by
+    // ensure_models_on_bed. Silence -Wunused-parameter under -Wextra.
+    (void)bbox_min_z;
 
     // TODO: snprintf("%.1f", -0.0) yields "-0.0"; the original code's comment
     // claims to "guard against -0.0" but does not. Behaviour is preserved
@@ -61,19 +75,6 @@ std::vector<Issue> classify_build_volume_issues(
             object_name,
             "Lower the object's Z position, reduce its height, or scale it down so the top fits under the print height.");
         issue.z_height = bbox_max_z; // offending top Z
-        out.push_back(std::move(issue));
-    }
-
-    // --- Z below bed (bottom sinks below the print bed) ---
-    if (bbox_min_z < -eps)
-    {
-        Issue issue = make_error(
-            plate_id, "BUILD_VOLUME_BELOW_BED",
-            "Object \"" + object_name + "\" bottom is at Z=" + fmt_mm(bbox_min_z) +
-                "mm, below the print bed surface (Z=0)",
-            object_name,
-            "Raise the object so its bottom sits on or above the bed, or fix the model origin in CAD.");
-        issue.z_height = bbox_min_z; // offending bottom Z
         out.push_back(std::move(issue));
     }
 

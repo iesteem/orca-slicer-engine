@@ -358,7 +358,7 @@ private:
     bool run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Slic3r::Vec3d& origin);
 
     // Subdivide a partly-outside instance's violation into directional error
-    // codes (TOO_HIGH / BELOW_BED / OUTSIDE_XY) using its plate-local world
+    // codes (TOO_HIGH / OUTSIDE_XY) using its plate-local world
     // bounding box. `bbox` must already be in plate-local coordinates (plate
     // origin subtracted). One object may yield multiple issues.
     void push_build_volume_issues(int plate_id, const std::string& object_name,

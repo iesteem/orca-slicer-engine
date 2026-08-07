@@ -49,12 +49,12 @@ TEST_CASE("build volume: too high", "[buildvolume]") {
     CHECK(v[0].message.find("Obj") != std::string::npos);
 }
 
-TEST_CASE("build volume: below bed", "[buildvolume]") {
+TEST_CASE("build volume: below bed (XY in-range) yields no issue — handled by ensure_models_on_bed", "[buildvolume]") {
+    // min_z<0 but XY in-range and not too high: pure sinking is intentionally
+    // NOT classified here (libslic3r never flags it Partly_Outside, and
+    // ensure_models_on_bed owns all below-bed feedback). Expect zero issues.
     auto v = classify_box(kBed, 50, 150, 50, 150, -10, 50);
-    REQUIRE(v.size() == 1);
-    CHECK(v[0].code == "BUILD_VOLUME_BELOW_BED");
-    CHECK(v[0].level == IssueLevel::error);
-    REQUIRE_THAT(v[0].z_height, WithinAbs(-10.0, 1e-9));
+    REQUIRE(v.size() == 0);
 }
 
 TEST_CASE("build volume: outside XY (min X under)", "[buildvolume]") {
@@ -96,11 +96,13 @@ TEST_CASE("build volume: too high AND outside XY -> ordered, two issues", "[buil
     REQUIRE_THAT(v[1].z_height, WithinAbs(-1.0, 1e-9));
 }
 
-TEST_CASE("build volume: too high AND below bed -> two issues", "[buildvolume]") {
+TEST_CASE("build volume: too high (with min_z<0) -> only TOO_HIGH, below-bed handled elsewhere", "[buildvolume]") {
+    // max_z exceeds printable_height AND min_z<0. Only TOO_HIGH fires here;
+    // the below-bed aspect is reported by ensure_models_on_bed, not this
+    // classifier.
     auto v = classify_box(kBed, 50, 150, 50, 150, -10, 250);
-    REQUIRE(v.size() == 2);
+    REQUIRE(v.size() == 1);
     CHECK(v[0].code == "BUILD_VOLUME_TOO_HIGH");
-    CHECK(v[1].code == "BUILD_VOLUME_BELOW_BED");
 }
 
 TEST_CASE("build volume: eps boundary (exactly printable_height + eps) does not fire", "[buildvolume]") {
