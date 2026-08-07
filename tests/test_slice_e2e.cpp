@@ -67,6 +67,39 @@ std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag)
     return r;
 }
 
+// Variant of run_full that overrides the output format / single-plate / plate-id
+// (the 2-arg overload above hardcodes format=GCODE_3MF, single_plate=false).
+// The output_file extension mirrors generate_output_path() in Utils.cpp so
+// PathCleanup removes the file run() actually produced: single-plate GCODE
+// writes a ".gcode" file directly (SliceEngine.cpp:2733); every other combo
+// packages a ".gcode.3mf". Getting this wrong leaks a temp file and, via the
+// collision-suffix logic in Utils.cpp, mangles the path on the next run.
+std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag,
+                                   OutputFormat format, bool single_plate, int plate_id)
+{
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    auto r = std::make_unique<SliceRun>();
+    std::string base = std::string("/tmp/orca_test_") + tag;
+    const bool single_gcode = (single_plate && format == OutputFormat::GCODE);
+    r->output_file = base + (single_gcode ? ".gcode" : ".gcode.3mf");
+    r->cleanup = PathCleanup(r->output_file);
+
+    EngineConfig cfg;
+    cfg.input_file = fixture_path;
+    cfg.skip_preset_substitution = false;
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = base;
+    cfg.format = format;
+    cfg.single_plate = single_plate;
+    cfg.plate_id = plate_id;
+    r->engine = std::make_unique<SliceEngine>(cfg, r->temp_files);
+    r->engine->run();
+    return r;
+}
+
 // Does the global issues list contain a given code at a given level?
 bool has_global_issue(const SliceOutputStats& s, const std::string& code, IssueLevel level)
 {
@@ -166,4 +199,124 @@ TEST_CASE("Partial-sink model slices with a below-bed warning", "[integration][s
 
     // The below-bed notice must be surfaced as a warning.
     REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_INTENTIONALLY_BELOW_BED", IssueLevel::warning));
+}
+
+// ============================================================================
+// Case 5 — Single-plate GCODE mode (run() lines 235-261). With single_plate=
+// true + format=GCODE, run() processes exactly one plate (plates_to_process =
+// [plate_id-1]), writes the G-code directly to m_output_path (a ".gcode" file,
+// NOT a ".gcode.3mf" package), and the package_output() gate at line 253
+// (which requires format==GCODE_3MF for single_plate) never fires. Verifies
+// the single-plate output path end-to-end, complementing the pure-function
+// generate_output_path unit tests in test_utils.cpp.
+// ============================================================================
+TEST_CASE("Single-plate GCODE mode writes one .gcode, no .gcode.3mf", "[integration][slice][ok][single_plate]")
+{
+    // distinct_per_plate.3mf has 4 plates; requesting plate 1 (internal 0)
+    // genuinely differs from all-plates mode. Plate 0 is a clean single-extruder
+    // slice (see test_filament_count.cpp "distinct filament per plate").
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf",
+                      "single_plate_gcode", OutputFormat::GCODE, /*single_plate=*/true, /*plate_id=*/1);
+
+    REQUIRE(r->engine->stats().success);
+    // Only the requested plate was processed.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& plate = r->engine->stats().plates.front();
+    REQUIRE(plate.success);
+    // gcode_file mirrors m_output_path (assemble_plate_stats, SliceEngine.cpp:3378),
+    // which is the .gcode path, not a .gcode.3mf path.
+    REQUIRE(plate.gcode_file == "/tmp/orca_test_single_plate_gcode.gcode");
+
+    // Real slicing produced real filament/time (sign invariants only).
+    REQUIRE(plate.total_filament_g > 0.0);
+    REQUIRE(plate.print_time > 0.0f);
+
+    REQUIRE(!r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 0);
+
+    // The .gcode file is written directly by export_gcode (SliceEngine.cpp:2733).
+    const std::string gcode_path = "/tmp/orca_test_single_plate_gcode.gcode";
+    REQUIRE(boost::filesystem::exists(gcode_path));
+    REQUIRE(boost::filesystem::file_size(gcode_path) > 1000);
+
+    // No .gcode.3mf package: format != GCODE_3MF, so the package_output() gate
+    // at SliceEngine.cpp:253 does not fire for single_plate mode.
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_single_plate_gcode.gcode.3mf"));
+
+    // m_output_path was assigned inside the validate_input() block.
+    REQUIRE(r->engine->output_path() == gcode_path);
+}
+
+// ============================================================================
+// Case 6 — PLATE_NOT_FOUND early failure (run() lines 185-186 → validate_input
+// at 1490-1523). Requesting a plate_id beyond the fixture's plate count fails
+// BEFORE the slicing try-block: run() returns false at line 186, m_output_path
+// is never assigned (it lives at line 230, inside the try), and the
+// PLATE_NOT_FOUND issue is global (plate_id=-1) so patch_orphan_plate_issues
+// skips it (SliceEngine.cpp:3540 < 0 guard) — stats.plates stays EMPTY.
+// ============================================================================
+TEST_CASE("Out-of-range plate_id fails with PLATE_NOT_FOUND before slicing", "[integration][slice][fail][validation]")
+{
+    // 4-plate fixture; request plate 99 (well beyond range).
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf",
+                      "plate_not_found", OutputFormat::GCODE, /*single_plate=*/true, /*plate_id=*/99);
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);  // EXIT_PREPROCESS_ERROR (Types.hpp:16)
+
+    // No plate was processed — the issue is global (plate_id=-1), so no
+    // placeholder plate is created. Indexing stats.plates would be UB.
+    REQUIRE(r->engine->stats().plates.empty());
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_NOT_FOUND", IssueLevel::error));
+
+    // error_message embeds the plate number; match by substring, not exact equal.
+    REQUIRE(r->engine->stats().error_message.find("not found") != std::string::npos);
+
+    // Slicing never ran → no output of either kind.
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_plate_not_found.gcode"));
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_plate_not_found.gcode.3mf"));
+
+    // m_output_path is assigned at SliceEngine.cpp:230, inside the try-block
+    // that validate_input()'s failure skips — so output_path() is still empty.
+    REQUIRE(r->engine->output_path().empty());
+}
+
+// ============================================================================
+// Case 7 — All-or-nothing packaging suppression (run() lines 252-254). When a
+// plate fails (m_any_error=true), package_output() is NOT called even though a
+// placeholder plate exists in stats. This is distinct from Case 2, which
+// asserts the failure CLASSIFICATION (BUILD_VOLUME_OUTSIDE_XY); Case 7 asserts
+// the packaging GATE: the !m_any_error clause at SliceEngine.cpp:253 blocks
+// output despite stats.plates being non-empty (the build-volume issue carries a
+// real plate_id, so patch_orphan_plate_issues creates a placeholder failed
+// plate — contrast Case 6 where plates is empty).
+//
+// Known secondary gap (no fixture today): the empty-gcode-layers path at
+// SliceEngine.cpp:1914-1920 leaves m_plate_results genuinely non-empty on
+// failure, which would exercise has_output=true && m_any_error=true directly.
+// No existing fixture triggers it; this case covers the gate indirectly via
+// the placeholder-plate + no-output-file combination.
+// ============================================================================
+TEST_CASE("Failed plate suppresses gcode.3mf packaging (all-or-nothing)", "[integration][slice][fail][package]")
+{
+    // slice_oob_fail.3mf: single plate, build-volume XY failure.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_oob_fail.3mf", "oob_no_package");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+
+    // A placeholder failed plate exists (build-volume issue has a real plate_id,
+    // so patch_orphan_plate_issues creates one). This is the load-bearing
+    // contrast with Case 6: plates is NON-empty here.
+    REQUIRE_FALSE(r->engine->stats().plates.empty());
+    const auto& plate = r->engine->stats().plates.front();
+    REQUIRE_FALSE(plate.success);
+    REQUIRE(plate.gcode_file.empty());  // assemble_plate_stats returns early on failure
+
+    // Core gate assertion: m_any_error=true suppresses package_output() even
+    // though stats.plates is non-empty. No gcode.3mf is produced.
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_oob_no_package.gcode.3mf"));
 }
