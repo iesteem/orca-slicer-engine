@@ -8,7 +8,9 @@ package-*.zip
 docs/
 
 # Test byproducts: slicing emits gcode.3mf / gcode next to fixtures or in /tmp.
-# Generated output, not test inputs — never check in.
+# Generated output, not test inputs — never check in. The .gcode_<hash>.3mf
+# pattern covers generate_output_path's collision-suffix variant.
 *.gcode.3mf
+*.gcode_*.3mf
 *.gcode
 
