@@ -82,6 +82,7 @@ if(ORCA_STATIC)
         test_preset_substitution.cpp
         test_geometry_preprocess.cpp
         test_slice_e2e.cpp
+        test_file_validation.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
