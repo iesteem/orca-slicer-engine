@@ -77,11 +77,32 @@ public:
     // with the prefix of run(); see SliceEngine.cpp.
     bool run_preset_substitution_only();
 
+    // Run the preset-substitution prefix AND the geometry-half preprocessing
+    // prefix of run() (validate_input, run_geometry_checks, ensure_models_on_bed,
+    // assign_arrange_order, setup_extruder_params), then stop — no slicing, no
+    // export. Intended for integration testing the geometry preprocessing
+    // stages: after it returns, m_model holds the post-preprocessing geometry
+    // (Z baked into mesh, arrange_order assigned) and is readable via model().
+    // Returns false on any failure in the prefix (same per-step error handling
+    // as run()). The call sequence MUST stay in sync with run(); see
+    // SliceEngine.cpp.
+    bool run_geometry_preprocess_only();
+
     // Read-only access to the merged config (final after
     // apply_preset_substitution; run() leaves it unchanged past that point).
     const Slic3r::DynamicPrintConfig& config() const
     {
         return m_config;
+    }
+
+    // Read-only access to the loaded model. Geometry-half stages mutate it in
+    // place: ensure_models_on_bed bakes instance Z into mesh vertices,
+    // assign_arrange_order stamps every instance. Final after
+    // run_geometry_preprocess_only() / run(). Exposed for integration tests that
+    // inspect the resulting model state.
+    const Slic3r::Model& model() const
+    {
+        return m_model;
     }
 
     // Name of the official process preset that apply_process_official_preset

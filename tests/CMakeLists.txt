@@ -80,6 +80,8 @@ if(ORCA_STATIC)
     add_executable(engine-integration
         catch2/catch_amalgamated.cpp
         test_preset_substitution.cpp
+        test_geometry_preprocess.cpp
+        test_slice_e2e.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
@@ -106,6 +108,7 @@ if(ORCA_STATIC)
         ${ORCA_STATIC_DEFINES}
         ENGINE_VERSION="02.01.05"
         ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
+        ORCA_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
     )
 

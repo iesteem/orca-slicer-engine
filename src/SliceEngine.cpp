@@ -326,6 +326,91 @@ bool SliceEngine::run_preset_substitution_only()
     return !m_any_error;
 }
 
+bool SliceEngine::run_geometry_preprocess_only()
+{
+    // Config + geometry-preprocessing prefix of run(): everything in run() up to
+    // and including setup_extruder_params (SliceEngine.cpp:146-226), minus the
+    // per-plate slicing loop, package_output, and export. The geometry stages
+    // mutate m_model in place (Z baked into mesh, arrange_order stamped); after
+    // return it is readable via model(). No slicing, no export.
+    //
+    // The call sequence mirrors the prefix of run() and MUST stay in sync.
+
+    // --- Config half (same prefix as run_preset_substitution_only) ---
+    if (!load_3mf())
+    {
+        build_statistics();
+        return false;
+    }
+
+    if (!validate_printer_model())
+    {
+        build_statistics();
+        return false;
+    }
+
+    collect_config_warnings();
+    load_system_presets();
+    load_project_presets();
+
+    if (!m_cfg.skip_preset_substitution)
+    {
+        if (!apply_preset_substitution())
+        {
+            build_statistics();
+            return false;
+        }
+    }
+
+    // --- Geometry-half preprocessing (mirrors run():185-226) ---
+    if (!validate_input())
+    {
+        build_statistics();
+        return false;
+    }
+
+    try
+    {
+        // Geometry defect detection (once for the whole model, before per-plate).
+        {
+            auto geom_issues = run_geometry_checks(m_model);
+            for (auto& issue : geom_issues)
+            {
+                m_stats.issues.push_back(std::move(issue));
+            }
+        }
+
+        // Bake instance Z into mesh + seat objects on bed (desktop parity).
+        ensure_models_on_bed();
+
+        // Stamp a global, monotonic arrange_order on every instance.
+        assign_arrange_order();
+
+        // Populate Model::extruderParamsMap from the final config.
+        setup_extruder_params();
+    }
+    catch (const std::exception& e)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled exception in geometry preprocessing: " << e.what();
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(
+            -1, "INTERNAL_ERROR",
+            "An unexpected internal error occurred during geometry preprocessing. Please try again or contact support."));
+    }
+    catch (...)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in geometry preprocessing";
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(
+            make_error(-1, "INTERNAL_FATAL", "Unhandled unknown exception in geometry preprocessing"));
+    }
+
+    build_statistics();
+    return !m_any_error;
+}
+
 // ============================================================================
 // Stage 0: Load 3MF
 // ============================================================================
