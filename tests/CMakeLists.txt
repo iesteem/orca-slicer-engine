@@ -90,6 +90,7 @@ if(ORCA_STATIC)
         test_temp_mode.cpp
         test_boundary.cpp
         test_gcode_security.cpp
+        test_filament_count.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
