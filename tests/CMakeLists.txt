@@ -87,6 +87,7 @@ if(ORCA_STATIC)
         test_filament_rollback.cpp
         test_layer_height.cpp
         test_path_conflict.cpp
+        test_temp_mode.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
