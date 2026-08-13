@@ -49,10 +49,10 @@ TEST_CASE("build volume: too high", "[buildvolume]") {
     CHECK(v[0].message.find("Obj") != std::string::npos);
 }
 
-TEST_CASE("build volume: below bed (XY in-range) yields no issue — handled by ensure_models_on_bed", "[buildvolume]") {
+TEST_CASE("build volume: below bed (XY in-range) yields no issue — handled by bake_instance_z_into_mesh", "[buildvolume]") {
     // min_z<0 but XY in-range and not too high: pure sinking is intentionally
     // NOT classified here (libslic3r never flags it Partly_Outside, and
-    // ensure_models_on_bed owns all below-bed feedback). Expect zero issues.
+    // bake_instance_z_into_mesh owns all below-bed feedback). Expect zero issues.
     auto v = classify_box(kBed, 50, 150, 50, 150, -10, 50);
     REQUIRE(v.size() == 0);
 }
@@ -98,7 +98,7 @@ TEST_CASE("build volume: too high AND outside XY -> ordered, two issues", "[buil
 
 TEST_CASE("build volume: too high (with min_z<0) -> only TOO_HIGH, below-bed handled elsewhere", "[buildvolume]") {
     // max_z exceeds printable_height AND min_z<0. Only TOO_HIGH fires here;
-    // the below-bed aspect is reported by ensure_models_on_bed, not this
+    // the below-bed aspect is reported by bake_instance_z_into_mesh, not this
     // classifier.
     auto v = classify_box(kBed, 50, 150, 50, 150, -10, 250);
     REQUIRE(v.size() == 1);

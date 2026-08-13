@@ -78,7 +78,7 @@ public:
     bool run_preset_substitution_only();
 
     // Run the preset-substitution prefix AND the geometry-half preprocessing
-    // prefix of run() (validate_input, run_geometry_checks, ensure_models_on_bed,
+    // prefix of run() (validate_input, run_geometry_checks, bake_instance_z_into_mesh,
     // assign_arrange_order, setup_extruder_params), then stop — no slicing, no
     // export. Intended for integration testing the geometry preprocessing
     // stages: after it returns, m_model holds the post-preprocessing geometry
@@ -96,7 +96,7 @@ public:
     }
 
     // Read-only access to the loaded model. Geometry-half stages mutate it in
-    // place: ensure_models_on_bed bakes instance Z into mesh vertices,
+    // place: bake_instance_z_into_mesh moves instance Z into mesh vertices,
     // assign_arrange_order stamps every instance. Final after
     // run_geometry_preprocess_only() / run(). Exposed for integration tests that
     // inspect the resulting model state.
@@ -258,8 +258,12 @@ private:
     // Checks plate data integrity and ensures required config keys are present.
     bool validate_input();
 
-    // Drop any floating objects onto the print bed by adjusting instance Z offsets.
-    void ensure_models_on_bed();
+    // Relocate each object's Z information from instance space into mesh-vertex
+    // space so it survives libslic3r's Print::apply (which discards instance Z).
+    // Also applies the desktop "intentional sinking" rule (single-part
+    // straddling preserved, fully-buried raised). See SliceEngine.cpp for the
+    // full rationale and the per-instance rotation assumption.
+    void bake_instance_z_into_mesh();
 
     // Assign sequential arrange_order values to all model instances. Run-once
     // (global, plate-agnostic) -- called from run() before the per-plate loop.

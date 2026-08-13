@@ -30,7 +30,7 @@ inline constexpr double kSceneEpsilon = 1e-4;
 // Note: sinking below the bed (min_z < 0) is intentionally NOT classified
 // here. libslic3r's print-volume test treats a Below volume as neither inside
 // nor outside (Model.cpp), so a pure sinking instance never reaches the
-// Partly_Outside path that calls this function; and ensure_models_on_bed
+// Partly_Outside path that calls this function; and bake_instance_z_into_mesh
 // (SliceEngine.cpp) already handles every below-bed case via warnings
 // (OBJECT_BELOW_BED_ADJUSTED / OBJECT_INTENTIONALLY_BELOW_BED), including the
 // "only slice the above-bed portion" case. Keeping below-bed out of this
@@ -51,7 +51,7 @@ std::vector<Issue> classify_build_volume_issues(
     const double eps = kSceneEpsilon;
     // bbox_min_z is retained in the signature for symmetry with bbox_max_z
     // and future extension, but is unused now that below-bed is handled by
-    // ensure_models_on_bed. Silence -Wunused-parameter under -Wextra.
+    // bake_instance_z_into_mesh. Silence -Wunused-parameter under -Wextra.
     (void)bbox_min_z;
 
     // TODO: snprintf("%.1f", -0.0) yields "-0.0"; the original code's comment

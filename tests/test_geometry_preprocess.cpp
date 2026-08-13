@@ -4,7 +4,7 @@
  *
  * Drives SliceEngine through run_geometry_preprocess_only() — the config half
  * (load + preset substitution) plus the geometry-half preprocessing prefix
- * (validate_input, run_geometry_checks, ensure_models_on_bed,
+ * (validate_input, run_geometry_checks, bake_instance_z_into_mesh,
  * assign_arrange_order, setup_extruder_params), stopping before the per-plate
  * slicing loop. Then inspects the resulting m_model / m_stats / m_config to
  * verify the invariants each preprocessing stage guarantees.
@@ -109,10 +109,10 @@ TEST_CASE("Geometry checks detect defects and stay warning-level", "[integration
 }
 
 // ============================================================================
-// Case B — ensure_models_on_bed: instance Z offset is baked into the mesh,
+// Case B — bake_instance_z_into_mesh: instance Z offset is baked into the mesh,
 // and the desktop "allow_negative_z" rule is honored.
 //
-// Print::apply discards the instance Z offset, so ensure_models_on_bed bakes
+// Print::apply discards the instance Z offset, so bake_instance_z_into_mesh bakes
 // it into mesh vertices and zeroes the instance offset (regression guard for
 // [[ensure-on-bed-fix-plan]]). The resulting mesh Z placement depends on the
 // original instance Z sign:

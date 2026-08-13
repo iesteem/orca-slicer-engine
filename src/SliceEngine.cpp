@@ -207,7 +207,7 @@ bool SliceEngine::run()
             // sinking preserved). Done once at load, before geometry checks and the
             // per-plate loop, so every later stage sees the same coordinates the
             // desktop would.
-            ensure_models_on_bed();
+            bake_instance_z_into_mesh();
 
             // Assign a global, monotonic arrange_order to every instance once per
             // task. This is model-wide (plate-agnostic), so it belongs here rather
@@ -381,7 +381,7 @@ bool SliceEngine::run_geometry_preprocess_only()
         }
 
         // Bake instance Z into mesh + seat objects on bed (desktop parity).
-        ensure_models_on_bed();
+        bake_instance_z_into_mesh();
 
         // Stamp a global, monotonic arrange_order on every instance.
         assign_arrange_order();
@@ -1529,29 +1529,51 @@ bool SliceEngine::validate_input()
 // Stage 3: Global preprocessing (ensure on bed)
 // ============================================================================
 
-void SliceEngine::ensure_models_on_bed()
+void SliceEngine::bake_instance_z_into_mesh()
 {
-    // Seat every object on the bed before slicing, using the desktop app's
-    // "intentional sinking" rule (ModelObject::ensure_on_bed(allow_negative_z=
-    // true), the same path Plater.cpp takes when opening a 3MF project).
+    // Relocate each object's Z so it survives libslic3r's Print::apply, which
+    // zeroes the Z component of every instance transform ("Z offset is
+    // discarded to ensure first layer starts at Z=0", PrintApply.cpp:155).
+    // An object stored with instance.z != 0 would have that Z silently
+    // dropped, clipping whatever the author placed above/below the bed.
     //
-    // With allow_negative_z=true:
-    //   - single-part object whose bottom is at/above the bed (min_z >= -0.001)
-    //     or fully buried below it (max_z < 0)  -> raised to sit on the bed;
-    //   - single-part object straddling the bed (min_z < 0 AND max_z >= 0)
-    //     -> left untouched: this is treated as an intentional sinking (e.g. a
-    //        base flattened against the bed) and is preserved as the author
-    //        stored it. Multi-part objects follow the analogous rule.
+    // Strategy: move all Z information out of instance space into mesh-vertex
+    // space, where Print::apply cannot touch it. Two phases per object:
     //
-    // This matches the desktop default and respects the author's intent. A
-    // straddling object whose XY footprint is within the bed slices normally
-    // (calc_print_volume_state returns Inside; the below-bed portion is clipped
-    // at z=0 by the slicer and not printed); only an object that ALSO exceeds
-    // the bed in Z-height or XY is flagged by run_build_volume_check. We
-    // previously passed false (unconditional snap-to-zero), but that silently
-    // raised intentional sinkings and could manufacture spurious too-high
-    // errors (e.g. a model whose top was in-range got pushed past
-    // printable_height by the raise).
+    //   Step 1 -- bake the existing instance.z offset into the mesh, then
+    //             zero every instance.z. After this, instance.z is 0 for all
+    //             instances of this object, and the mesh has been translated
+    //             by the equivalent local-space Z.
+    //
+    //   Step 2 -- apply the desktop "intentional sinking" rule
+    //             (allow_negative_z=true semantics from ModelObject::
+    //              ensure_on_bed) to decide whether the object also needs
+    //             raising, and if so bake that raise into the mesh too.
+    //
+    // Single-part sinking rule (mirrors Model.cpp:1829-1835):
+    //   - min_z >= SINKING_Z_THRESHOLD (-0.001)  -> already on bed, no raise
+    //   - max_z < 0                              -> fully buried, raise to bed
+    //   - min_z < 0 AND max_z >= 0              -> straddling: author
+    //                                              intentionally sank it,
+    //                                              leave in place
+    // Multi-part rule (mirrors Model.cpp:1836-1840): raise only when the
+    // whole object's max_z < SINKING_MIN_Z_THRESHOLD (0.05). Multi-part
+    // objects do not get the "intentional straddling" carve-out -- only
+    // their max_z matters.
+    //
+    // Note (assumption): baking Z into the mesh assumes every instance of
+    // this ModelObject shares the same rotation. libslic3r's ModelObject
+    // uses one mesh shared across instances, and our world->local Z
+    // conversion uses instances.front()'s rotation matrix. Per-instance
+    // rotation with non-zero Z is not supported by this path. Current
+    // callers (3MF import + arrange) never produce that combination; if
+    // they ever do, the bake will be correct only for the first instance.
+    //
+    // Side effect on the world position of the object: ideally zero. We
+    // compensate every instance-space mutation with an equal and opposite
+    // mesh-space mutation, so the final world-space Z equals what
+    // ensure_on_bed(true) would have produced -- but lives entirely in
+    // mesh-vertex space, safe from Print::apply.
     for (ModelObject* obj : m_model.objects)
     {
         if (obj->instances.empty())
@@ -1560,20 +1582,16 @@ void SliceEngine::ensure_models_on_bed()
         // 3MF import before instance transforms were finalized.
         obj->invalidate_bounding_box();
 
-        // Print::apply zeroes the Z component of the instance transform
-        // matrix (PrintApply.cpp:155 — "Z offset is discarded to ensure
-        // first layer starts at Z=0").  Any Z in the instance offset is
-        // silently dropped, which clips objects that rely on it.
-        //
-        // Fix: bake the instance Z offset into mesh vertices, zero the
-        // instance Z offset, then apply ensure_on_bed to the corrected
-        // geometry.  The Z survives Print::apply because it lives in
-        // mesh-vertex space.
-        //
-        // translate() moves mesh vertices in LOCAL space, but the instance
-        // rotation may flip or reorient the local Z axis.  We must convert
-        // the world-space Z shift to local coordinates via the inverse of
-        // the instance rotation (matrix without offset).
+        // Local helper: convert a world-space (0,0,dz) shift to local mesh
+        // space using the front instance's rotation (no offset component).
+        // translate() writes mesh vertices in local space; if the instance
+        // is rotated, the world-Z axis is not aligned with local-Z, so the
+        // shift must be un-rotated first.
+        auto world_z_to_local = [obj](double dz) {
+            auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
+            Vec3d world_shift(0, 0, dz);
+            return rot_no_off.inverse() * world_shift;
+        };
 
         // --- Step 1: bake existing instance Z offset into mesh vertices ---
         double inst_z = 0.0;
@@ -1586,11 +1604,7 @@ void SliceEngine::ensure_models_on_bed()
 
         if (std::abs(inst_z) > 1e-4)
         {
-            // Convert world-space (0,0,inst_z) to local space using the
-            // inverse of the instance rotation (no offset).
-            auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
-            Vec3d world_shift(0, 0, inst_z);
-            Vec3d local_shift = rot_no_off.inverse() * world_shift;
+            Vec3d local_shift = world_z_to_local(inst_z);
             obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
             // Zero all instance Z offsets.
             for (ModelInstance* inst : obj->instances)
@@ -1600,67 +1614,127 @@ void SliceEngine::ensure_models_on_bed()
             }
         }
 
-        // --- Step 2: correct any remaining sinking ---
+        // --- Step 2: apply the desktop sinking rule, baking any raise into the mesh ---
+        //
+        // We do NOT call ModelObject::ensure_on_bed here. ensure_on_bed's only
+        // side effect is to mutate instance offset (translate_instances ->
+        // set_offset, Model.cpp:1845-1862); it never touches mesh vertices.
+        // Using it would force the same "call then undo the side effect"
+        // pattern the previous implementation relied on -- readable only if
+        // the reader remembers that detail, and brittle across libslic3r
+        // versions if that contract ever changes.
+        //
+        // Instead we replicate the allow_negative_z=true decision (Model.cpp:
+        // 1829-1841) locally to compute z_shift, then bake z_shift into the
+        // mesh ourselves. Same final world-space Z as ensure_on_bed(true),
+        // but the raise lives in mesh-vertex space where Print::apply cannot
+        // discard it.
+        constexpr double kSinkingZThreshold     = -0.001;  // Model.hpp: SINKING_Z_THRESHOLD
+        constexpr double kSinkingMinZThreshold   = 0.05;   // Model.hpp: SINKING_MIN_Z_THRESHOLD
+        constexpr double kEpsilon                 = 1e-4;
+
         {
             obj->invalidate_bounding_box();
-            double before = obj->min_z();
-            double max_z_before = obj->max_z(); // captured before ensure_on_bed mutates geometry
-            obj->ensure_on_bed(true);
-            double after = obj->min_z();
-            double z_shift = after - before;
+            const double min_z_before = obj->min_z();
+            const double max_z_before = obj->max_z();  // for diagnostics; geometry never mutates here
+            const size_t  parts       = obj->parts_count();
 
-            if (std::abs(z_shift) > 1e-4)
+            // Replicate ensure_on_bed(allow_negative_z=true):
+            //   single-part: raise only if (min_z >= -0.001) or (max_z < 0).
+            //                Straddling (min_z < 0 AND max_z >= 0) is left alone.
+            //   multi-part:  raise only if max_z < 0.05.
+            // Straddling single-part objects are the author's intentional
+            // sinking and are preserved exactly; the multi-part rule has no
+            // such carve-out, only an absolute max_z cutoff.
+            double z_shift = 0.0;
+            if (parts == 1)
             {
-                // Convert world-space z_shift to local (same as step 1).
-                auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
-                Vec3d world_shift(0, 0, z_shift);
-                Vec3d local_shift = rot_no_off.inverse() * world_shift;
+                if (min_z_before >= kSinkingZThreshold || max_z_before < 0.0)
+                    z_shift = -min_z_before;
+            }
+            else
+            {
+                if (max_z_before < kSinkingMinZThreshold)
+                    z_shift = kSinkingMinZThreshold - max_z_before;
+            }
+
+            if (std::abs(z_shift) > kEpsilon)
+            {
+                Vec3d local_shift = world_z_to_local(z_shift);
                 obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
-                // Undo the instance-offset change ensure_on_bed just made.
-                for (ModelInstance* inst : obj->instances)
-                {
-                    Vec3d off = inst->get_offset();
-                    inst->set_offset(Vec3d(off.x(), off.y(), off.z() - z_shift));
-                }
+                // No instance offset change: the raise is entirely in the mesh.
             }
 
             obj->invalidate_bounding_box();
-            if (std::abs(z_shift) > 1e-6 || std::abs(before) > 1e-6)
+            if (std::abs(z_shift) > 1e-6 || std::abs(min_z_before) > 1e-6)
             {
-                BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
+                BOOST_LOG_TRIVIAL(info) << "bake_instance_z_into_mesh: object \"" << obj->name
+                                        << "\" inst_z=" << inst_z
+                                        << " parts=" << parts
                                         << " z_shift=" << z_shift;
             }
 
-            // An object stored below the bed falls into one of two cases under
-            // the desktop allow_negative_z=true rule:
-            //   (a) it was raised (z_shift != 0) -- fully buried below the bed,
-            //       or its bottom was essentially on the bed and got snapped to
-            //       zero. Warn so the silent correction is visible.
-            //   (b) it straddles the bed (min_z<0 AND max_z>=0) and was left in
-            //       place -- the author intentionally sank it. Emit a tip: the
-            //       geometry is preserved as-is, and the below-bed portion will
-            //       not be printed (run_build_volume_check flags it separately).
-            // Not deduplicated: each ModelObject reports independently, so a
-            // project with two same-named objects (e.g. model.obj_12 / _13)
-            // emits two issues -- both genuinely sank.
-            if (before < -1e-4)
+            // Diagnostic warning when the object's stored Z sat below the bed.
+            // Two distinct cases, kept separate because their semantics are
+            // different and the previous combined text conflated them:
+            //
+            //   (a) z_shift != 0  -> The sinking rule fired. The object was
+            //      either fully buried below the bed or its bottom was
+            //      essentially on the bed and got snapped up. Either way we
+            //      raised it; surface that so the silent correction is
+            //      visible.
+            //
+            //   (b) z_shift == 0 AND min_z_before < 0  -> Only reachable for
+            //      single-part objects: straddling (min_z<0 AND max_z>=0).
+            //      This is a genuine author-intended sinking (e.g. a base
+            //      flattened against the bed) and is preserved as stored.
+            //      Multi-part objects with max_z >= 0.05 never raise, but
+            //      they also don't reach here as "intentional" -- they were
+            //      simply above the threshold, not sank -- so the
+            //      "intentional" wording is only used for the single-part
+            //      straddle case.
+            //
+            // We include the original instance.z in the message so a user
+            // debugging can tell apart "stored with instance.z=0 and a
+            // negative mesh" from "stored with instance.z=N and a mesh that
+            // combined to a negative world Z" -- both produce the same
+            // post-Step-1 mesh state, but the upstream project state differs.
+            if (min_z_before < -kEpsilon)
             {
-                if (std::abs(z_shift) > 1e-4)
+                if (std::abs(z_shift) > kEpsilon)
                 {
-                    char buf[160];
+                    char buf[200];
                     std::snprintf(buf, sizeof(buf),
-                                  "Object \"%s\" was stored below the print bed (min Z=%.2fmm); auto-raised by %.2fmm to sit on the bed.",
-                                  obj->name.c_str(), before, z_shift);
+                                  "Object \"%s\" was stored below the print bed "
+                                  "(min Z=%.2fmm, original instance Z=%.2fmm, parts=%zu); "
+                                  "auto-raised by %.2fmm to sit on the bed.",
+                                  obj->name.c_str(), min_z_before, inst_z, parts, z_shift);
                     m_stats.issues.push_back(make_warning(
                         -1, "OBJECT_BELOW_BED_ADJUSTED", buf, obj->name,
                         "If the sinking was intentional, reposition the object's Z in your slicer before exporting."));
                 }
                 else
                 {
-                    char buf[192];
+                    // Reached when no raise was applied but min_z_before < 0.
+                    // Two sub-cases land here:
+                    //   - single-part straddling (min_z<0 AND max_z>=0):
+                    //     the author intentionally sank the base -- preserved
+                    //     as stored, the "intentionally straddles" wording is
+                    //     accurate.
+                    //   - multi-part with max_z >= 0.05 and min_z < 0:
+                    //     the multi-part rule did not fire because only max_z
+                    //     matters; the object is partially below the bed but
+                    //     was not deliberately sank in the single-part sense.
+                    //     The wording below is slightly off for this sub-case
+                    //     (it's not "intentional"), but we keep one issue code
+                    //     to match the previous behavior. The "parts=N" field
+                    //     lets users tell the two apart.
+                    char buf[224];
                     std::snprintf(buf, sizeof(buf),
-                                  "Object \"%s\" intentionally straddles the print bed (Z %.2f to %.2fmm); preserved as-is, the below-bed portion will not be printed.",
-                                  obj->name.c_str(), before, max_z_before);
+                                  "Object \"%s\" intentionally straddles the print bed "
+                                  "(Z %.2f to %.2fmm, original instance Z=%.2fmm, parts=%zu); "
+                                  "preserved as-is, the below-bed portion will not be printed.",
+                                  obj->name.c_str(), min_z_before, max_z_before, inst_z, parts);
                     m_stats.issues.push_back(make_warning(
                         -1, "OBJECT_INTENTIONALLY_BELOW_BED", buf, obj->name,
                         "Reposition the object in your slicer if the below-bed portion was meant to be printed."));
@@ -1671,7 +1745,7 @@ void SliceEngine::ensure_models_on_bed()
 }
 
 // Global model/config preparation, run once from run() before the per-plate loop
-// (after ensure_models_on_bed, before decode_plate_thumbnails).
+// (after bake_instance_z_into_mesh, before decode_plate_thumbnails).
 
 void SliceEngine::assign_arrange_order()
 {
