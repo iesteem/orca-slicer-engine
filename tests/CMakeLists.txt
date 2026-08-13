@@ -132,4 +132,10 @@ if(ORCA_STATIC)
     target_link_libraries(engine-integration PRIVATE ${ORCA_STATIC_LIBS})
 
     add_test(NAME engine-integration COMMAND engine-integration)
+
+    add_custom_target(run-tests
+        COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} -R engine --output-on-failure
+        DEPENDS engine-tests engine-integration
+        COMMENT "Running engine-tests + engine-integration via CTest"
+    )
 endif()
