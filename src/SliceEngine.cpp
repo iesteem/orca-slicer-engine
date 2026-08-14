@@ -182,6 +182,10 @@ bool SliceEngine::run()
         }
     }
 
+    // Runs even when substitution was skipped: both fixes guard against
+    // libslic3r SEGVs and are independent of the substitution policy.
+    normalize_loaded_config();
+
     if (validate_input())
     {
         // --- Setup timeout deadline ---
@@ -320,6 +324,8 @@ bool SliceEngine::run_preset_substitution_only()
         }
     }
 
+    normalize_loaded_config();
+
     // m_config now holds the substitution result; run()'s later stages do not
     // modify the preset keys, so callers can read it via config().
     build_statistics();
@@ -361,6 +367,8 @@ bool SliceEngine::run_geometry_preprocess_only()
             return false;
         }
     }
+
+    normalize_loaded_config();
 
     // --- Geometry-half preprocessing (mirrors run():185-226) ---
     if (!validate_input())
@@ -737,6 +745,85 @@ bool SliceEngine::apply_preset_substitution()
     // Non-blocking: substitution failure is a warning, not a fatal error.
     apply_process_official_preset();
     return true;
+}
+
+// Normalise flush_volumes_matrix / flush_volumes_vector to match the actual
+// filament slot count. 3MF files authored by editing the AMS colour palette
+// sometimes ship a flush matrix whose dimension no longer matches the filament
+// count (e.g. a 3x3 matrix with 4 filament slots). The desktop GUI repairs this
+// in PresetBundle::update_multi_material_filament_presets; the headless engine
+// has no GUI, so it must do the same here. Without it, Print::_make_wipe_tower
+// (libslic3r) hits its `filament_diameter.size() > sqrt(matrix.size())` guard,
+// skips wipe-tower/tool-ordering construction, and the subsequent skirt&brim
+// step dereferences an empty ToolOrdering -> SIGSEGV. Ported from
+// PresetBundle.cpp:3650-3675 (upstream OrcaSlicer).
+static void normalize_flush_volumes_matrix(DynamicPrintConfig& config)
+{
+    constexpr double kEps = 1e-4; // matches libslic3r EPSILON (libslic3r.h)
+
+    const auto* fd_opt = config.option<ConfigOptionFloats>("filament_diameter");
+    if (!fd_opt) return;
+    const size_t num_filaments = fd_opt->values.size();
+    if (num_filaments == 0) return;
+
+    auto* m_opt = config.option<ConfigOptionFloats>("flush_volumes_matrix");
+    if (!m_opt) return; // absent → backfill already supplied the 4x4 default
+    const std::vector<double> old_matrix = m_opt->values;
+    const size_t old_n = static_cast<size_t>(std::sqrt(static_cast<double>(old_matrix.size())) + kEps);
+    if (num_filaments == old_n) return;
+
+    // Resize flush_volumes_vector to 2*num_filaments (default 140. per upstream).
+    auto* v_opt = config.option<ConfigOptionFloats>("flush_volumes_vector");
+    std::vector<double> filaments = v_opt ? v_opt->values : std::vector<double>{};
+    while (filaments.size() < 2 * num_filaments) {
+        filaments.push_back(filaments.size() > 1 ? filaments[0] : 140.);
+        filaments.push_back(filaments.size() > 1 ? filaments[1] : 140.);
+    }
+    while (filaments.size() > 2 * num_filaments) {
+        filaments.pop_back();
+        filaments.pop_back();
+    }
+
+    // Rebuild the matrix to num_filaments x num_filaments: copy old pairs that
+    // still fit, synthesise the rest (diagonal=0, off-diagonal=load+unload).
+    std::vector<double> new_matrix;
+    new_matrix.reserve(num_filaments * num_filaments);
+    for (size_t i = 0; i < num_filaments; ++i)
+        for (size_t j = 0; j < num_filaments; ++j) {
+            if (i < old_n && j < old_n)
+                new_matrix.push_back(old_matrix[i * old_n + j]);
+            else
+                new_matrix.push_back(i == j ? 0. : filaments[2 * i] + filaments[2 * j + 1]);
+        }
+
+    m_opt->values = std::move(new_matrix);
+    if (v_opt) v_opt->values = std::move(filaments);
+}
+
+void SliceEngine::normalize_loaded_config()
+{
+    // (a) Backfill any PrintConfig keys the 3MF / preset chain left undefined.
+    // Print::apply() and GCode::_do_export() dereference several options
+    // without a null check (e.g. seam_slope_type, thumbnails), so a config
+    // that omits them SEGVs deep inside libslic3r. The desktop GUI never sees
+    // this because it always operates on a full PrintConfig; the CLI path
+    // must add the missing keys from FullPrintConfig defaults itself. Only
+    // keys absent from m_config are taken — values the project/preset
+    // already set are kept.
+    {
+        const auto& defaults = FullPrintConfig::defaults();
+        t_config_option_keys missing;
+        for (const std::string& key : defaults.keys())
+            if (!m_config.has(key))
+                missing.emplace_back(key);
+        if (!missing.empty())
+            m_config.apply_only(defaults, missing, true);
+    }
+
+    // (b) Repair a flush_volumes_matrix whose dimension doesn't match the
+    // filament slot count (common in 3MFs whose AMS palette was edited).
+    // See normalize_flush_volumes_matrix above.
+    normalize_flush_volumes_matrix(m_config);
 }
 
 void SliceEngine::strip_user_content()
@@ -2306,59 +2393,6 @@ bool SliceEngine::prepare_plate_print(int plate_id, Print& print, const Vec3d& o
     return true;
 }
 
-// Normalise flush_volumes_matrix / flush_volumes_vector to match the actual
-// filament slot count. 3MF files authored by editing the AMS colour palette
-// sometimes ship a flush matrix whose dimension no longer matches the filament
-// count (e.g. a 3x3 matrix with 4 filament slots). The desktop GUI repairs this
-// in PresetBundle::update_multi_material_filament_presets; the headless engine
-// has no GUI, so it must do the same here. Without it, Print::_make_wipe_tower
-// (libslic3r) hits its `filament_diameter.size() > sqrt(matrix.size())` guard,
-// skips wipe-tower/tool-ordering construction, and the subsequent skirt&brim
-// step dereferences an empty ToolOrdering -> SIGSEGV. Ported from
-// PresetBundle.cpp:3650-3675 (upstream OrcaSlicer).
-static void normalize_flush_volumes_matrix(DynamicPrintConfig& config)
-{
-    constexpr double kEps = 1e-4; // matches libslic3r EPSILON (libslic3r.h)
-
-    const auto* fd_opt = config.option<ConfigOptionFloats>("filament_diameter");
-    if (!fd_opt) return;
-    const size_t num_filaments = fd_opt->values.size();
-    if (num_filaments == 0) return;
-
-    auto* m_opt = config.option<ConfigOptionFloats>("flush_volumes_matrix");
-    if (!m_opt) return; // absent → backfill already supplied the 4x4 default
-    const std::vector<double> old_matrix = m_opt->values;
-    const size_t old_n = static_cast<size_t>(std::sqrt(static_cast<double>(old_matrix.size())) + kEps);
-    if (num_filaments == old_n) return;
-
-    // Resize flush_volumes_vector to 2*num_filaments (default 140. per upstream).
-    auto* v_opt = config.option<ConfigOptionFloats>("flush_volumes_vector");
-    std::vector<double> filaments = v_opt ? v_opt->values : std::vector<double>{};
-    while (filaments.size() < 2 * num_filaments) {
-        filaments.push_back(filaments.size() > 1 ? filaments[0] : 140.);
-        filaments.push_back(filaments.size() > 1 ? filaments[1] : 140.);
-    }
-    while (filaments.size() > 2 * num_filaments) {
-        filaments.pop_back();
-        filaments.pop_back();
-    }
-
-    // Rebuild the matrix to num_filaments x num_filaments: copy old pairs that
-    // still fit, synthesise the rest (diagonal=0, off-diagonal=load+unload).
-    std::vector<double> new_matrix;
-    new_matrix.reserve(num_filaments * num_filaments);
-    for (size_t i = 0; i < num_filaments; ++i)
-        for (size_t j = 0; j < num_filaments; ++j) {
-            if (i < old_n && j < old_n)
-                new_matrix.push_back(old_matrix[i * old_n + j]);
-            else
-                new_matrix.push_back(i == j ? 0. : filaments[2 * i] + filaments[2 * j + 1]);
-        }
-
-    m_opt->values = std::move(new_matrix);
-    if (v_opt) v_opt->values = std::move(filaments);
-}
-
 DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
 {
     // Multi-extruder / wipe-tower handling is delegated entirely to libslic3r.
@@ -2386,25 +2420,10 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     // AMS per-layer, height-range, vase, by-object, empty-layer).
     //
     // Work on a per-plate copy so per-plate overrides below do not leak into
-    // subsequent plates (m_config is shared across the pipeline).
+    // subsequent plates (m_config is shared across the pipeline). Key backfill
+    // and flush-matrix normalization are done once on m_config by
+    // normalize_loaded_config() before the per-plate loop.
     DynamicPrintConfig merged_config = m_config;
-
-    // Backfill any PrintConfig keys the 3MF / preset chain left undefined.
-    // Print::apply() and GCode::_do_export() dereference several options without a
-    // null check (e.g. seam_slope_type, thumbnails), so a config that omits them
-    // SEGVs deep inside libslic3r. The desktop GUI never sees this because it
-    // always operates on a full PrintConfig; the CLI path must add the missing
-    // keys from FullPrintConfig defaults itself. Only keys absent from
-    // merged_config are taken — values the project/preset already set are kept.
-    {
-        const auto& defaults = FullPrintConfig::defaults();
-        t_config_option_keys missing;
-        for (const std::string& key : defaults.keys())
-            if (!merged_config.has(key))
-                missing.emplace_back(key);
-        if (!missing.empty())
-            merged_config.apply_only(defaults, missing, true);
-    }
 
     // Apply per-plate config overrides (curr_bed_type, print_sequence, spiral_mode, etc.)
     for (const auto& pd : m_plate_data)
@@ -2415,12 +2434,6 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
             break;
         }
     }
-
-    // Repair a flush_volumes_matrix whose dimension doesn't match the filament
-    // slot count (common in 3MFs whose AMS palette was edited). Mirrors the
-    // desktop GUI's PresetBundle::update_multi_material_filament_presets, which
-    // the headless engine never runs. See normalize_flush_volumes_matrix.
-    normalize_flush_volumes_matrix(merged_config);
 
     return merged_config;
 }

@@ -67,6 +67,19 @@ public:
     // m_cfg.skip_preset_substitution is set.
     bool apply_preset_substitution();
 
+    // One-shot normalization of m_config, run once per pipeline (in every entry
+    // point) after the preset-substitution stage — including when substitution
+    // was skipped, because both fixes guard against libslic3r SEGVs and are
+    // independent of the substitution policy:
+    //  (a) backfill PrintConfig keys the 3MF / preset chain left undefined;
+    //  (b) repair flush_volumes_matrix / flush_volumes_vector dimensions
+    //      (normalize_flush_volumes_matrix).
+    // Both are global (plate-agnostic) and idempotent, so running them once on
+    // m_config — instead of per-plate inside prepare_merged_config_for_plate —
+    // also lets earlier readers (setup_extruder_params, per-plate checks) see
+    // the normalized config.
+    void normalize_loaded_config();
+
     // Run only the load + preset-substitution prefix of the pipeline (load_3mf,
     // validate_printer_model, collect_config_warnings, load_system_presets,
     // load_project_presets, apply_preset_substitution), then stop — no geometry
@@ -88,8 +101,9 @@ public:
     // SliceEngine.cpp.
     bool run_geometry_preprocess_only();
 
-    // Read-only access to the merged config (final after
-    // apply_preset_substitution; run() leaves it unchanged past that point).
+    // Read-only access to the merged config (final after the
+    // preset-substitution stage plus normalize_loaded_config; run() leaves it
+    // unchanged past that point).
     const Slic3r::DynamicPrintConfig& config() const
     {
         return m_config;
@@ -420,9 +434,11 @@ private:
 
     // Build the per-plate merged DynamicPrintConfig consumed by print.apply().
     // Starts from m_config and layers per-plate config overrides (curr_bed_type,
-    // print_sequence, …) from PlateData on top. Multi-extruder / wipe-tower
-    // handling is delegated to libslic3r's ToolOrdering — no filament trimming
-    // is performed here (see prepare_merged_config_for_plate impl for rationale).
+    // print_sequence, …) from PlateData on top. Key backfill and flush-matrix
+    // normalization are NOT done here — they are global and run once in
+    // normalize_loaded_config() before the per-plate loop. Multi-extruder /
+    // wipe-tower handling is delegated to libslic3r's ToolOrdering — no
+    // filament trimming is performed here (see impl for rationale).
     Slic3r::DynamicPrintConfig prepare_merged_config_for_plate(int plate_id);
 
     // Run Print::validate and classify all resulting warnings and errors into
