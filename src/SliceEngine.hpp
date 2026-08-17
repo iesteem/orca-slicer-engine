@@ -502,8 +502,10 @@ private:
     void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
 
     // Post-slicing analysis: extract filament usage, compute cost, embed
-    // thumbnails, and collect per-plate issues into result.issues.
-    void do_postprocessing(int plate_id, PlateSliceResult& result);
+    // thumbnails, and collect per-plate issues into result.issues. plate_origin
+    // (grid-layout offset of this plate) shifts G-code visualization moves
+    // into plate-local space for the toolpath-outside check.
+    void do_postprocessing(int plate_id, PlateSliceResult& result, const Slic3r::Vec2d& plate_origin);
 
     // Free G-code visualization data (moves/lines_ends) and store the result
     // into m_plate_results. Must be called after post-processing for each plate.

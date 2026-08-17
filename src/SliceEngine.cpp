@@ -17,6 +17,8 @@
 #include <boost/log/trivial.hpp>
 
 #include "libslic3r/BuildVolume.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/CustomGCode.hpp"
 
 #include "libslic3r/BoundingBox.hpp"
@@ -2061,7 +2063,7 @@ void SliceEngine::process_plate(int plate_id)
     }
 
     // --- Post-processing ---
-    do_postprocessing(plate_id, slice_result);
+    do_postprocessing(plate_id, slice_result, Vec2d(origin.x(), origin.y()));
 
     // --- Finalise ---
     finalise_plate_result(plate_id, slice_result);
@@ -2995,13 +2997,89 @@ static void remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
                                << ": empty G-code layers, G-code file discarded";
 }
 
-void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result)
+// Compute gcode_result.toolpath_outside, replicating desktop
+// GCodeViewer::load_toolpaths (GCodeViewer.cpp:2354-2419). On desktop this flag
+// is produced by the GUI's GCodeViewer and only consumed afterwards; the
+// headless export path never sets it, so without this port the
+// TOOLPATH_OUTSIDE check below reads a field that is always false. Two
+// headless-specific adaptations:
+//  - the bed polygon comes from the engine config (GCodeProcessor's
+//    apply_config(const PrintConfig&) at GCodeProcessor.cpp:794 fills
+//    printable_height but never printable_area);
+//  - moves are stored in global grid-layout coordinates (store_move_vertex
+//    adds the plate offset back, GCodeProcessor.cpp:4797) while the written
+//    G-code text is plate-local, so the check shifts the bounding box into
+//    plate-local space first — same as the desktop viewer renders each plate.
+static void compute_toolpath_outside(GCodeProcessorResult& gcode_result, const DynamicPrintConfig& config,
+                                     const Slic3r::Vec2d& plate_origin)
+{
+    const auto* printable_area_opt = config.option<ConfigOptionPoints>("printable_area");
+    if (!printable_area_opt || printable_area_opt->values.empty())
+        return; // no bed defined — nothing to check against
+
+    // Shift moves into plate-local coordinates (see comment above) so that
+    // both the bbox-based Rectangle branch and the per-move Circle/Convex
+    // branches of all_paths_inside see the same plate-local space. moves
+    // are visualization-only data the engine drops right after this check
+    // (finalise_plate_result), so in-place mutation is safe.
+    if (plate_origin.squaredNorm() > 0.0) {
+        const Vec3f shift(-static_cast<float>(plate_origin.x()),
+                          -static_cast<float>(plate_origin.y()), 0.0f);
+        for (auto& move : gcode_result.moves)
+            move.position += shift;
+    }
+
+    // Desktop m_paths_bounding_box: Extrude moves only (custom-gcode moves and
+    // zero-width/height moves excluded), arc interpolation points included.
+    BoundingBoxf3 paths_bbox;
+    Points pts;
+    auto merge = [&paths_bbox, &pts](const Vec3f& position) {
+        paths_bbox.merge(position.cast<double>());
+        pts.emplace_back(Point(scale_(position.x()), scale_(position.y())));
+    };
+    for (const auto& move : gcode_result.moves) {
+        if (move.type == EMoveType::Extrude && move.extrusion_role != erCustom &&
+            move.width != 0.0f && move.height != 0.0f) {
+            merge(move.position);
+            if (move.is_arc_move_with_interpolation_points())
+                for (const auto& p : move.interpolation_points)
+                    if (move.width != 0.0f && move.height != 0.0f)
+                        merge(p);
+        }
+    }
+    if (paths_bbox.defined) {
+        const BuildVolume build_volume(printable_area_opt->values, gcode_result.printable_height);
+        bool contained = build_volume.all_paths_inside(gcode_result, paths_bbox);
+        if (contained && !gcode_result.bed_exclude_area.empty()) {
+            // Desktop checks the toolpath convex hull against each bed exclude
+            // area polygon (GCodeViewer.cpp:2404-2417); the exclude bounding
+            // boxes are built from 4-point groups (PartPlate.cpp:386-403).
+            const Polygon convex_hull_2d = Geometry::convex_hull(std::move(pts));
+            BoundingBoxf3 exclude_bb;
+            for (size_t i = 0; i < gcode_result.bed_exclude_area.size(); ++i) {
+                if (i % 4 == 0)
+                    exclude_bb = BoundingBoxf3();
+                const Vec2d& p = gcode_result.bed_exclude_area[i];
+                exclude_bb.merge(Vec3d(p(0), p(1), 0.0));
+                if (i % 4 == 3 &&
+                    !intersection({ exclude_bb.polygon(true) }, { convex_hull_2d }).empty()) {
+                    contained = false;
+                    break;
+                }
+            }
+        }
+        gcode_result.toolpath_outside = !contained;
+    }
+}
+
+void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, const Slic3r::Vec2d& plate_origin)
 {
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
 
     // Toolpaths outside print volume. Desktop blocks printing via
     // is_slice_result_ready_for_print() when toolpath_outside is true.
+    compute_toolpath_outside(result.gcode_result, m_config, plate_origin);
     if (result.gcode_result.toolpath_outside)
     {
         log_plate_message("[Post-processing]", "ERROR", plate_id,
@@ -3438,6 +3516,11 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 
     plate_stats.issues = result.issues;
     plate_stats.plate_count = static_cast<int>(m_plate_data.size());
+    // Diagnostic flags are meaningful regardless of plate success (a plate
+    // fails precisely BECAUSE toolpath_outside fired) — fill them before the
+    // early return, unlike the stats below which need a successful slice.
+    plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
+    plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
 
     if (!plate_stats.success)
         return;
@@ -3460,8 +3543,6 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.total_filament_g = result.total_weight;
     plate_stats.total_cost = result.total_cost;
     plate_stats.support_used = result.support_used;
-    plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
-    plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
 
     // Prefer the diameters/densities captured at slice time (result.filament_*), which
     // mirror the post-apply print.config() the slicer applied. gcode_result mirrors the

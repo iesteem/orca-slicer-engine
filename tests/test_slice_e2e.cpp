@@ -320,3 +320,54 @@ TEST_CASE("Failed plate suppresses gcode.3mf packaging (all-or-nothing)", "[inte
     // though stats.plates is non-empty. No gcode.3mf is produced.
     REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_oob_no_package.gcode.3mf"));
 }
+
+// ============================================================================
+// Case 8 — TOOLPATH_OUTSIDE post-slicing detection (do_postprocessing →
+// compute_toolpath_outside). The model geometry itself passes the build-volume
+// pre-check, but the extruded G-code paths extend past the bed edge (measured:
+// plate 1 extrusion X up to ~277.7 on a 250mm bed). Before the fix, this check
+// read GCodeProcessorResult::toolpath_outside, which the headless export path
+// never computes (desktop fills it in the GUI GCodeViewer), so the check was a
+// dead branch and this model sliced "successfully" with unusable output.
+//
+// Regression fixture: 3 plates; plate 1's toolpaths exceed the bed, plates 2-3
+// stay inside and must NOT be flagged (guards against the global-vs-plate-local
+// coordinate mistake, where multi-plate grid offsets made every plate look
+// outside). The fixture is large (~30MB) and lives in the external pool.
+// ============================================================================
+TEST_CASE("Toolpath outside bed detected post-slice, in-plate siblings not flagged", "[integration][slice][fail][toolpath]")
+{
+    const char* external = "/home/joyx/Downloads/切片引擎测试-3MF文件包/toolpath_outside/10514_toolpath_outside.3mf";
+    if (!boost::filesystem::exists(external))
+        SKIP("toolpath-outside fixture not present (large, external); skipping");
+
+    auto r = run_full(external, "toolpath_outside");
+
+    // The post-processing error propagates: run() reports failure, exit 7
+    // (EXIT_POSTPROCESS_ERROR), and all-or-nothing suppresses the package.
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Exactly the offending plate carries the error; its clean siblings do not.
+    // Plate ids in stats are 1-based. Both the plate-level flag (PlateStats::
+    // toolpath_outside, populated from gcode_result at assemble_plate_stats)
+    // and the issue entry must agree.
+    int flagged = 0;
+    for (const auto& p : r->engine->stats().plates) {
+        bool has_outside_issue = false;
+        for (const auto& iss : p.issues)
+            if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error) {
+                has_outside_issue = true;
+                break;
+            }
+        REQUIRE(p.toolpath_outside == has_outside_issue);
+        if (has_outside_issue) {
+            ++flagged;
+            REQUIRE_FALSE(p.success);
+        }
+    }
+    REQUIRE(flagged == 1);
+    REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+}
