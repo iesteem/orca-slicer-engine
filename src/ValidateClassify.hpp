@@ -55,6 +55,19 @@ inline constexpr const char* kOrganicFixedSuggestion =
 inline constexpr const char* kOrganicSubstring =
     "Variable layer height is not supported with Organic supports";
 
+// Substring identifying the prime-tower / mismatched variable layer height
+// warning inside a NOT_DEFINED (type 0) exception message. Escalated to error:
+// the tower is silently dropped when triggered, which corrupts multi-color
+// changes, so the print must not proceed (project decision 2026-08-18).
+inline constexpr const char* kPrimeTowerSubstring =
+    "The prime tower is only supported if all objects have the same variable layer height";
+inline constexpr const char* kPrimeTowerFixedMessage =
+    "The prime tower is only supported if all objects have the same variable layer height. "
+    "The prime tower would be silently disabled, corrupting multi-color filament changes.";
+inline constexpr const char* kPrimeTowerFixedSuggestion =
+    "In Snapmaker Orca, unify the variable layer height across all objects on this plate, "
+    "or disable the prime tower.";
+
 // Classify a validate exception.
 //   exception_type : static_cast<int>(StringObjectException::type), 0..6
 //   is_error_path  : true for emit_validate_error (PRINT_VALIDATE_* codes),
@@ -114,6 +127,12 @@ ExceptionClassification classify_validate_exception(
                 c.code          = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
                 c.fixed_message = kOrganicFixedMessage;
             }
+            else if (message.find(kPrimeTowerSubstring) != std::string::npos)
+            {
+                c.level         = IssueLevel::error;
+                c.code          = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
+                c.fixed_message = kPrimeTowerFixedMessage;
+            }
             else
             {
                 c.level = IssueLevel::warning;
@@ -122,9 +141,20 @@ ExceptionClassification classify_validate_exception(
         }
         else
         {
-            // NOT_DEFINED does not occur on the warning path; treat as default.
-            c.level = IssueLevel::warning;
-            c.code  = "PRINT_VALIDATE_WARNING";
+            // NOT_DEFINED does not occur on the warning path; treat as default,
+            // except the prime-tower variable-layer-height case, which is
+            // escalated to error (kPrimeTowerSubstring).
+            if (message.find(kPrimeTowerSubstring) != std::string::npos)
+            {
+                c.level         = IssueLevel::error;
+                c.code          = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
+                c.fixed_message = kPrimeTowerFixedMessage;
+            }
+            else
+            {
+                c.level = IssueLevel::warning;
+                c.code  = "PRINT_VALIDATE_WARNING";
+            }
         }
         break;
     default:
