@@ -134,6 +134,25 @@ TEST_CASE("validate: NOT_DEFINED substring match is case-sensitive", "[validate]
 }
 
 // ============================================================================
+// Prime tower / mismatched variable layer height — warning path, escalated
+// ============================================================================
+
+TEST_CASE("validate: prime-tower warning path escalates to error with fixed message", "[validate]") {
+    auto c = warn(orca::kExceptNotDefined, orca::kPrimeTowerSubstring);
+    CHECK(c.level == IssueLevel::error);
+    CHECK(c.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT");
+    CHECK(!c.fixed_message.empty());
+}
+
+TEST_CASE("validate: prime-tower error path keeps PRIME_TOWER code too", "[validate]") {
+    // If libslic3r ever reports this via the error path, still escalate.
+    auto c = err(orca::kExceptNotDefined, std::string("x ") + orca::kPrimeTowerSubstring + " y");
+    CHECK(c.level == IssueLevel::error);
+    CHECK(c.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT");
+    CHECK(c.continue_slicing == true);          // NOT_DEFINED never aborts directly
+}
+
+// ============================================================================
 // Default / unknown type
 // ============================================================================
 

@@ -2568,7 +2568,9 @@ void SliceEngine::emit_validate_warning(int plate_id, const StringObjectExceptio
 
     if (cls.level == IssueLevel::error)
     {
-        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
+        std::string suggestion = cls.code == "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT" ? orca::kOrganicFixedSuggestion
+                          : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
+                                                                                      : std::string{};
         m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
@@ -2599,7 +2601,9 @@ bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException&
     std::string message = cls.fixed_message.empty() ? (err.string + opt_hint) : cls.fixed_message;
     if (cls.level == IssueLevel::error)
     {
-        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
+        std::string suggestion = cls.code == "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT" ? orca::kOrganicFixedSuggestion
+                          : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
+                                                                                      : std::string{};
         m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
