@@ -134,22 +134,32 @@ TEST_CASE("validate: NOT_DEFINED substring match is case-sensitive", "[validate]
 }
 
 // ============================================================================
-// Prime tower / mismatched variable layer height — warning path, escalated
+// Prime tower / mismatched variable layer height — escalated via enum type 9
 // ============================================================================
 
-TEST_CASE("validate: prime-tower warning path escalates to error with fixed message", "[validate]") {
-    auto c = warn(orca::kExceptNotDefined, orca::kPrimeTowerSubstring);
-    CHECK(c.level == IssueLevel::error);
-    CHECK(c.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT");
-    CHECK(!c.fixed_message.empty());
+TEST_CASE("validate: dedicated prime-tower enum type (9) escalates on both paths, message passed through", "[validate]") {
+    auto w = warn(orca::kExceptPrimeTowerVariableLayer);
+    CHECK(w.level == IssueLevel::error);
+    CHECK(w.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT");
+    CHECK(w.fixed_message.empty());              // message comes from exception.string
+
+    auto e = err(orca::kExceptPrimeTowerVariableLayer);
+    CHECK(e.level == IssueLevel::error);
+    CHECK(e.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT");
+    CHECK(e.fixed_message.empty());
+    CHECK(e.continue_slicing == false);          // dedicated type aborts on error path
 }
 
-TEST_CASE("validate: prime-tower error path keeps PRIME_TOWER code too", "[validate]") {
-    // If libslic3r ever reports this via the error path, still escalate.
-    auto c = err(orca::kExceptNotDefined, std::string("x ") + orca::kPrimeTowerSubstring + " y");
-    CHECK(c.level == IssueLevel::error);
-    CHECK(c.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT");
-    CHECK(c.continue_slicing == true);          // NOT_DEFINED never aborts directly
+TEST_CASE("validate: new upstream types 6/7 default without PRIME_TOWER confusion", "[validate]") {
+    // After upstream renumbering (COLD_PLATE=6, FLOW_RATIO_ZERO=7, ORGANIC=8),
+    // old value 6 must NOT be interpreted as ORGANIC.
+    auto c = warn(orca::kExceptColdPlateIncompatible);
+    CHECK(c.level == IssueLevel::warning);
+    CHECK(c.code == "PRINT_VALIDATE_WARNING");
+
+    auto f = warn(orca::kExceptFlowRatioZero);
+    CHECK(f.level == IssueLevel::warning);
+    CHECK(f.code == "PRINT_VALIDATE_WARNING");
 }
 
 // ============================================================================

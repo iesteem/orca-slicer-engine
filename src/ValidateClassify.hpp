@@ -15,7 +15,7 @@
 
 namespace orca {
 
-// StringExceptionType integer values (PrintBase.hpp:19-27). Reproduced as
+// StringExceptionType integer values (PrintBase.hpp). Reproduced as
 // named constants so this header does not include libslic3r.
 inline constexpr int kExceptNotDefined                    = 0;
 inline constexpr int kExceptFilamentNotMatchBedType       = 1;
@@ -23,7 +23,10 @@ inline constexpr int kExceptFilamentsDifferentTemp        = 2;
 inline constexpr int kExceptObjectCollisionInSeqPrint     = 3;
 inline constexpr int kExceptObjectCollisionInLayerPrint   = 4;
 inline constexpr int kExceptLayerHeightExceedsLimit       = 5;
-inline constexpr int kExceptOrganicSupportVariableLayer   = 6;
+inline constexpr int kExceptColdPlateIncompatible         = 6;
+inline constexpr int kExceptFlowRatioZero                 = 7;
+inline constexpr int kExceptOrganicSupportVariableLayer   = 8;
+inline constexpr int kExceptPrimeTowerVariableLayer       = 9;
 
 // Result of classifying one validate exception. The SliceEngine thin wrapper:
 //   - picks make_error vs make_warning by `level`,
@@ -55,15 +58,12 @@ inline constexpr const char* kOrganicFixedSuggestion =
 inline constexpr const char* kOrganicSubstring =
     "Variable layer height is not supported with Organic supports";
 
-// Substring identifying the prime-tower / mismatched variable layer height
-// warning inside a NOT_DEFINED (type 0) exception message. Escalated to error:
-// the tower is silently dropped when triggered, which corrupts multi-color
-// changes, so the print must not proceed (project decision 2026-08-18).
-inline constexpr const char* kPrimeTowerSubstring =
-    "The prime tower is only supported if all objects have the same variable layer height";
-inline constexpr const char* kPrimeTowerFixedMessage =
-    "The prime tower is only supported if all objects have the same variable layer height. "
-    "The prime tower would be silently disabled, corrupting multi-color filament changes.";
+// Suggestion for the prime-tower / mismatched variable layer height error
+// (STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT = 9). The message itself is
+// passed through from the exception string (keeps upstream wording); this is
+// the engine-only "what to do" text. Escalated to error because the tower is
+// silently dropped when triggered, corrupting multi-color changes (decision
+// 2026-08-18).
 inline constexpr const char* kPrimeTowerFixedSuggestion =
     "In Snapmaker Orca, unify the variable layer height across all objects on this plate, "
     "or disable the prime tower.";
@@ -116,6 +116,20 @@ ExceptionClassification classify_validate_exception(
         c.code          = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
         c.fixed_message = is_error_path ? std::string{} : std::string(kOrganicFixedMessage);
         break;
+    case kExceptPrimeTowerVariableLayer:
+        // Upstream tags the prime-tower variable-layer-height check with
+        // STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT (=9). Both paths
+        // escalate to error; the message is passed through from the exception
+        // string (no fixed_message).
+        c.level = IssueLevel::error;
+        c.code  = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
+        break;
+    case kExceptColdPlateIncompatible:
+    case kExceptFlowRatioZero:
+        // New upstream types (6/7) with no cloud-specific handling yet.
+        c.level = is_error_path ? IssueLevel::error : IssueLevel::warning;
+        c.code  = is_error_path ? "PRINT_VALIDATE_ERROR" : "PRINT_VALIDATE_WARNING";
+        break;
     case kExceptNotDefined:
         if (is_error_path)
         {
@@ -127,12 +141,6 @@ ExceptionClassification classify_validate_exception(
                 c.code          = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
                 c.fixed_message = kOrganicFixedMessage;
             }
-            else if (message.find(kPrimeTowerSubstring) != std::string::npos)
-            {
-                c.level         = IssueLevel::error;
-                c.code          = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
-                c.fixed_message = kPrimeTowerFixedMessage;
-            }
             else
             {
                 c.level = IssueLevel::warning;
@@ -141,20 +149,9 @@ ExceptionClassification classify_validate_exception(
         }
         else
         {
-            // NOT_DEFINED does not occur on the warning path; treat as default,
-            // except the prime-tower variable-layer-height case, which is
-            // escalated to error (kPrimeTowerSubstring).
-            if (message.find(kPrimeTowerSubstring) != std::string::npos)
-            {
-                c.level         = IssueLevel::error;
-                c.code          = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
-                c.fixed_message = kPrimeTowerFixedMessage;
-            }
-            else
-            {
-                c.level = IssueLevel::warning;
-                c.code  = "PRINT_VALIDATE_WARNING";
-            }
+            // NOT_DEFINED does not occur on the warning path; treat as default.
+            c.level = IssueLevel::warning;
+            c.code  = "PRINT_VALIDATE_WARNING";
         }
         break;
     default:
