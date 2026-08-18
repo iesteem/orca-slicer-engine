@@ -3025,8 +3025,16 @@ static void compute_toolpath_outside(GCodeProcessorResult& gcode_result, const D
     if (plate_origin.squaredNorm() > 0.0) {
         const Vec3f shift(-static_cast<float>(plate_origin.x()),
                           -static_cast<float>(plate_origin.y()), 0.0f);
-        for (auto& move : gcode_result.moves)
+        for (auto& move : gcode_result.moves) {
             move.position += shift;
+            // Arc interpolation points live in the same global grid space as
+            // position (store_move_vertex adds the plate offset to both), so
+            // they must shift too — otherwise arc moves on non-origin plates
+            // pull the paths bbox into neighbouring plate cells and trip
+            // TOOLPATH_OUTSIDE.
+            for (auto& p : move.interpolation_points)
+                p += shift;
+        }
     }
 
     // Desktop m_paths_bounding_box: Extrude moves only (custom-gcode moves and
