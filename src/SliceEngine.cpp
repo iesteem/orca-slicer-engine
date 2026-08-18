@@ -1470,10 +1470,15 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     // Look up a process preset by name: system presets first, then project
     // embedded. Follows the same pattern as resolve_filament.
 
+    // "System" here means a genuine system preset: load_project_embedded_presets
+    // merges 3MF-embedded presets into m_preset_bundle->prints, so find_preset
+    // can return a user-authored embedded preset that merely shares the name
+    // space. Such presets are waypoints on an inheritance chain, not official
+    // configs safe to apply wholesale.
     auto find_in_system = [this](const std::string& name) -> const Preset*
     {
         const Preset* p = m_preset_bundle->prints.find_preset(name, false);
-        if (p && p->name == name) return p;
+        if (p && p->name == name && !p->is_project_embedded) return p;
         return nullptr;
     };
 
@@ -1491,8 +1496,12 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     if (const Preset* sys = find_in_system(preset_name))
         return sys;
 
-    // Case 2: Not a direct system match — walk the inheritance chain
-    // to find a system preset ancestor.
+    // Case 2: Not a direct system match — walk the inheritance chain through
+    // project-embedded presets to find a *system* preset ancestor. Embedded
+    // presets are only waypoints on the chain, never the return value: a
+    // user-authored embedded preset (possibly a hollow shell whose only real
+    // content is "inherits") must not be applied wholesale as if it were
+    // official — that would overwrite valid project config with empty values.
     const Preset* current = find_in_project(preset_name);
     std::set<std::string> visited;
     while (current)
@@ -3045,8 +3054,16 @@ static void compute_toolpath_outside(GCodeProcessorResult& gcode_result, const D
     if (plate_origin.squaredNorm() > 0.0) {
         const Vec3f shift(-static_cast<float>(plate_origin.x()),
                           -static_cast<float>(plate_origin.y()), 0.0f);
-        for (auto& move : gcode_result.moves)
+        for (auto& move : gcode_result.moves) {
             move.position += shift;
+            // Arc interpolation points live in the same global grid space as
+            // position (store_move_vertex adds the plate offset to both), so
+            // they must shift too — otherwise arc moves on non-origin plates
+            // pull the paths bbox into neighbouring plate cells and trip
+            // TOOLPATH_OUTSIDE.
+            for (auto& p : move.interpolation_points)
+                p += shift;
+        }
     }
 
     // Desktop m_paths_bounding_box: Extrude moves only (custom-gcode moves and
