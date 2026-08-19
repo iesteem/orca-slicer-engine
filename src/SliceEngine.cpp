@@ -1458,6 +1458,14 @@ void SliceEngine::apply_process_official_preset()
             << "No system process preset found for \"" << preset_name
             << "\" (not in system presets and no system ancestor in"
             << " inheritance chain); process settings not updated.";
+        // Mirrors the unified substitution policy: unlike printer/filament,
+        // a process preset that cannot be resolved to an official system
+        // preset is not fatal here — slicing continues with the project
+        // config values. Surface it in issues so callers can see the
+        // official process preset was never applied.
+        m_stats.issues.push_back(make_warning(-1, "PROCESS_NOT_SUBSTITUTED",
+            "Process preset \"" + preset_name + "\" does not resolve to any official system preset; "
+            "process settings were kept from the project config"));
     }
 
     apply_auto_brim_fallback();
@@ -1468,10 +1476,15 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     // Look up a process preset by name: system presets first, then project
     // embedded. Follows the same pattern as resolve_filament.
 
+    // "System" here means a genuine system preset: load_project_embedded_presets
+    // merges 3MF-embedded presets into m_preset_bundle->prints, so find_preset
+    // can return a user-authored embedded preset that merely shares the name
+    // space. Such presets are waypoints on an inheritance chain, not official
+    // configs safe to apply wholesale.
     auto find_in_system = [this](const std::string& name) -> const Preset*
     {
         const Preset* p = m_preset_bundle->prints.find_preset(name, false);
-        if (p && p->name == name) return p;
+        if (p && p->name == name && !p->is_project_embedded) return p;
         return nullptr;
     };
 
@@ -1489,8 +1502,12 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     if (const Preset* sys = find_in_system(preset_name))
         return sys;
 
-    // Case 2: Not a direct system match — walk the inheritance chain
-    // to find a system preset ancestor.
+    // Case 2: Not a direct system match — walk the inheritance chain through
+    // project-embedded presets to find a *system* preset ancestor. Embedded
+    // presets are only waypoints on the chain, never the return value: a
+    // user-authored embedded preset (possibly a hollow shell whose only real
+    // content is "inherits") must not be applied wholesale as if it were
+    // official — that would overwrite valid project config with empty values.
     const Preset* current = find_in_project(preset_name);
     std::set<std::string> visited;
     while (current)
