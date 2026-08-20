@@ -407,3 +407,35 @@ TEST_CASE("Process preset with no inherited system preset fails slicing", "[inte
     CHECK(hit->message.find("My Local Preset") != std::string::npos);
     CHECK(hit->message.find("does not inherit from any official system preset") != std::string::npos);
 }
+} // namespace
+
+// --- Mini train city: hollow embedded process preset must not be applied. ---
+// The 3MF carries an embedded process preset that is a hollow shell (its only
+// real content is an "inherits" reference). Before 064dbbc/da7f518 the shell
+// was treated as official and applied wholesale, overwriting valid project
+// config with empty values (broken slicing). With is_official_preset
+// (vendor == SM_BUNDLE + not project-embedded) the shell is only an
+// inheritance-chain waypoint. Full-slice guard: all 4 plates slice clean.
+TEST_CASE("Hollow embedded process preset rejected, project slices clean (train city)", "[integration][preset][embedded]")
+{
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/hollow_embedded_preset_train_city.3mf";
+    cfg.skip_preset_substitution = false;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_ps_traincity";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+    REQUIRE(engine.stats().plates.size() == 4);
+    // Substitution outcome stays a warning (never error), and the applied
+    // process preset is the official system one resolved through the chain,
+    // not the embedded shell.
+    REQUIRE(engine.last_process_preset_name().find("train") == std::string::npos);
+}

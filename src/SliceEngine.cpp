@@ -170,11 +170,6 @@ bool SliceEngine::run()
     // apply_*_official_preset stages below.
     load_system_presets();
 
-    // Merge project-embedded presets (read from the .3mf input) into the
-    // bundle so the apply_*_official_preset stages can resolve inheritance
-    // references to them. Never blocks.
-    load_project_presets();
-
     if (!m_cfg.skip_preset_substitution)
     {
         if (!apply_preset_substitution())
@@ -313,9 +308,8 @@ bool SliceEngine::run_preset_substitution_only()
     // Collect config warnings (never blocks the pipeline).
     collect_config_warnings();
 
-    // Load vendor + project presets so apply_*_official_preset can resolve.
+    // Load vendor presets so apply_*_official_preset can resolve.
     load_system_presets();
-    load_project_presets();
 
     if (!m_cfg.skip_preset_substitution)
     {
@@ -359,7 +353,6 @@ bool SliceEngine::run_geometry_preprocess_only()
 
     collect_config_warnings();
     load_system_presets();
-    load_project_presets();
 
     if (!m_cfg.skip_preset_substitution)
     {
@@ -659,44 +652,12 @@ void SliceEngine::load_system_presets()
     }
 }
 
-// Project-embedded presets: loaded from the .3mf input file during load_3mf
-// (m_project_presets), merged into m_preset_bundle here. Logically part of
-// Stage 1.3 — paired with load_system_presets so the apply_*_official_preset
-// stages below see a unified bundle of system + project presets.
+// Unified official-preset predicate shared by the printer, filament, and
+// process substitution paths. See declaration in SliceEngine.hpp.
 
-void SliceEngine::load_project_presets()
+bool SliceEngine::is_official_preset(const Preset& p)
 {
-    // Precondition: m_preset_bundle is populated by load_system_presets().
-    // When system presets are unavailable, there is nowhere to merge project
-    // presets into, so we skip silently — apply_*_official_preset also
-    // early-exits when m_presets_available is false.
-    if (!m_presets_available || !m_preset_bundle) return;
-    if (m_project_presets.empty()) return;
-
-    PresetBundle& preset_bundle = *m_preset_bundle;
-    try
-    {
-        PresetsConfigSubstitutions preset_subs = preset_bundle.load_project_embedded_presets(
-            m_project_presets, ForwardCompatibilitySubstitutionRule::Enable);
-
-        for (const auto& preset_sub : preset_subs)
-        {
-            for (const auto& substitution : preset_sub.substitutions)
-            {
-                const char* key = substitution.opt_def ? substitution.opt_def->opt_key.c_str() : "?";
-                m_stats.issues.push_back(make_warning(-1, "PRESET_SUBSTITUTION",
-                                                      std::string("Embedded preset '") + preset_sub.preset_name +
-                                                          "' key '" + key + "' was substituted"));
-            }
-        }
-    }
-    catch (const std::exception& e)
-    {
-        // Graceful degradation: a malformed embedded preset must not abort
-        // the pipeline. The apply_*_official_preset stages below tolerate
-        // missing references via inheritance-chain fallbacks.
-        BOOST_LOG_TRIVIAL(warning) << "Failed to load project embedded presets: " << e.what();
-    }
+    return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
 }
 
 // ============================================================================
@@ -744,11 +705,8 @@ bool SliceEngine::apply_preset_substitution()
     // so that process-level settings (skirt_loops, brim_type, etc.) from a
     // different printer profile in the 3MF don't leak through. User-explicit
     // overrides (different_settings_to_system) are preserved.
-    // Blocking: when no official system ancestor can be found for the user's
-    // process preset, the product requires failing the job rather than
-    // slicing with raw 3MF process values.
-    if (!apply_process_official_preset())
-        return false;
+    // Non-blocking: substitution failure is a warning, not a fatal error.
+    apply_process_official_preset();
     return true;
 }
 
@@ -1019,8 +977,7 @@ bool SliceEngine::apply_printer_official_preset()
             if (!parent.empty())
             {
                 const Preset* candidate = m_preset_bundle->printers.find_preset(parent, false);
-                if (candidate && candidate->name == parent &&
-                    candidate->vendor && candidate->vendor->name == PresetBundle::SM_BUNDLE)
+                if (candidate && candidate->name == parent && is_official_preset(*candidate))
                 {
                     official_printer_name = parent;
                 }
@@ -1179,14 +1136,14 @@ bool SliceEngine::resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_
     // user-modified copies of the official values, symmetric with the printer
     // and process apply paths.
 
-    auto is_official_preset = [](const Preset& p) -> bool
-    {
-        return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
-    };
     auto find_in_system = [this](const std::string& name) -> Preset*
     {
+        // Same acceptance rule as find_official_process_preset: genuine system
+        // presets only (official Snapmaker vendor, not project-embedded). The
+        // is_project_embedded check guards the seam where an embedded preset
+        // inherits from an official one and shares its vendor pointer.
         auto* p = m_preset_bundle->filaments.find_preset(name, false);
-        if (p && p->name == name)
+        if (p && p->name == name && !p->is_project_embedded && is_official_preset(*p))
             return p;
         return nullptr;
     };
@@ -1379,7 +1336,7 @@ void SliceEngine::emit_filament_warnings(const FilamentGrouping& rolled_back, co
 // Stage 1.4c: Process preset substitution (official, preserves user overrides)
 // ============================================================================
 
-bool SliceEngine::apply_process_official_preset()
+void SliceEngine::apply_process_official_preset()
 {
     // Precondition: bundle availability is verified by run() before this
     // function is called, so m_preset_bundle is non-null here.
@@ -1393,7 +1350,7 @@ bool SliceEngine::apply_process_official_preset()
         BOOST_LOG_TRIVIAL(warning)
             << "default_print_profile not set; cannot determine process preset.";
         apply_auto_brim_fallback();
-        return true;
+        return;
     }
 
     const std::string preset_name = dpp->value;
@@ -1403,7 +1360,6 @@ bool SliceEngine::apply_process_official_preset()
     // at export time. Falls back to preset_name if the field is absent, empty,
     // or does not resolve to an official Snapmaker process preset.
     std::string process_system_name = preset_name;
-    std::string declared_inherits; // raw inherits_group[0], for diagnostics
     if (auto* ig_opt = m_config.option<ConfigOptionStrings>("inherits_group"))
     {
         if (!ig_opt->values.empty())
@@ -1411,10 +1367,8 @@ bool SliceEngine::apply_process_official_preset()
             const std::string& parent = ig_opt->values[0];
             if (!parent.empty())
             {
-                declared_inherits = parent;
                 const Preset* candidate = m_preset_bundle->prints.find_preset(parent, false);
-                if (candidate && candidate->name == parent &&
-                    candidate->vendor && candidate->vendor->name == PresetBundle::SM_BUNDLE)
+                if (candidate && candidate->name == parent && is_official_preset(*candidate))
                 {
                     process_system_name = parent;
                 }
@@ -1422,13 +1376,7 @@ bool SliceEngine::apply_process_official_preset()
         }
     }
 
-    // Diagnostics name: first inherited name seen on the embedded-preset chain,
-    // falling back to the raw inherits_group[0] declaration (covers 3MFs with
-    // no embedded preset files at all).
-    std::string inherits_name;
-    const Preset* official = find_official_process_preset(process_system_name, &inherits_name);
-    if (inherits_name.empty())
-        inherits_name = declared_inherits;
+    const Preset* official = find_official_process_preset(process_system_name);
 
     if (official)
     {
@@ -1466,33 +1414,25 @@ bool SliceEngine::apply_process_official_preset()
     }
     else
     {
-        // Product requirement: process preset substitution MUST succeed —
-        // slicing must not continue with raw 3MF process values. Distinguish
-        // the two failure shapes so the user can act on it precisely:
-        //   - chain traces to a named but non-official preset
-        //   - chain has no inherited preset name at all
         m_last_process_preset_name.clear();
-        std::string msg;
-        if (!inherits_name.empty())
-            msg = "Process preset \"" + preset_name + "\" inherits from system process preset \""
-                + inherits_name + "\", which is not an official system preset";
-        else
-            msg = "Process preset \"" + preset_name + "\" does not inherit from any official system preset";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PROCESS_PRESET_NOT_OFFICIAL", msg,
-                                            "Select a process preset inherited from an official Snapmaker system preset"));
-        return false;
+        BOOST_LOG_TRIVIAL(warning)
+            << "No system process preset found for \"" << preset_name
+            << "\" (not in system presets and no system ancestor in"
+            << " inheritance chain); process settings not updated.";
+        // Mirrors the unified substitution policy: unlike printer/filament,
+        // a process preset that cannot be resolved to an official system
+        // preset is not fatal here — slicing continues with the project
+        // config values. Surface it in issues so callers can see the
+        // official process preset was never applied.
+        m_stats.issues.push_back(make_warning(-1, "PROCESS_NOT_SUBSTITUTED",
+            "Process preset \"" + preset_name + "\" does not resolve to any official system preset; "
+            "process settings were kept from the project config"));
     }
 
     apply_auto_brim_fallback();
-    return true;
 }
 
-const Preset* SliceEngine::find_official_process_preset(const std::string& preset_name,
-                                                        std::string* out_inherits_name) const
+const Preset* SliceEngine::find_official_process_preset(const std::string& preset_name) const
 {
     // Look up a process preset by name: system presets first, then project
     // embedded. Follows the same pattern as resolve_filament.
@@ -1504,8 +1444,12 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     // configs safe to apply wholesale.
     auto find_in_system = [this](const std::string& name) -> const Preset*
     {
+        // Official = Snapmaker vendor (is_official_preset). This also excludes
+        // project-embedded presets (no vendor of their own), making the old
+        // !is_project_embedded check redundant — kept as belt-and-braces since
+        // a hollow-shell embedded preset must never be applied wholesale.
         const Preset* p = m_preset_bundle->prints.find_preset(name, false);
-        if (p && p->name == name && !p->is_project_embedded) return p;
+        if (p && p->name == name && !p->is_project_embedded && is_official_preset(*p)) return p;
         return nullptr;
     };
 
@@ -1535,11 +1479,6 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     {
         std::string inherits_name = current->inherits();
         if (inherits_name.empty()) break;
-
-        // Record the first inherited name for the caller's user-facing
-        // diagnostics (which non-official preset the chain traces to).
-        if (out_inherits_name && out_inherits_name->empty())
-            *out_inherits_name = inherits_name;
 
         if (!visited.insert(inherits_name).second)
         {
@@ -2568,9 +2507,7 @@ void SliceEngine::emit_validate_warning(int plate_id, const StringObjectExceptio
 
     if (cls.level == IssueLevel::error)
     {
-        std::string suggestion = cls.code == "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT" ? orca::kOrganicFixedSuggestion
-                          : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
-                                                                                      : std::string{};
+        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
         m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
@@ -2601,9 +2538,7 @@ bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException&
     std::string message = cls.fixed_message.empty() ? (err.string + opt_hint) : cls.fixed_message;
     if (cls.level == IssueLevel::error)
     {
-        std::string suggestion = cls.code == "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT" ? orca::kOrganicFixedSuggestion
-                          : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
-                                                                                      : std::string{};
+        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
         m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);

@@ -125,3 +125,32 @@ TEST_CASE("Spiral-lift near boundary downgrades to warning, slices OK", "[integr
     REQUIRE(has_issue(e->stats(), "SPIRAL_LIFT_NEAR_BOUNDARY", IssueLevel::warning));
 }
 
+
+// --- 514d: 10-plate real-world project, 2 plates conflict (serious_warning). ---
+// Largest mixed-outcome sample: plates 4 and 6 carry object collisions
+// (TOOLPATH_CONFLICT serious_warning -> plate fails), the other 8 slice
+// cleanly. Guards the serious_warning -> plate-failure propagation on a
+// multi-plate project where most plates succeed, plus all-or-nothing
+// packaging. Existing conflict fixtures are single-plate / all-fail shapes.
+TEST_CASE("10-plate project: 2 conflict plates fail, 8 clean siblings succeed", "[integration][pathconflict][multiplate]")
+{
+    auto e = run_on(std::string(ORCA_TEST_FIXTURE_DIR) + "/path_conflict/multi_plate_conflict_514d.3mf", "p514d");
+
+    assert_toolpath_conflict(*e);
+
+    // Exactly the two conflicting plates fail; the clean eight do not.
+    REQUIRE(e->stats().plates.size() == 10);
+    int failed = 0;
+    for (const auto& p : e->stats().plates) {
+        bool has_conflict = false;
+        for (const auto& iss : p.issues)
+            if (iss.code == "TOOLPATH_CONFLICT")
+                has_conflict = true;
+        REQUIRE(p.success == !has_conflict);
+        if (has_conflict) ++failed;
+    }
+    REQUIRE(failed == 2);
+
+    // All-or-nothing: no gcode.3mf despite 8 successful plates.
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_pc_p514d.gcode.3mf"));
+}

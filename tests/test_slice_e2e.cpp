@@ -371,3 +371,104 @@ TEST_CASE("Toolpath outside bed detected post-slice, in-plate siblings not flagg
     REQUIRE(flagged == 1);
     REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
 }
+
+// ============================================================================
+// Case 9 — wipe-tower-induced TOOLPATH_OUTSIDE. Small single-plate fixture
+// (擦除塔gcode路径超限.3mf, renamed wipe_tower_toolpath_outside.3mf): the
+// object itself sits inside the build volume, but its wipe tower + brim
+// extrude past the bed edge. Guards the compute_toolpath_outside port on the
+// minimal single-plate, plate-origin-at-zero shape (the Case 8 fixture covers
+// the multi-plate grid-offset variant). Verified live: exit 7, TOOLPATH_OUTSIDE
+// error on plate 1, package suppressed.
+// ============================================================================
+TEST_CASE("Wipe tower toolpath outside bed detected post-slice (single plate)", "[integration][slice][fail][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_toolpath_outside.3mf", "wipe_tower_outside");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Single plate: it must carry the flag, the error issue, and fail.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.toolpath_outside);
+    REQUIRE_FALSE(p.success);
+    bool has_issue = false;
+    for (const auto& iss : p.issues)
+        if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+            has_issue = true;
+    REQUIRE(has_issue);
+    REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+}
+
+// ============================================================================
+// Case 10 — KNOWN-CRASH placeholder: ToolOrdering heap corruption (5479).
+// The model (STEP assembly + tree supports + auto-lift + wipe tower) crashes
+// with SIGSEGV inside ToolOrdering::fill_wipe_tower_partitions — heap already
+// corrupted before that function runs. Desktop OrcaSlicer crashes on it too
+// ("illegal access"), so this is an upstream libslic3r bug, not engine-side.
+// See memory [[toolordering-heap-corruption-5479]] for evidence and the two
+// falsified fixes; next step is an ASan build (upstream CMakeLists.txt:400).
+// This case runs the model and EXPECTS the hard crash today; when upstream
+// fixes it, flip the expectations to a normal slice-success assertion.
+// ============================================================================
+TEST_CASE("Known upstream crash: 5479 ToolOrdering heap corruption (expected SIGSEGV today)", "[integration][slice][known-crash][.]")
+{
+    // Tagged [.] (hidden) so it does not run in the default suite — a SIGSEGV
+    // kills the whole test process. Run explicitly with
+    //   engine-integration "[known-crash]"
+    // once an upstream fix lands, to verify the crash is gone.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolordering_crash_5479.3mf", "known_crash_5479");
+    // If we get here at all, the crash is fixed — then require a sane result.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+}
+
+// ============================================================================
+// Case 11 — mixed-outcome TOOLPATH_OUTSIDE on a 2-plate project (7855).
+// In-repo, always-runnable counterpart of Case 8 (which needs a ~30MB
+// external fixture and SKIPs on machines without it): plate 1's toolpaths
+// exceed the bed, plate 2 stays clean. Guards the plate-local coordinate
+// shift (global grid offsets must not flag every plate) at minimal cost.
+// ============================================================================
+TEST_CASE("Toolpath outside on 2-plate project: only offending plate flagged", "[integration][slice][fail][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolpath_outside_mixed_7855.3mf", "outside_mixed");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(r->engine->stats().plates.size() == 2);
+    int flagged = 0;
+    for (const auto& p : r->engine->stats().plates) {
+        bool has_outside = false;
+        for (const auto& iss : p.issues)
+            if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+                has_outside = true;
+        REQUIRE(p.toolpath_outside == has_outside);
+        REQUIRE(p.success == !has_outside);
+        if (has_outside) ++flagged;
+    }
+    REQUIRE(flagged == 1);
+}
+
+// ============================================================================
+// Case 12 — missing-PrintConfig-key model (10632 / historical 44ae crash).
+// The 3MF omits keys (seam_slope_type, thumbnails, ...) that libslic3r
+// dereferences without null checks; without the FullPrintConfig::defaults()
+// backfill in normalize_loaded_config (6808fe9) loading dies with SIGSEGV.
+// This fixture is the actual historical crasher (model id 44ae). Reaching
+// these assertions proves the backfill keeps the pipeline alive; the clean
+// single-plate success proves it does not corrupt valid config either.
+// ============================================================================
+TEST_CASE("Model with missing config keys slices via backfill (historical 44ae SIGSEGV)", "[integration][slice][ok][backfill]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/missing_keys_backfill_10632.3mf", "backfill_10632");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+}
