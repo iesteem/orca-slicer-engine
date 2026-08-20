@@ -371,3 +371,34 @@ TEST_CASE("Toolpath outside bed detected post-slice, in-plate siblings not flagg
     REQUIRE(flagged == 1);
     REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
 }
+
+// ============================================================================
+// Case 9 — wipe-tower-induced TOOLPATH_OUTSIDE. Small single-plate fixture
+// (擦除塔gcode路径超限.3mf, renamed wipe_tower_toolpath_outside.3mf): the
+// object itself sits inside the build volume, but its wipe tower + brim
+// extrude past the bed edge. Guards the compute_toolpath_outside port on the
+// minimal single-plate, plate-origin-at-zero shape (the Case 8 fixture covers
+// the multi-plate grid-offset variant). Verified live: exit 7, TOOLPATH_OUTSIDE
+// error on plate 1, package suppressed.
+// ============================================================================
+TEST_CASE("Wipe tower toolpath outside bed detected post-slice (single plate)", "[integration][slice][fail][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_toolpath_outside.3mf", "wipe_tower_outside");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Single plate: it must carry the flag, the error issue, and fail.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.toolpath_outside);
+    REQUIRE_FALSE(p.success);
+    bool has_issue = false;
+    for (const auto& iss : p.issues)
+        if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+            has_issue = true;
+    REQUIRE(has_issue);
+    REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+}
