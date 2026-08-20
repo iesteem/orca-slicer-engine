@@ -424,3 +424,32 @@ TEST_CASE("Known upstream crash: 5479 ToolOrdering heap corruption (expected SIG
     // If we get here at all, the crash is fixed — then require a sane result.
     REQUIRE(r->engine->stats().plates.size() == 1);
 }
+
+// ============================================================================
+// Case 11 — mixed-outcome TOOLPATH_OUTSIDE on a 2-plate project (7855).
+// In-repo, always-runnable counterpart of Case 8 (which needs a ~30MB
+// external fixture and SKIPs on machines without it): plate 1's toolpaths
+// exceed the bed, plate 2 stays clean. Guards the plate-local coordinate
+// shift (global grid offsets must not flag every plate) at minimal cost.
+// ============================================================================
+TEST_CASE("Toolpath outside on 2-plate project: only offending plate flagged", "[integration][slice][fail][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolpath_outside_mixed_7855.3mf", "outside_mixed");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(r->engine->stats().plates.size() == 2);
+    int flagged = 0;
+    for (const auto& p : r->engine->stats().plates) {
+        bool has_outside = false;
+        for (const auto& iss : p.issues)
+            if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+                has_outside = true;
+        REQUIRE(p.toolpath_outside == has_outside);
+        REQUIRE(p.success == !has_outside);
+        if (has_outside) ++flagged;
+    }
+    REQUIRE(flagged == 1);
+}
