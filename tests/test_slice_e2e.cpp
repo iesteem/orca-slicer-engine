@@ -402,3 +402,25 @@ TEST_CASE("Wipe tower toolpath outside bed detected post-slice (single plate)", 
     REQUIRE(has_issue);
     REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
 }
+
+// ============================================================================
+// Case 10 — KNOWN-CRASH placeholder: ToolOrdering heap corruption (5479).
+// The model (STEP assembly + tree supports + auto-lift + wipe tower) crashes
+// with SIGSEGV inside ToolOrdering::fill_wipe_tower_partitions — heap already
+// corrupted before that function runs. Desktop OrcaSlicer crashes on it too
+// ("illegal access"), so this is an upstream libslic3r bug, not engine-side.
+// See memory [[toolordering-heap-corruption-5479]] for evidence and the two
+// falsified fixes; next step is an ASan build (upstream CMakeLists.txt:400).
+// This case runs the model and EXPECTS the hard crash today; when upstream
+// fixes it, flip the expectations to a normal slice-success assertion.
+// ============================================================================
+TEST_CASE("Known upstream crash: 5479 ToolOrdering heap corruption (expected SIGSEGV today)", "[integration][slice][known-crash][.]")
+{
+    // Tagged [.] (hidden) so it does not run in the default suite — a SIGSEGV
+    // kills the whole test process. Run explicitly with
+    //   engine-integration "[known-crash]"
+    // once an upstream fix lands, to verify the crash is gone.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolordering_crash_5479.3mf", "known_crash_5479");
+    // If we get here at all, the crash is fixed — then require a sane result.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+}
