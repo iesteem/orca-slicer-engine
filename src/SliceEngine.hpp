@@ -82,7 +82,7 @@ public:
 
     // Run only the load + preset-substitution prefix of the pipeline (load_3mf,
     // validate_printer_model, collect_config_warnings, load_system_presets,
-    // load_project_presets, apply_preset_substitution), then stop — no geometry
+    // apply_preset_substitution), then stop — no geometry
     // checks, no slicing, no export. Intended for config-only inspection / cloud
     // preflight: after it returns, m_config holds the substitution result and is
     // readable via config(). Returns false on any failure in the prefix (same
@@ -196,10 +196,12 @@ private:
     // directory into m_preset_bundle. Must be called before preset substitution.
     void load_system_presets();
 
-    // Load project-embedded presets (read from the .3mf input during
-    // load_3mf) into m_preset_bundle, alongside the system presets loaded
-    // by load_system_presets. Never blocks — load failures only log a warning.
-    void load_project_presets();
+    // Unified "is this an official Snapmaker preset" check for the printer,
+    // filament, and process substitution paths. Official = vendor is the
+    // Snapmaker bundle. Project-embedded presets (no vendor / other vendor)
+    // and other vendors' system presets are NOT official — they may be
+    // waypoints on an inheritance chain but must never be applied wholesale.
+    static bool is_official_preset(const Slic3r::Preset& p);
 
     // Strip all user-supplied content from m_config: G-code keys (machine +
     // process + filament level), user-authored text (printer_notes /
