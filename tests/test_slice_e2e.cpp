@@ -453,3 +453,22 @@ TEST_CASE("Toolpath outside on 2-plate project: only offending plate flagged", "
     }
     REQUIRE(flagged == 1);
 }
+
+// ============================================================================
+// Case 12 — missing-PrintConfig-key model (10632 / historical 44ae crash).
+// The 3MF omits keys (seam_slope_type, thumbnails, ...) that libslic3r
+// dereferences without null checks; without the FullPrintConfig::defaults()
+// backfill in normalize_loaded_config (6808fe9) loading dies with SIGSEGV.
+// This fixture is the actual historical crasher (model id 44ae). Reaching
+// these assertions proves the backfill keeps the pipeline alive; the clean
+// single-plate success proves it does not corrupt valid config either.
+// ============================================================================
+TEST_CASE("Model with missing config keys slices via backfill (historical 44ae SIGSEGV)", "[integration][slice][ok][backfill]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/missing_keys_backfill_10632.3mf", "backfill_10632");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+}
