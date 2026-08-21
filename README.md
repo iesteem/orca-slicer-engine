@@ -4,11 +4,15 @@ Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engi
 
 ## Changelog
 
+> **Built version**: `02.01.05` — defined by `ENGINE_VERSION` in `CMakeLists.txt`.
+> This is the single source of truth; the tests and `scripts/package_linux.sh` read the
+> version from CMake. The entries below track the broader product release line.
+
 ### v02.01.11 (2026-06-12)
 
-- **新增 `--threads <N>` 参数**：限制 TBB 并行线程数，用于避免资源耗尽。
-  通过 `tbb::global_control::max_allowed_parallelism` 实现，默认 0 表示使用全部核心。
-  (ebcae02, 219b4f7)
+- **计划新增 `--threads <N>` 参数（尚未实现）**：计划限制 TBB 并行线程数，用于避免资源耗尽，
+  拟通过 `tbb::global_control::max_allowed_parallelism` 实现，默认 0 表示使用全部核心。
+  (ebcae02, 219b4f7) — 注：截至当前 `src/` 中尚未实现该参数（见缺口报告 G3）。
 
 - **新增 G-code 导出内存风险评估**：引入逐层评分机制，在执行 G-code 导出前评估内存风险。
   优化 `model_complexity.py`、`batch_benchmark.py`、`3mf_score.py` 工具脚本，

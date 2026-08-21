@@ -16,6 +16,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ==================================================================
+# Canonical engine version — SINGLE SOURCE OF TRUTH.
+# The binary, the unit/integration tests, and scripts/package_linux.sh
+# all derive the version string from this value (no duplication elsewhere).
+# ==================================================================
+set(ENGINE_VERSION "02.01.05")
+
+# ==================================================================
 # Static single-binary mode (Linux):
 #   Compile the engine C++ sources + main.c straight into ONE executable
 #   that statically links libslic3r.a and every dependency .a — no .so at all.
@@ -60,7 +67,7 @@ if(ORCA_STATIC)
 
     target_compile_definitions(orca-slice-engine PRIVATE
         ${ORCA_STATIC_DEFINES}
-        ENGINE_VERSION="02.01.05"
+        ENGINE_VERSION="${ENGINE_VERSION}"
     )
 
     # Match libslic3r's translation-unit flags so our sources agree with its headers.
