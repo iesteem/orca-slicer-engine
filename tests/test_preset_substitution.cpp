@@ -354,7 +354,11 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
 // was treated as official and applied wholesale, overwriting valid project
 // config with empty values (broken slicing). With is_official_preset
 // (vendor == SM_BUNDLE + not project-embedded) the shell is only an
-// inheritance-chain waypoint. Full-slice guard: all 4 plates slice clean.
+// inheritance-chain waypoint. Full-slice guard: plate 1 carries heterogeneous
+// variable layer heights that trip the desktop-parity PRIME_TOWER_VARIABLE_
+// LAYER_HEIGHT blocking error (a19033b/99867c3) — the run is expected to fail
+// with that specific error, which still proves the pipeline reached (and got
+// past) preset substitution with valid config instead of crashing.
 TEST_CASE("Hollow embedded process preset rejected, project slices clean (train city)", "[integration][preset][embedded]")
 {
     Slic3r::set_resources_dir(kResources);
@@ -370,9 +374,15 @@ TEST_CASE("Hollow embedded process preset rejected, project slices clean (train 
     SliceEngine engine(cfg, temp_files);
     engine.run();
 
-    REQUIRE(engine.stats().success);
-    REQUIRE(engine.exit_code() == 0);
-    REQUIRE(engine.stats().plates.size() == 4);
+    // Desktop parity: heterogeneous variable layer heights + wipe tower blocks
+    // slicing at validation (Plater.cpp:12653 UPDATE_BACKGROUND_PROCESS_INVALID).
+    REQUIRE(!engine.stats().success);
+    REQUIRE(engine.exit_code() != 0);
+    bool has_prime_tower_error = false;
+    for (const auto& issue : engine.stats().issues)
+        if (issue.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT")
+            has_prime_tower_error = true;
+    REQUIRE(has_prime_tower_error);
     // The applied process preset is the official system one resolved through
     // the chain, never the embedded shell.
     REQUIRE(engine.last_process_preset_name().find("train") == std::string::npos);

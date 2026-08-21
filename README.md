@@ -4,7 +4,7 @@ Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engi
 
 ## Changelog
 
-> **Built version**: `02.01.05` — defined by `ENGINE_VERSION` in `CMakeLists.txt`.
+> **Built version**: `02.01.06` — defined by `ENGINE_VERSION` in `CMakeLists.txt`.
 > This is the single source of truth; the tests and `scripts/package_linux.sh` read the
 > version from CMake. The entries below track the broader product release line.
 
