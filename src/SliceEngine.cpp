@@ -2200,10 +2200,23 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
             }
             else if (inst->print_volume_state == ModelInstancePVS_Fully_Outside)
             {
-                m_stats.issues.push_back(make_warning(
+                // Desktop parity: the "object placed on the build-plate boundary
+                // or beyond height limit" check blocks slicing (the user must
+                // move the object fully inside or fully off the plate). An
+                // on-plate instance that is completely outside the volume is
+                // the same defect as Partly_Outside, not a "skip printing"
+                // notice — previously a warning here let slicing proceed and
+                // the failure surfaced later as TOOLPATH_OUTSIDE (exit 7
+                // instead of the desktop-equivalent preprocess exit 6).
+                m_stats.issues.push_back(make_error(
                     plate_id, "BUILD_VOLUME_FULLY_OUTSIDE",
-                    "Object \"" + obj->name + "\" is completely outside the build volume and will not be printed",
+                    "Object \"" + obj->name + "\" is completely outside the build volume. "
+                    "Move it fully inside the build plate, or fully off the plate if it should not be printed",
                     obj->name));
+                log_plate_message("[Pre-processing]", "ERROR", plate_id,
+                                  "Object \"" + obj->name +
+                                      "\" is completely outside the build volume.");
+                has_partly_outside = true;
             }
         }
     }

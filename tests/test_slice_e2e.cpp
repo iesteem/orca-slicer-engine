@@ -504,3 +504,69 @@ TEST_CASE("Four-plate project: three distinct failure modes, clean plates unaffe
     // Plate 4: clean sibling.
     REQUIRE(r->engine->stats().plates[3].success);
 }
+
+// ============================================================================
+// Cases 14 — build-volume directional subdivision fixtures (方向细分系列).
+// Seven 20KB-class fixtures, one per boundary direction. Each drives the
+// preprocess build-volume check into a different directional error so the
+// subdivision logic (which bed edge was crossed, X vs Y vs Z) is asserted
+// individually rather than "some OOB happened". Measured against the 270mm
+// U1 bed; the 左右都出 case also guards the desktop-parity escalation of
+// Fully_Outside from warning to blocking error (was: warning + late
+// TOOLPATH_OUTSIDE at exit 7; now: BUILD_VOLUME_FULLY_OUTSIDE at exit 6,
+// matching the desktop "move it fully inside or off the plate" dialog).
+// ============================================================================
+
+TEST_CASE("Build-volume directional errors: each boundary direction produces its own message", "[integration][slice][fail][buildvol]")
+{
+    struct Dir { const char* fixture; const char* needle; };
+    const Dir cases[] = {
+        {"上侧超出",    "Y=276.6 > 271.0"},
+        {"下侧超出",    "Y=-20.8 < 1.0"},
+        {"右侧超出",    "X=284.2 > 270.5"},
+        {"左侧超出",    "X=-10.3 < 0.5"},
+        {"超高模型",    "Z=297.0"},
+    };
+    for (const auto& c : cases)
+    {
+        INFO("fixture: " << c.fixture);
+        auto r = run_full((std::string(ORCA_TEST_FIXTURE_DIR) + "/build_volume_dir/" + c.fixture + ".3mf").c_str(), "bv_dir");
+        REQUIRE_FALSE(r->engine->stats().success);
+        REQUIRE(r->engine->exit_code() == 6);
+        bool found = false;
+        for (const auto& iss : r->engine->stats().issues)
+            if (iss.code == "BUILD_VOLUME_OUTSIDE_XY" || iss.code == "BUILD_VOLUME_TOO_HIGH")
+                if (iss.message.find(c.needle) != std::string::npos)
+                    found = true;
+        REQUIRE(found);
+    }
+}
+
+TEST_CASE("Fully-outside instance blocks at preprocess with dedicated error (左右都出)", "[integration][slice][fail][buildvol]")
+{
+    // Object wider than the bed: completely outside the build volume while
+    // still placed on the plate. Desktop blocks this at validation; the engine
+    // previously emitted only a warning and failed later at post-processing.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/build_volume_dir/左右都出.3mf", "bv_fully");
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 6);
+    bool found = false;
+    for (const auto& iss : r->engine->stats().issues)
+        if (iss.code == "BUILD_VOLUME_FULLY_OUTSIDE" && iss.level == IssueLevel::error)
+            found = true;
+    REQUIRE(found);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}
+
+TEST_CASE("Multi-direction overflow lists every crossed edge (上下左右侧超出)", "[integration][slice][fail][buildvol]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/build_volume_dir/上下左右侧超出.3mf", "bv_multi");
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 6);
+    int xy_errors = 0;
+    for (const auto& iss : r->engine->stats().issues)
+        if (iss.code == "BUILD_VOLUME_OUTSIDE_XY" && iss.level == IssueLevel::error)
+            ++xy_errors;
+    // Crosses Y-high, Y-low and X-high: at least three directional errors.
+    REQUIRE(xy_errors >= 3);
+}
