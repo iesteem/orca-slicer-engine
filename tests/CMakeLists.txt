@@ -52,14 +52,11 @@ target_include_directories(engine-tests PRIVATE
 # Boost headers + archives (Utils.hpp includes <boost/filesystem.hpp>). On this
 # host Boost is built privately under the OrcaSlicer deps tree; reuse the same
 # headers and archives the static engine uses (captured in StaticConfig.cmake),
-# so the test target never hard-codes absolute paths.
-if(ORCA_STATIC)
-    target_include_directories(engine-tests PRIVATE ${ORCA_STATIC_INCLUDES})
-    target_link_libraries(engine-tests PRIVATE ${ORCA_STATIC_BOOST_LIBS})
-else()
-    find_package(Boost REQUIRED COMPONENTS filesystem log log_setup)
-    target_link_libraries(engine-tests PRIVATE Boost::filesystem Boost::log Boost::log_setup)
-endif()
+# so the test target never hard-codes absolute paths. The project only supports
+# the ORCA_STATIC (single static binary) mode, so the static boost archives are
+# always used here.
+target_include_directories(engine-tests PRIVATE ${ORCA_STATIC_INCLUDES})
+target_link_libraries(engine-tests PRIVATE ${ORCA_STATIC_BOOST_LIBS})
 
 target_sources(engine-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/Utils.cpp
