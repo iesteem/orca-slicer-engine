@@ -158,6 +158,10 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
             return SLIC3R_ERR_ARGS;
         }
 
+        // Wire the programmatic cancel flag so slic3r_cancel() takes effect
+        // inside the slicing loop (not just the cancel_file watchdog).
+        cfg.cancel_requested = &ctx->cancel_requested;
+
         // Wire up Boost.Log file sink (always enabled, auto-derive if path empty)
         {
             std::string log_path = cfg.log_path;

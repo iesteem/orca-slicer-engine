@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -19,10 +20,12 @@ void log_plate_message(const char* stage, const char* level, int plate, const st
 std::pair<std::string, std::string> format_exception_context(const Slic3r::StringObjectException& ex);
 
 // Simple progress callback for cloud environment.
-// When print and cancel_file are provided, the callback periodically checks
-// for the existence of cancel_file and triggers print->cancel() if found.
+// When print is provided, the callback periodically checks for cancellation and
+// triggers print->cancel() if either is signalled:
+//   - cancel_file exists on disk (external/watchdog cancellation), or
+//   - cancel_flag is set (programmatic cancellation via slic3r_cancel()).
 void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Slic3r::PrintBase* print = nullptr,
-                             const std::string* cancel_file = nullptr);
+                             const std::string* cancel_file = nullptr, const std::atomic<bool>* cancel_flag = nullptr);
 
 // Format time in seconds as HH:MM:SS
 std::string format_time_hhmmss(float seconds);

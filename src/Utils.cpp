@@ -45,15 +45,25 @@ std::pair<std::string, std::string> format_exception_context(const Slic3r::Strin
 }
 
 void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Slic3r::PrintBase* print,
-                             const std::string* cancel_file)
+                             const std::string* cancel_file, const std::atomic<bool>* cancel_flag)
 {
-    // Check for external cancellation via watchdog file
-    if (print && cancel_file && !cancel_file->empty())
+    // Check for cancellation: external watchdog file OR programmatic request.
+    if (print)
     {
-        if (boost::filesystem::exists(*cancel_file))
+        bool cancelled = false;
+        if (cancel_file && !cancel_file->empty() && boost::filesystem::exists(*cancel_file))
+        {
+            std::cout << "[Status] Cancellation requested via " << *cancel_file << std::endl;
+            cancelled = true;
+        }
+        else if (cancel_flag && cancel_flag->load())
+        {
+            std::cout << "[Status] Cancellation requested programmatically (slic3r_cancel)" << std::endl;
+            cancelled = true;
+        }
+        if (cancelled)
         {
             print->cancel();
-            std::cout << "[Status] Cancellation requested via " << *cancel_file << std::endl;
             return;
         }
     }

@@ -2360,7 +2360,7 @@ void SliceEngine::init_print(Print& print)
     print.set_status_callback(
         [&print, this](const PrintBase::SlicingStatus& s)
         {
-            default_status_callback(s, &print, &m_cfg.cancel_file);
+            default_status_callback(s, &print, &m_cfg.cancel_file, m_cfg.cancel_requested);
         });
     print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
 }
