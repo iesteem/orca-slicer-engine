@@ -248,15 +248,23 @@ private:
 
     // Overwrite process config with the official Snapmaker preset, preserving
     // user overrides parsed by parse_process_user_overrides. Emits
-    // PROCESS_SUBSTITUTED or PROCESS_VERIFIED_AGAINST warning.
-    void apply_process_official_preset();
+    // PROCESS_SUBSTITUTED or PROCESS_VERIFIED_AGAINST warning. Returns false
+    // (fatal, EXIT_PREPROCESS_ERROR + PROCESS_PRESET_NOT_OFFICIAL) when no
+    // official system ancestor can be found for the user's process preset —
+    // the product requires process substitution to succeed, so falling back
+    // to raw 3MF values is not acceptable.
+    bool apply_process_official_preset();
 
     // Look up an official system process preset for the given preset name.
     // Tries a direct system match first (Case 1), then walks the inheritance
     // chain through project-embedded presets to find a system ancestor
     // (Case 2). Returns nullptr if neither path resolves. Circular
     // inheritance is detected and logged, then treated as no ancestor.
-    const Slic3r::Preset* find_official_process_preset(const std::string& preset_name) const;
+    // out_inherits_name (optional): when lookup fails, receives the first
+    // non-empty inherited preset name seen on the chain — callers use it to
+    // tell the user which non-official preset the user's preset traces to.
+    const Slic3r::Preset* find_official_process_preset(const std::string& preset_name,
+                                                       std::string* out_inherits_name = nullptr) const;
 
     // Parse different_settings_to_system[0] — the ;-separated list of process
     // keys the user explicitly changed from the system defaults. Returns an

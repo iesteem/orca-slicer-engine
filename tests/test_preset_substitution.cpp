@@ -35,6 +35,7 @@
 #include "libslic3r/PresetBundle.hpp" // PresetBundle, LoadSystem
 #include "libslic3r/Utils.hpp"        // set_data_dir / set_resources_dir
 
+#include "Types.hpp"                    // Issue, IssueLevel, EXIT_PREPROCESS_ERROR
 #include "SliceEngine.hpp"
 
 using Slic3r::Preset;
@@ -346,6 +347,67 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
     // diverge from official in at least the settings_id / G-code keys.
     CHECK(any_diff);
 }
+
+// ---------------------------------------------------------------------------
+// Process preset with no official system ancestor → fatal preprocess error.
+// Product requirement: process substitution must succeed; when the user's
+// process preset traces to a non-official (or absent) inherited preset, the
+// job fails with a message naming what it inherits from.
+// ---------------------------------------------------------------------------
+
+namespace {
+std::unique_ptr<SliceEngine> run_substitution_on(const std::string& input_file)
+{
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = input_file;
+    cfg.skip_preset_substitution = false;
+    cfg.temp_dir = "/tmp";
+
+    auto engine = std::make_unique<SliceEngine>(cfg, *(new std::vector<std::string>()));
+    engine->run();
+    return engine;
+}
+} // namespace
+
+TEST_CASE("Process preset inheriting non-official system preset fails slicing", "[integration][preset]")
+{
+    const std::string fixture = std::string(ORCA_TEST_FIXTURE_DIR) + "/process_inherits_foreign.3mf";
+    auto e = run_substitution_on(fixture);
+
+    REQUIRE_FALSE(e->stats().success);
+    REQUIRE(e->exit_code() == EXIT_PREPROCESS_ERROR);
+
+    const Issue* hit = nullptr;
+    for (const auto& iss : e->stats().issues)
+        if (iss.code == "PROCESS_PRESET_NOT_OFFICIAL" && iss.level == IssueLevel::error)
+            hit = &iss;
+    REQUIRE(hit);
+    // Message names both the user preset and the non-official parent.
+    CHECK(hit->message.find("MiniTrain City") != std::string::npos);
+    CHECK(hit->message.find("0.20mm Standard @BBL X1C (converted)") != std::string::npos);
+    CHECK(hit->message.find("not an official system preset") != std::string::npos);
+}
+
+TEST_CASE("Process preset with no inherited system preset fails slicing", "[integration][preset]")
+{
+    const std::string fixture = std::string(ORCA_TEST_FIXTURE_DIR) + "/process_no_inherits.3mf";
+    auto e = run_substitution_on(fixture);
+
+    REQUIRE_FALSE(e->stats().success);
+    REQUIRE(e->exit_code() == EXIT_PREPROCESS_ERROR);
+
+    const Issue* hit = nullptr;
+    for (const auto& iss : e->stats().issues)
+        if (iss.code == "PROCESS_PRESET_NOT_OFFICIAL" && iss.level == IssueLevel::error)
+            hit = &iss;
+    REQUIRE(hit);
+    CHECK(hit->message.find("My Local Preset") != std::string::npos);
+    CHECK(hit->message.find("does not inherit from any official system preset") != std::string::npos);
+}
+} // namespace
 
 // --- Mini train city: hollow embedded process preset must not be applied. ---
 // The 3MF carries an embedded process preset that is a hollow shell (its only
