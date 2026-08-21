@@ -15,7 +15,7 @@
 
 namespace orca {
 
-// StringExceptionType integer values (PrintBase.hpp). Reproduced as
+// StringExceptionType integer values (PrintBase.hpp:19-27). Reproduced as
 // named constants so this header does not include libslic3r.
 inline constexpr int kExceptNotDefined                    = 0;
 inline constexpr int kExceptFilamentNotMatchBedType       = 1;
@@ -23,10 +23,7 @@ inline constexpr int kExceptFilamentsDifferentTemp        = 2;
 inline constexpr int kExceptObjectCollisionInSeqPrint     = 3;
 inline constexpr int kExceptObjectCollisionInLayerPrint   = 4;
 inline constexpr int kExceptLayerHeightExceedsLimit       = 5;
-inline constexpr int kExceptColdPlateIncompatible         = 6;
-inline constexpr int kExceptFlowRatioZero                 = 7;
-inline constexpr int kExceptOrganicSupportVariableLayer   = 8;
-inline constexpr int kExceptPrimeTowerVariableLayer       = 9;
+inline constexpr int kExceptOrganicSupportVariableLayer   = 6;
 
 // Result of classifying one validate exception. The SliceEngine thin wrapper:
 //   - picks make_error vs make_warning by `level`,
@@ -57,16 +54,6 @@ inline constexpr const char* kOrganicFixedSuggestion =
 // (type 0) exception message (SliceEngine.cpp emit_validate_error).
 inline constexpr const char* kOrganicSubstring =
     "Variable layer height is not supported with Organic supports";
-
-// Suggestion for the prime-tower / mismatched variable layer height error
-// (STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT = 9). The message itself is
-// passed through from the exception string (keeps upstream wording); this is
-// the engine-only "what to do" text. Escalated to error because the tower is
-// silently dropped when triggered, corrupting multi-color changes (decision
-// 2026-08-18).
-inline constexpr const char* kPrimeTowerFixedSuggestion =
-    "In Snapmaker Orca, unify the variable layer height across all objects on this plate, "
-    "or disable the prime tower.";
 
 // Classify a validate exception.
 //   exception_type : static_cast<int>(StringObjectException::type), 0..6
@@ -115,20 +102,6 @@ ExceptionClassification classify_validate_exception(
         c.level         = IssueLevel::error;
         c.code          = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
         c.fixed_message = is_error_path ? std::string{} : std::string(kOrganicFixedMessage);
-        break;
-    case kExceptPrimeTowerVariableLayer:
-        // Upstream tags the prime-tower variable-layer-height check with
-        // STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT (=9). Both paths
-        // escalate to error; the message is passed through from the exception
-        // string (no fixed_message).
-        c.level = IssueLevel::error;
-        c.code  = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
-        break;
-    case kExceptColdPlateIncompatible:
-    case kExceptFlowRatioZero:
-        // New upstream types (6/7) with no cloud-specific handling yet.
-        c.level = is_error_path ? IssueLevel::error : IssueLevel::warning;
-        c.code  = is_error_path ? "PRINT_VALIDATE_ERROR" : "PRINT_VALIDATE_WARNING";
         break;
     case kExceptNotDefined:
         if (is_error_path)
