@@ -472,3 +472,35 @@ TEST_CASE("Model with missing config keys slices via backfill (historical 44ae S
     REQUIRE(r->engine->stats().plates.size() == 1);
     REQUIRE(boost::filesystem::exists(r->output_file));
 }
+
+// ============================================================================
+// Case 13 — four-plate three-outcome mix (圆柱体). 64KB in-repo fixture:
+//   plate 1 TOOLPATH_OUTSIDE + BED_FILAMENT_MISMATCH, plate 3 build-volume XY,
+//   plates 2 & 4 clean. The densest per-plate outcome mix in the pool — three
+// distinct detection stages (postprocess / preprocess / clean) interleaved on
+// one project, each plate judged independently.
+// ============================================================================
+TEST_CASE("Four-plate project: three distinct failure modes, clean plates unaffected", "[integration][slice][fail][mixed]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/cylinder_four_plate_mixed.3mf", "cyl_mixed");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(r->engine->stats().plates.size() == 4);
+    // Plate 1: toolpath outside (postprocessing).
+    REQUIRE_FALSE(r->engine->stats().plates[0].success);
+    REQUIRE(r->engine->stats().plates[0].toolpath_outside);
+    // Plate 2: clean sibling must succeed despite neighbours failing.
+    REQUIRE(r->engine->stats().plates[1].success);
+    // Plate 3: build-volume XY rejection (preprocessing).
+    REQUIRE_FALSE(r->engine->stats().plates[2].success);
+    bool has_bv = false;
+    for (const auto& iss : r->engine->stats().plates[2].issues)
+        if (iss.code == "BUILD_VOLUME_OUTSIDE_XY" && iss.level == IssueLevel::error)
+            has_bv = true;
+    REQUIRE(has_bv);
+    // Plate 4: clean sibling.
+    REQUIRE(r->engine->stats().plates[3].success);
+}

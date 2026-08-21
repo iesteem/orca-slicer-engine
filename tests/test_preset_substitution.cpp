@@ -347,6 +347,7 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
     CHECK(any_diff);
 }
 
+
 // --- Mini train city: hollow embedded process preset must not be applied. ---
 // The 3MF carries an embedded process preset that is a hollow shell (its only
 // real content is an "inherits" reference). Before 064dbbc/da7f518 the shell
@@ -372,8 +373,7 @@ TEST_CASE("Hollow embedded process preset rejected, project slices clean (train 
     REQUIRE(engine.stats().success);
     REQUIRE(engine.exit_code() == 0);
     REQUIRE(engine.stats().plates.size() == 4);
-    // Substitution outcome stays a warning (never error), and the applied
-    // process preset is the official system one resolved through the chain,
-    // not the embedded shell.
+    // The applied process preset is the official system one resolved through
+    // the chain, never the embedded shell.
     REQUIRE(engine.last_process_preset_name().find("train") == std::string::npos);
 }

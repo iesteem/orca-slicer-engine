@@ -63,15 +63,13 @@ TEST_CASE("Print-by-object collision rejected", "[integration][unsupported]")
 
 TEST_CASE("Variable layer height with organic supports rejected", "[integration][unsupported]")
 {
-    // Large (~40MB) fixture, not in repo. Carries variable layer height that is
-    // incompatible with organic supports, plus a path conflict.
-    const char* external =
-        "/home/joyx/Downloads/切片引擎测试-3MF文件包/unsupported/不支持可变层高，切片失败.3mf";
-    if (!boost::filesystem::exists(external))
-        SKIP("variable-layer-height fixture not present (large, external); skipping");
-
-    auto e = run_on(external, "vlh");
+    // Small in-repo fixture (24KB, replaces the former ~40MB external-pool one
+    // that SKIPped without the pool). Variable layer height + organic support
+    // → blocking ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT. This fixture trips the
+    // check during validation (EXIT_PREPROCESS_ERROR = 6), not post-processing
+    // like the old external one — pinned to measured behavior.
+    auto e = run_on(std::string(ORCA_TEST_FIXTURE_DIR) + "/unsupported/variable_layer_organic_support.3mf", "vlh");
     REQUIRE_FALSE(e->stats().success);
-    REQUIRE(e->exit_code() == EXIT_POSTPROCESS_ERROR);
+    REQUIRE(e->exit_code() == EXIT_PREPROCESS_ERROR);
     REQUIRE(has_error_issue(e->stats(), "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT"));
 }
