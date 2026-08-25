@@ -202,6 +202,26 @@ TEST_CASE("Partial-sink model slices with a below-bed warning", "[integration][s
 }
 
 // ============================================================================
+// Case 4b — A fully-below-bed model (27mm cube, world Z -53.5..-26.5, nothing
+// above z=0) is auto-raised by ensure_on_bed and slices successfully, with an
+// OBJECT_BELOW_BED_ADJUSTED warning. Complements Case 4: the partial sink is
+// preserved (INTENTIONALLY_BELOW_BED), the full sink must be lifted.
+// ============================================================================
+TEST_CASE("Fully-below-bed model is auto-raised with an adjusted warning", "[integration][slice][ok]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/geom_fully_below_bed.3mf", "fully_below_bed");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(r->engine->exit_code() == 0);
+
+    // The lift must be surfaced as a warning (SliceEngine.cpp:1782).
+    REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_BELOW_BED_ADJUSTED", IssueLevel::warning));
+    // It was lifted, not left intentionally sunk.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "OBJECT_INTENTIONALLY_BELOW_BED", IssueLevel::warning));
+}
+
+// ============================================================================
 // Case 5 — Single-plate GCODE mode (run() lines 235-261). With single_plate=
 // true + format=GCODE, run() processes exactly one plate (plates_to_process =
 // [plate_id-1]), writes the G-code directly to m_output_path (a ".gcode" file,
