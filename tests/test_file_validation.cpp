@@ -110,16 +110,4 @@ TEST_CASE("3mf with no model data rejected as LOAD_3MF_ERROR", "[integration][fi
     REQUIRE(has_issue(e->stats(), "LOAD_3MF_ERROR"));
 }
 
-// --- gcode.3mf mistaken as input: large fixture, external path + SKIP. ----
-
-TEST_CASE("gcode.3mf as input rejected as LOAD_3MF_ERROR", "[integration][fileval]")
-{
-    // The gcode.3mf-as-input fixture is large (~37MB) and not in the repo.
-    const char* external = "/home/joyx/Downloads/切片引擎测试-3MF文件包/file_validation/gcode.3mf文件，切片失败.3mf";
-    if (!boost::filesystem::exists(external))
-        SKIP("gcode.3mf-as-input fixture not present (large, external); skipping");
-
-    auto e = run_on(external);
-    assert_rejected(*e);
-    REQUIRE(has_issue(e->stats(), "LOAD_3MF_ERROR"));
-}
+// (gcode.3mf-as-input case removed 2026-08-25: fixture lived in the external pool that no longer exists. The reject path stays covered by the five in-repo rejection cases above.)

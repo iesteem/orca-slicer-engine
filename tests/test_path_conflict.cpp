@@ -99,31 +99,7 @@ TEST_CASE("Toolpath conflict (too close, 168 layers) blocks output", "[integrati
     assert_toolpath_conflict(*e);
 }
 
-// --- Spiral-lift near boundary: large fixture, external + SKIP. -------------
-
-TEST_CASE("Spiral-lift near boundary downgrades to warning, slices OK", "[integration][pathconflict]")
-{
-    // Fixture name predicts: a spiral-lift serious_warning is downgraded to a
-    // plain warning and slicing succeeds. Large (~85MB) fixture, not in repo.
-    //
-    // NOTE: this case is SKIPPED when the fixture is absent (external path).
-    // The assertions below follow the FILENAME expectation; on this dev host
-    // the case was not verified end-to-end because the disk was too full to
-    // slice an 85MB model (it failed with GCODE_EXPORT_ERROR, an environment
-    // artifact, not an engine behavior). When run on a host with the fixture
-    // and adequate disk, verify these hold.
-    const char* external =
-        "/home/joyx/Downloads/切片引擎测试-3MF文件包/path_conflict/"
-        "新年摆件-U1，螺旋抬升的严重警告：SPIRAL_LIFT_NEAR_BOUNDARY降为普通警告，切片成功.3mf";
-    if (!boost::filesystem::exists(external))
-        SKIP("spiral-lift fixture not present (large, external); skipping");
-
-    auto e = run_on(external, "spiral");
-    // Slicing succeeds despite the spiral-lift notice (downgraded to warning).
-    REQUIRE(e->stats().success);
-    REQUIRE(e->exit_code() == 0);
-    REQUIRE(has_issue(e->stats(), "SPIRAL_LIFT_NEAR_BOUNDARY", IssueLevel::warning));
-}
+// (Spiral-lift near-boundary case removed 2026-08-25: fixture lived in the external pool that no longer exists on this machine.)
 
 
 // --- 514d: 10-plate real-world project, 2 plates conflict (serious_warning). ---

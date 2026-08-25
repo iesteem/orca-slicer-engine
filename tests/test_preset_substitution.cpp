@@ -353,8 +353,17 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
 // was treated as official and applied wholesale, overwriting valid project
 // config with empty values (broken slicing). With is_official_preset
 // (vendor == SM_BUNDLE + not project-embedded) the shell is only an
-// inheritance-chain waypoint. Full-slice guard: all 4 plates slice clean.
-TEST_CASE("Hollow embedded process preset rejected, project slices clean (train city)", "[integration][preset][embedded]")
+// inheritance-chain waypoint.
+//
+// Outcome note (2026-08-25): this fixture's plate 1 is NOT sliceable — its
+// objects have differing variable layer-height profiles under a prime tower,
+// which Print::validate rejects (Print.cpp:1778, exception type
+// STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT). Verified on desktop
+// Orca: plate 1 fails with the same message, so the engine matches desktop.
+// The success assertions the case originally carried were stale; the case now
+// asserts the preset-substitution contract only — that contract is decided
+// before validate/slicing, so it is unaffected by the plate-1 failure.
+TEST_CASE("Hollow embedded process preset rejected (train city)", "[integration][preset][embedded]")
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
@@ -369,11 +378,21 @@ TEST_CASE("Hollow embedded process preset rejected, project slices clean (train 
     SliceEngine engine(cfg, temp_files);
     engine.run();
 
-    REQUIRE(engine.stats().success);
-    REQUIRE(engine.exit_code() == 0);
-    REQUIRE(engine.stats().plates.size() == 4);
-    // Substitution outcome stays a warning (never error), and the applied
-    // process preset is the official system one resolved through the chain,
-    // not the embedded shell.
+    // Desktop-parity failure: plate 1 rejected by the prime-tower
+    // variable-layer-height rule; all-or-nothing makes the run fail.
+    REQUIRE_FALSE(engine.stats().success);
+    REQUIRE(engine.exit_code() == EXIT_PREPROCESS_ERROR);
+    bool has_prime_tower_error = false;
+    for (const auto& iss : engine.stats().issues)
+        if (iss.level == IssueLevel::error &&
+            iss.message.find("prime tower is only supported") != std::string::npos) {
+            has_prime_tower_error = true;
+            break;
+        }
+    REQUIRE(has_prime_tower_error);
+
+    // Core regression guard (unaffected by the plate-1 failure, substitution
+    // runs before validate): the applied process preset is the official
+    // system one resolved through the chain, not the embedded shell.
     REQUIRE(engine.last_process_preset_name().find("train") == std::string::npos);
 }

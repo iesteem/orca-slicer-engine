@@ -133,6 +133,28 @@ TEST_CASE("validate: NOT_DEFINED substring match is case-sensitive", "[validate]
     CHECK(c.level == IssueLevel::warning);      // no match -> generic warning
 }
 
+// Build-volume-height hard error: Print.cpp:1642-1657 returns it as type
+// NOT_DEFINED, but desktop blocks slicing on it. Must classify as error and
+// ABORT (continue_slicing == false), unlike the organic substring which
+// escalates the level but keeps slicing.
+TEST_CASE("validate: NOT_DEFINED build-volume-height -> error, abort", "[validate]") {
+    auto c = err(orca::kExceptNotDefined,
+                 "The object cylinder exceeds the maximum build volume height.");
+    CHECK(c.level == IssueLevel::error);
+    CHECK(c.code == "BUILD_VOLUME_TOO_HIGH");
+    CHECK(c.fixed_message.empty());             // keeps the exception's message
+    CHECK(c.continue_slicing == false);         // aborts slicing
+}
+
+TEST_CASE("validate: NOT_DEFINED shrinkage variant also matches height substring", "[validate]") {
+    auto c = err(orca::kExceptNotDefined,
+                 "While the object x itself fits the build volume, it exceeds "
+                 "the maximum build volume height because of material shrinkage compensation.");
+    CHECK(c.level == IssueLevel::error);
+    CHECK(c.code == "BUILD_VOLUME_TOO_HIGH");
+    CHECK(c.continue_slicing == false);
+}
+
 // ============================================================================
 // Default / unknown type
 // ============================================================================

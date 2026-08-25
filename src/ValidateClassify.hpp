@@ -55,6 +55,15 @@ inline constexpr const char* kOrganicFixedSuggestion =
 inline constexpr const char* kOrganicSubstring =
     "Variable layer height is not supported with Organic supports";
 
+// Substring that distinguishes the build-volume-height case inside a NOT_DEFINED
+// (type 0) exception message. Print.cpp:1642-1657 returns these as hard errors
+// (desktop blocks slicing with an error dialog), but the exception type is
+// STRING_EXCEPT_NOT_DEFINED — without this match the default NOT_DEFINED rule
+// downgrades them to a warning and slicing continues, deferring the failure to
+// post-processing toolpath checks.
+inline constexpr const char* kBuildVolumeHeightSubstring =
+    "exceeds the maximum build volume height";
+
 // Classify a validate exception.
 //   exception_type : static_cast<int>(StringObjectException::type), 0..6
 //   is_error_path  : true for emit_validate_error (PRINT_VALIDATE_* codes),
@@ -106,13 +115,22 @@ ExceptionClassification classify_validate_exception(
     case kExceptNotDefined:
         if (is_error_path)
         {
-            // NOT_DEFINED never aborts slicing (falls through to later checks).
+            // NOT_DEFINED never aborts slicing (falls through to later checks),
+            // except for the substring-classified hard errors below.
             c.continue_slicing = true;
             if (message.find(kOrganicSubstring) != std::string::npos)
             {
                 c.level         = IssueLevel::error;
                 c.code          = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
                 c.fixed_message = kOrganicFixedMessage;
+            }
+            else if (message.find(kBuildVolumeHeightSubstring) != std::string::npos)
+            {
+                // Keep the exception's own message (fixed_message empty) — it
+                // already names the object and the reason.
+                c.level           = IssueLevel::error;
+                c.code            = "BUILD_VOLUME_TOO_HIGH";
+                c.continue_slicing = false;
             }
             else
             {

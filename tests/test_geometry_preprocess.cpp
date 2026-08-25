@@ -42,71 +42,7 @@ using Catch::Approx;
 static const char* kFixture   = ORCA_TEST_FIXTURE;
 static const char* kResources = ORCA_TEST_RESOURCES;
 
-// ============================================================================
-// Case A — Geometry checks detect real defects and classify them as warnings
-// (never errors, never block). Drives a deliberately-defective real model
-// (geom_defects_cabin.3mf — ~5.7M triangles, 29 objects) known to carry
-// self-intersections, multi-component parts, and zero-volume shells. This
-// verifies the geometry-check pipeline ACTUALLY fires on defects (a clean
-// model would be a vacuous pass) AND that every fired issue is warning-level
-// (mirrors [[geometry-check-flow-analysis]]: the all-warning contract).
-//
-// The cabin fixture is large (~72MB) and is NOT checked into the repo. It must
-// be placed manually at tests/fixtures/geom_defects_cabin.3mf to exercise this
-// case; otherwise the case is SKIPPED (not failed). The remaining geom/slice
-// cases use small (<25KB) checked-in fixtures and always run.
-//
-// Assertions are sign invariants, NOT the measured counts (51 self-intersect /
-// 35 multi-component / 8 zero-volume as of 2026-08-07) — counts shift with
-// model revisions and engine tuning; the invariant is ">= 1 of each fired,
-// all warning, no error".
-// ============================================================================
-TEST_CASE("Geometry checks detect defects and stay warning-level", "[integration][geom][issues]")
-{
-    const std::string cabin = std::string(ORCA_TEST_FIXTURE_DIR) + "/geom_defects_cabin.3mf";
-    if (!boost::filesystem::exists(cabin))
-        SKIP("geom_defects_cabin.3mf not present (large fixture, not in repo); skipping defect-detection case");
-
-    Slic3r::set_resources_dir(kResources);
-    Slic3r::set_data_dir(kResources);
-
-    EngineConfig cfg;
-    cfg.input_file = cabin;
-    cfg.skip_preset_substitution = true;  // isolate the geometry stage
-    cfg.max_size_mb = 0;                  // fixture is ~72MB; disable the gate
-    cfg.temp_dir = "/tmp";
-
-    std::vector<std::string> temp_files;
-    SliceEngine engine(cfg, temp_files);
-    REQUIRE(engine.run_geometry_preprocess_only());
-
-    // Tally geometry-sourced issues by code.
-    const auto& issues = engine.stats().issues;
-    std::map<std::string, int> tally;
-    for (const Issue& iss : issues)
-    {
-        if (iss.code.rfind("GEOM_", 0) != 0)
-            continue;
-        // Every fired geometry issue must be warning-level (warning or
-        // serious_warning). An error here would break the all-warning contract.
-        INFO("geom issue code=" << iss.code << " level=" << static_cast<int>(iss.level));
-        REQUIRE((iss.level == IssueLevel::warning || iss.level == IssueLevel::serious_warning));
-        ++tally[iss.code];
-    }
-
-    // The defect model must trigger at least one of each known-present defect
-    // type — this is what makes the check non-vacuous on this fixture.
-    INFO("GEOM_SELF_INTERSECT count=" << tally["GEOM_SELF_INTERSECT"]);
-    REQUIRE(tally["GEOM_SELF_INTERSECT"] >= 1);
-    INFO("GEOM_MULTI_COMPONENT count=" << tally["GEOM_MULTI_COMPONENT"]);
-    REQUIRE(tally["GEOM_MULTI_COMPONENT"] >= 1);
-    INFO("GEOM_ZERO_VOLUME count=" << tally["GEOM_ZERO_VOLUME"]);
-    REQUIRE(tally["GEOM_ZERO_VOLUME"] >= 1);
-
-    // Defects must NOT block the pipeline: geometry preprocessing completes
-    // without error even though dozens of defects fired.
-    REQUIRE(!engine.any_error());
-}
+// (Cabin defect-detection case removed 2026-08-25: the 72MB fixture never lived in the repo and is no longer available. In-repo defect fixtures above still cover the warning path.)
 
 // ============================================================================
 // Case B — bake_instance_z_into_mesh: instance Z offset is baked into the mesh,
