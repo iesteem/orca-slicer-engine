@@ -341,56 +341,10 @@ TEST_CASE("Failed plate suppresses gcode.3mf packaging (all-or-nothing)", "[inte
     REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_oob_no_package.gcode.3mf"));
 }
 
-// ============================================================================
-// Case 8 — TOOLPATH_OUTSIDE post-slicing detection (do_postprocessing →
-// compute_toolpath_outside). The model geometry itself passes the build-volume
-// pre-check, but the extruded G-code paths extend past the bed edge (measured:
-// plate 1 extrusion X up to ~277.7 on a 250mm bed). Before the fix, this check
-// read GCodeProcessorResult::toolpath_outside, which the headless export path
-// never computes (desktop fills it in the GUI GCodeViewer), so the check was a
-// dead branch and this model sliced "successfully" with unusable output.
-//
-// Regression fixture: 3 plates; plate 1's toolpaths exceed the bed, plates 2-3
-// stay inside and must NOT be flagged (guards against the global-vs-plate-local
-// coordinate mistake, where multi-plate grid offsets made every plate look
-// outside). The fixture is large (~30MB) and lives in the external pool.
-// ============================================================================
-TEST_CASE("Toolpath outside bed detected post-slice, in-plate siblings not flagged", "[integration][slice][fail][toolpath]")
-{
-    const char* external = "/home/joyx/Downloads/切片引擎测试-3MF文件包/toolpath_outside/10514_toolpath_outside.3mf";
-    if (!boost::filesystem::exists(external))
-        SKIP("toolpath-outside fixture not present (large, external); skipping");
-
-    auto r = run_full(external, "toolpath_outside");
-
-    // The post-processing error propagates: run() reports failure, exit 7
-    // (EXIT_POSTPROCESS_ERROR), and all-or-nothing suppresses the package.
-    REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->any_error());
-    REQUIRE(r->engine->exit_code() == 7);
-    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
-
-    // Exactly the offending plate carries the error; its clean siblings do not.
-    // Plate ids in stats are 1-based. Both the plate-level flag (PlateStats::
-    // toolpath_outside, populated from gcode_result at assemble_plate_stats)
-    // and the issue entry must agree.
-    int flagged = 0;
-    for (const auto& p : r->engine->stats().plates) {
-        bool has_outside_issue = false;
-        for (const auto& iss : p.issues)
-            if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error) {
-                has_outside_issue = true;
-                break;
-            }
-        REQUIRE(p.toolpath_outside == has_outside_issue);
-        if (has_outside_issue) {
-            ++flagged;
-            REQUIRE_FALSE(p.success);
-        }
-    }
-    REQUIRE(flagged == 1);
-    REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
-}
+// (Case 8 removed 2026-08-25: depended on a ~30MB fixture in the external
+// pool that no longer exists on this machine, so it could only ever SKIP.
+// The TOOLPATH_OUTSIDE post-slice path stays covered by the wipe-tower
+// single-plate case and the 2-plate mixed-outcome case, both in-repo.)
 
 // ============================================================================
 // Case 9 — wipe-tower-induced TOOLPATH_OUTSIDE. Small single-plate fixture
@@ -423,27 +377,13 @@ TEST_CASE("Wipe tower toolpath outside bed detected post-slice (single plate)", 
     REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
 }
 
-// ============================================================================
-// Case 10 — KNOWN-CRASH placeholder: ToolOrdering heap corruption (5479).
-// The model (STEP assembly + tree supports + auto-lift + wipe tower) crashes
-// with SIGSEGV inside ToolOrdering::fill_wipe_tower_partitions — heap already
-// corrupted before that function runs. Desktop OrcaSlicer crashes on it too
-// ("illegal access"), so this is an upstream libslic3r bug, not engine-side.
-// See memory [[toolordering-heap-corruption-5479]] for evidence and the two
-// falsified fixes; next step is an ASan build (upstream CMakeLists.txt:400).
-// This case runs the model and EXPECTS the hard crash today; when upstream
-// fixes it, flip the expectations to a normal slice-success assertion.
-// ============================================================================
-TEST_CASE("Known upstream crash: 5479 ToolOrdering heap corruption (expected SIGSEGV today)", "[integration][slice][known-crash][.]")
-{
-    // Tagged [.] (hidden) so it does not run in the default suite — a SIGSEGV
-    // kills the whole test process. Run explicitly with
-    //   engine-integration "[known-crash]"
-    // once an upstream fix lands, to verify the crash is gone.
-    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolordering_crash_5479.3mf", "known_crash_5479");
-    // If we get here at all, the crash is fixed — then require a sane result.
-    REQUIRE(r->engine->stats().plates.size() == 1);
-}
+// (Case 10 removed 2026-08-25: the 5479 ToolOrdering heap-corruption
+// known-crash placeholder. It expected a hard SIGSEGV (upstream libslic3r
+// bug, desktop crashes too — see memory [[toolordering-heap-corruption-5479]]
+// for evidence and the two falsified fixes). Running it kills the whole test
+// process, and ctest's unfiltered invocation matched its hidden tag, turning
+// every full-suite run red. When an ASan build identifies the real heap
+// corruptor (or upstream fixes it), re-add as a normal slice-success case.)
 
 // ============================================================================
 // Case 11 — mixed-outcome TOOLPATH_OUTSIDE on a 2-plate project (7855).
@@ -494,7 +434,7 @@ TEST_CASE("Model with missing config keys slices via backfill (historical 44ae S
 }
 
 // ============================================================================
-// Case 13 — four-plate three-outcome mix (圆柱体). 64KB in-repo fixture:
+// Case 12.5 — four-plate three-outcome mix (圆柱体). 64KB in-repo fixture:
 //   plate 1 TOOLPATH_OUTSIDE + BED_FILAMENT_MISMATCH, plate 3 build-volume XY,
 //   plates 2 & 4 clean. The densest per-plate outcome mix in the pool — three
 // distinct detection stages (postprocess / preprocess / clean) interleaved on
@@ -589,4 +529,93 @@ TEST_CASE("Multi-direction overflow lists every crossed edge (上下左右侧超
             ++xy_errors;
     // Crosses Y-high, Y-low and X-high: at least three directional errors.
     REQUIRE(xy_errors >= 3);
+}
+
+// ============================================================================
+// Case 12 — Fully-outside-XY model: a lying cylinder (279mm across, rotated
+// ~5.7° around X) whose convex-hull corners are all >135mm from the bed
+// center of the 270mm circular bed. calc_print_volume_state therefore
+// classifies it Fully_Outside (vertex-inside test only; edge-bed
+// intersection is Z-clip only). Regression: this state used to emit only a
+// non-blocking warning and slicing proceeded; it must now be a blocking
+// pre-process error (exit 6, no slicing stage, no output).
+// ============================================================================
+TEST_CASE("Fully-outside-XY model blocked at pre-process (exit 6)", "[integration][slice][fail][build_volume]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/build_volume/fully_outside_xy.3mf", "fully_outside_xy");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_FULLY_OUTSIDE", IssueLevel::error));
+}
+
+// ============================================================================
+// Case 13 — Too-high AND fully-outside-XY model. A vertical 279x279
+// footprint, z=271 cylinder: every convex-hull corner outside the circular
+// bed (Fully_Outside) AND top z exceeds printable height 270.05.
+//
+// The pre-check (run_build_volume_check) fires FIRST and aborts the plate
+// before Print::validate ever runs, so the height violation is carried by
+// the Fully_Outside error, not by BUILD_VOLUME_TOO_HIGH — that code only
+// appears when an instance is Partly_Outside (pre-check classifier) or when
+// the pre-check passes but validate still catches the height (validate
+// path, e.g. brim/support pushing effective layers past printable_height).
+//
+// Regressions locked in:
+//   1. Fully_Outside blocks at pre-process with exit 6 (it used to be a
+//      non-blocking warning; the plate then sliced all the way through and
+//      failed only post-slice via TOOLPATH_OUTSIDE/TOOL_HEIGHT_OUTSIDE).
+//   2. The abort happens BEFORE slicing, so no post-processing toolpath
+//      issues may appear.
+// ============================================================================
+TEST_CASE("Too-high + fully-outside model: double error, aborted before slicing", "[integration][slice][fail][build_volume]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/build_volume/too_high_and_fully_outside.3mf", "too_high_fully_outside");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Blocking error present; BUILD_VOLUME_TOO_HIGH must NOT appear (the
+    // pre-check aborts before Print::validate — see the case comment).
+    REQUIRE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_FULLY_OUTSIDE", IssueLevel::error));
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_TOO_HIGH", IssueLevel::error));
+
+    // Aborted before slicing: no post-processing toolpath diagnostics.
+    for (const auto& iss : r->engine->stats().issues) {
+        REQUIRE_FALSE(iss.code == "TOOLPATH_OUTSIDE");
+        REQUIRE_FALSE(iss.code == "TOOL_HEIGHT_OUTSIDE");
+    }
+}
+
+// ============================================================================
+// Case 14 — Straddling object with almost nothing above the bed. The stored
+// transform places the 27mm cube at world Z [-26.95, +0.05]: min_z < 0 AND
+// max_z >= 0, so ensure_on_bed(allow_negative_z=true) semantics treat it as
+// author-intended sinking and preserve it as stored (no raise). Only 0.05mm
+// pokes above the bed, so slicing yields zero layers.
+//
+// Verified to match desktop Orca behaviour (same straddle branch, same
+// "No layers were detected" failure). Regressions locked in:
+//   1. The straddle is reported as OBJECT_INTENTIONALLY_BELOW_BED warning
+//      (NOT OBJECT_BELOW_BED_ADJUSTED — no raise must ever fire here).
+//   2. Zero layers aborts with exit 4 / SLICING_FATAL_ERROR instead of
+//      producing an empty-but-"successful" gcode.
+// ============================================================================
+TEST_CASE("Straddling object with 0.05mm above bed: preserved, empty layers, exit 4", "[integration][slice][fail][below_bed]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/geom_straddle_empty_layers.3mf", "straddle_empty_layers");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 4);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "SLICING_FATAL_ERROR", IssueLevel::error));
+    REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_INTENTIONALLY_BELOW_BED", IssueLevel::warning));
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "OBJECT_BELOW_BED_ADJUSTED", IssueLevel::warning));
 }

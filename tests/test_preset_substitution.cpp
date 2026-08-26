@@ -359,6 +359,10 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
 // LAYER_HEIGHT blocking error (a19033b/99867c3) — the run is expected to fail
 // with that specific error, which still proves the pipeline reached (and got
 // past) preset substitution with valid config instead of crashing.
+// (Note: on Orca feature-2.3.5-base the exception is untyped NOT_DEFINED and
+// the classifier downgrades it to a warning — the 05 branch carried that
+// variant. This tree builds against feature-2.3.6-base, where the exception
+// is tagged STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT and hard-fails.)
 TEST_CASE("Hollow embedded process preset rejected, project slices clean (train city)", "[integration][preset][embedded]")
 {
     Slic3r::set_resources_dir(kResources);

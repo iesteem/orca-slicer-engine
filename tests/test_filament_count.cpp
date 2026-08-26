@@ -101,38 +101,7 @@ TEST_CASE("Seven filaments / five plates: plate 0 uses three extruders", "[integ
     REQUIRE(used_extruders(e->stats().plates[0]) == std::set<int>({0, 2, 4}));
 }
 
-// --- Layer 2: golden comparison vs desktop OrcaSlicer (external + SKIP). ----
-//
-// The reference desktop outputs live at ~/Downloads/.../Orca/*.gcode.3mf. We
-// cannot unzip them here without a zip dep, so the golden values are extracted
-// from their slice_info.config by hand (filament used_g per plate) and pinned
-// as constants, with the extraction date noted. The cloud engine's per-plate
-// filament grams must match within a small tolerance (slicer rounding).
-
-TEST_CASE("Filament grams match desktop OrcaSlicer reference (distinct_per_plate)", "[integration][filcount][golden]")
-{
-    // Desktop reference (extracted 2026-08-07 from
-    // ~/Downloads/切片引擎测试-3MF文件包/filement_count/Orca/各盘都使用唯一的耗材...gcode.3mf
-    // slice_info.config <filament used_g>): plates 1-4 = 5.92, 7.28, 5.92, 7.12 g.
-    // The reference file must be present for this case to be meaningful; SKIP if not.
-    const char* ref = "/home/joyx/Downloads/切片引擎测试-3MF文件包/filement_count/Orca/"
-                      "各盘都使用唯一的耗材且各不相同，检查耗材统计正确，json结果和Gcode要一致.gcode.3mf";
-    if (!boost::filesystem::exists(ref))
-        SKIP("desktop OrcaSlicer reference gcode not present (external); skipping golden check");
-
-    auto e = run_on(fixture("distinct_per_plate.3mf"), "distinct_golden");
-    REQUIRE(e->stats().success);
-    REQUIRE(e->stats().plates.size() == 4);
-
-    // Cloud vs desktop, 0.05g tolerance (slicer rounding).
-    const double ref_g[4] = {5.92, 7.28, 5.92, 7.12};
-    for (size_t i = 0; i < 4; ++i)
-    {
-        INFO("plate " << i << " cloud=" << e->stats().plates[i].total_filament_g
-                      << " desktop=" << ref_g[i]);
-        REQUIRE(e->stats().plates[i].total_filament_g == Approx(ref_g[i]).margin(0.05));
-    }
-}
+// (Golden grams-vs-desktop case removed 2026-08-25: the desktop reference gcode lived in the external pool that no longer exists on this machine. Gram-exact comparison needs a fresh desktop export to return.)
 
 // --- Dual-plate modifier multicolor (妞妞球同类型模型). ------------------------
 // Two plates, each object carrying a modifier volume assigning a second

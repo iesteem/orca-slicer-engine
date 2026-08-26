@@ -2200,23 +2200,22 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
             }
             else if (inst->print_volume_state == ModelInstancePVS_Fully_Outside)
             {
-                // Desktop parity: the "object placed on the build-plate boundary
-                // or beyond height limit" check blocks slicing (the user must
-                // move the object fully inside or fully off the plate). An
-                // on-plate instance that is completely outside the volume is
-                // the same defect as Partly_Outside, not a "skip printing"
-                // notice — previously a warning here let slicing proceed and
-                // the failure surfaced later as TOOLPATH_OUTSIDE (exit 7
-                // instead of the desktop-equivalent preprocess exit 6).
+                // Desktop blocks slicing for off-plate objects: a fully-outside
+                // instance makes on_slice_button_status disable the slice
+                // button (GLCanvas3D.cpp:2876-2877 gates on contained_min_one,
+                // which requires EVERY printable instance to be at least
+                // partly inside). The cloud engine has no "grey out and skip"
+                // UI concept, so escalate to a blocking error (previously a
+                // warning here let slicing proceed and the failure surfaced
+                // later as TOOLPATH_OUTSIDE, exit 7 instead of exit 6).
+                log_plate_message("[Pre-processing]", "ERROR", plate_id,
+                                  "Object \"" + obj->name + "\" is completely outside the build volume.");
+                has_partly_outside = true;
                 m_stats.issues.push_back(make_error(
                     plate_id, "BUILD_VOLUME_FULLY_OUTSIDE",
-                    "Object \"" + obj->name + "\" is completely outside the build volume. "
-                    "Move it fully inside the build plate, or fully off the plate if it should not be printed",
-                    obj->name));
-                log_plate_message("[Pre-processing]", "ERROR", plate_id,
-                                  "Object \"" + obj->name +
-                                      "\" is completely outside the build volume.");
-                has_partly_outside = true;
+                    "Object \"" + obj->name + "\" is completely outside the build volume and will not be printed",
+                    obj->name,
+                    "Move the object back onto the build plate before slicing."));
             }
         }
     }
@@ -3124,10 +3123,12 @@ void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, cons
                 max_z = move.position.z();
         if (max_z - result.gcode_result.printable_height >= 1e-6)
         {
-            log_plate_message("[Post-processing]", "WARNING", plate_id,
+            // Desktop shows this as ErrorType::SLICING_ERROR
+            // (GLCanvas3D.cpp:9858), blocking the print dialog.
+            log_plate_message("[Post-processing]", "ERROR", plate_id,
                               "A G-code path goes beyond the max print height.");
-            has_postprocess_warning = true;
-            Issue h = make_warning(plate_id, "TOOL_HEIGHT_OUTSIDE",
+            has_postprocess_error = true;
+            Issue h = make_error(plate_id, "TOOL_HEIGHT_OUTSIDE",
                                    "A G-code path goes beyond the max print height. "
                                    "The object may not print correctly.");
             h.z_height = static_cast<double>(max_z);
