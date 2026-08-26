@@ -355,14 +355,16 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
 // (vendor == SM_BUNDLE + not project-embedded) the shell is only an
 // inheritance-chain waypoint.
 //
-// Outcome note (2026-08-25): this fixture's plate 1 is NOT sliceable — its
-// objects have differing variable layer-height profiles under a prime tower,
-// which Print::validate rejects (Print.cpp:1778, exception type
-// STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT). Verified on desktop
-// Orca: plate 1 fails with the same message, so the engine matches desktop.
-// The success assertions the case originally carried were stale; the case now
-// asserts the preset-substitution contract only — that contract is decided
-// before validate/slicing, so it is unaffected by the plate-1 failure.
+// Outcome note (2026-08-25, Orca feature-2.3.5-base): plate 1 emits the
+// prime-tower variable-layer-height rejection (Print.cpp:1778), but on this
+// branch the exception carries no dedicated type (STRING_EXCEPT_NOT_DEFINED),
+// so the engine's error-path classifier downgrades it to a warning
+// (PRINT_VALIDATE_WARNING) and slicing continues to success. On
+// feature-2.3.6-base the exception is tagged
+// STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT and hard-fails; if the
+// engine moves back to that branch, restore the failure assertions.
+// Either way the preset-substitution contract is decided before
+// validate/slicing, so the case asserts it below.
 TEST_CASE("Hollow embedded process preset rejected (train city)", "[integration][preset][embedded]")
 {
     Slic3r::set_resources_dir(kResources);
@@ -378,18 +380,18 @@ TEST_CASE("Hollow embedded process preset rejected (train city)", "[integration]
     SliceEngine engine(cfg, temp_files);
     engine.run();
 
-    // Desktop-parity failure: plate 1 rejected by the prime-tower
-    // variable-layer-height rule; all-or-nothing makes the run fail.
-    REQUIRE_FALSE(engine.stats().success);
-    REQUIRE(engine.exit_code() == EXIT_PREPROCESS_ERROR);
-    bool has_prime_tower_error = false;
+    // 2.3.5-base behavior: the prime-tower variable-layer-height rejection is
+    // untyped (NOT_DEFINED) on this branch, classified as a warning — slicing
+    // is not blocked. Assert the downgrade instead of the 2.3.6 hard failure.
+    bool has_prime_tower_warning = false;
     for (const auto& iss : engine.stats().issues)
-        if (iss.level == IssueLevel::error &&
+        if (iss.level == IssueLevel::warning &&
             iss.message.find("prime tower is only supported") != std::string::npos) {
-            has_prime_tower_error = true;
+            has_prime_tower_warning = true;
             break;
         }
-    REQUIRE(has_prime_tower_error);
+    REQUIRE(has_prime_tower_warning);
+    REQUIRE(engine.stats().success);
 
     // Core regression guard (unaffected by the plate-1 failure, substitution
     // runs before validate): the applied process preset is the official
