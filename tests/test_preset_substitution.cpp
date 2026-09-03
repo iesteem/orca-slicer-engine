@@ -133,8 +133,19 @@ void check_matches_official(const DynamicPrintConfig& actual, const Preset& offi
         if (!actual.has(key)) { ++missing; continue; }
         const Slic3r::ConfigOption* a_opt = actual.option(key);
         if (!a_opt) { ++missing; continue; }
-        const std::string a = a_opt->serialize();
-        const std::string b = it->second.get()->serialize();
+        std::string a = a_opt->serialize();
+        std::string b = it->second.get()->serialize();
+        // Aug-2026 high-flow data model: official presets store flow-variant
+        // vectors (e.g. inner_wall_speed "300,600", printer_flow_support
+        // "standard;high_flow"); the engine config holds the active
+        // (standard) scalar. Compare against the first element when actual
+        // is scalar.
+        if (a.find(',') == std::string::npos && a.find(';') == std::string::npos)
+        {
+            const size_t sep = b.find_first_of(",;");
+            if (sep != std::string::npos)
+                b = b.substr(0, sep);
+        }
         if (a == b) ++matched;
         else
         {

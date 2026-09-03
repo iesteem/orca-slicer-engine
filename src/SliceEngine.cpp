@@ -139,6 +139,15 @@ static void  remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
 SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files)
     : m_cfg(cfg), m_temp_files(temp_files)
 {
+    // 3MF loading lazily creates a per-model backup dir under temporary_dir()
+    // (Model::get_backup_path). Without this the empty default resolves to
+    // "/snapmaker_orca_model" at filesystem root and every load fails.
+    // m_cfg.temp_dir is the engine's canonical temp location; fall back to
+    // the system temp dir when the caller did not set one.
+    if (!m_cfg.temp_dir.empty())
+        Slic3r::set_temporary_dir(m_cfg.temp_dir);
+    else
+        Slic3r::set_temporary_dir(boost::filesystem::temp_directory_path().string());
 }
 
 SliceEngine::~SliceEngine()
@@ -660,6 +669,30 @@ bool SliceEngine::is_official_preset(const Preset& p)
     return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
 }
 
+const Preset* SliceEngine::find_official_by_name(const PresetCollection& collection, const std::string& name)
+{
+    // Exact-name match first. load_vendor_configs_from_json does not rebuild
+    // the renamed-from map (update_system_maps is only called from
+    // load_configbundle / load_installed_printers on the desktop path), so a
+    // legacy name carried by an older 3MF must also be matched by linear scan
+    // over each preset's public renamed_from list (official profiles renamed
+    // e.g. "0.20 Standard" -> "0.20mm Standard" in Aug 2026).
+    auto by_name = [&collection](const std::string& n) -> const Preset* {
+        const Preset* p = collection.find_preset(n, false);
+        if (p && p->name == n && !p->is_project_embedded && is_official_preset(*p)) return p;
+        return nullptr;
+    };
+    if (const Preset* p = by_name(name)) return p;
+    if (name.empty()) return nullptr;
+    for (const Preset& p : collection.get_presets())
+    {
+        if (p.is_project_embedded || !is_official_preset(p)) continue;
+        for (const std::string& old : p.renamed_from)
+            if (old == name) return &p;
+    }
+    return nullptr;
+}
+
 // ============================================================================
 // Stage 1.4a: Printer preset substitution (official Snapmaker U1)
 // ============================================================================
@@ -976,10 +1009,10 @@ bool SliceEngine::apply_printer_official_preset()
             const std::string& parent = ig_opt->values.back();
             if (!parent.empty())
             {
-                const Preset* candidate = m_preset_bundle->printers.find_preset(parent, false);
-                if (candidate && candidate->name == parent && is_official_preset(*candidate))
+                const Preset* candidate = SliceEngine::find_official_by_name(m_preset_bundle->printers, parent);
+                if (candidate)
                 {
-                    official_printer_name = parent;
+                    official_printer_name = candidate->name;  // may be the renamed-to name
                 }
             }
         }
@@ -987,7 +1020,7 @@ bool SliceEngine::apply_printer_official_preset()
     if (official_printer_name.empty())
         official_printer_name = preset_name;
 
-    const Preset* official = m_preset_bundle->printers.find_preset(official_printer_name, false);
+    const Preset* official = SliceEngine::find_official_by_name(m_preset_bundle->printers, official_printer_name);
     if (!official)
     {
         std::string msg = "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
@@ -1139,13 +1172,9 @@ bool SliceEngine::resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_
     auto find_in_system = [this](const std::string& name) -> Preset*
     {
         // Same acceptance rule as find_official_process_preset: genuine system
-        // presets only (official Snapmaker vendor, not project-embedded). The
-        // is_project_embedded check guards the seam where an embedded preset
-        // inherits from an official one and shares its vendor pointer.
-        auto* p = m_preset_bundle->filaments.find_preset(name, false);
-        if (p && p->name == name && !p->is_project_embedded && is_official_preset(*p))
-            return p;
-        return nullptr;
+        // presets only (official Snapmaker vendor, not project-embedded), with
+        // renamed_from fallback (see find_official_by_name).
+        return const_cast<Preset*>(SliceEngine::find_official_by_name(m_preset_bundle->filaments, name));
     };
     auto find_in_project = [this](const std::string& name) -> Preset*
     {
@@ -1367,10 +1396,10 @@ void SliceEngine::apply_process_official_preset()
             const std::string& parent = ig_opt->values[0];
             if (!parent.empty())
             {
-                const Preset* candidate = m_preset_bundle->prints.find_preset(parent, false);
-                if (candidate && candidate->name == parent && is_official_preset(*candidate))
+                const Preset* candidate = SliceEngine::find_official_by_name(m_preset_bundle->prints, parent);
+                if (candidate)
                 {
-                    process_system_name = parent;
+                    process_system_name = candidate->name;  // may be the renamed-to name
                 }
             }
         }
@@ -1444,13 +1473,10 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     // configs safe to apply wholesale.
     auto find_in_system = [this](const std::string& name) -> const Preset*
     {
-        // Official = Snapmaker vendor (is_official_preset). This also excludes
-        // project-embedded presets (no vendor of their own), making the old
-        // !is_project_embedded check redundant — kept as belt-and-braces since
-        // a hollow-shell embedded preset must never be applied wholesale.
-        const Preset* p = m_preset_bundle->prints.find_preset(name, false);
-        if (p && p->name == name && !p->is_project_embedded && is_official_preset(*p)) return p;
-        return nullptr;
+        // Official = Snapmaker vendor (is_official_preset), with renamed_from
+        // fallback for legacy names carried by older 3MFs (see
+        // find_official_by_name).
+        return SliceEngine::find_official_by_name(m_preset_bundle->prints, name);
     };
 
     auto find_in_project = [this](const std::string& name) -> const Preset*

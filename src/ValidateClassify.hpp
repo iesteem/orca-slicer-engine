@@ -58,6 +58,12 @@ inline constexpr const char* kOrganicFixedSuggestion =
 inline constexpr const char* kOrganicSubstring =
     "Variable layer height is not supported with Organic supports";
 
+// Substring that distinguishes the prime-tower case inside a NOT_DEFINED
+// (type 0) exception message — the typed variant (kExceptPrimeTowerVariableLayer)
+// only exists on libslic3r branches carrying ad2a53ec07.
+inline constexpr const char* kPrimeTowerSubstring =
+    "The prime tower is only supported if all objects have the same variable layer height";
+
 // Suggestion for the prime-tower / mismatched variable layer height error
 // (STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT = 9). The message itself is
 // passed through from the exception string (keeps upstream wording); this is
@@ -150,6 +156,17 @@ ExceptionClassification classify_validate_exception(
                 c.level         = IssueLevel::error;
                 c.code          = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
                 c.fixed_message = kOrganicFixedMessage;
+            }
+            else if (message.find(kPrimeTowerSubstring) != std::string::npos)
+            {
+                // Substring fallback: the type-9 tag (ad2a53ec07) exists on
+                // feature-2.3.6-base but NOT on every libslic3r branch the
+                // engine builds against (e.g. feature-high-flow returns this
+                // message as NOT_DEFINED). Same escalation as the typed case:
+                // the tower is silently dropped when triggered, corrupting
+                // multi-color changes (decision 2026-08-18).
+                c.level = IssueLevel::error;
+                c.code  = "PRIME_TOWER_VARIABLE_LAYER_HEIGHT";
             }
             else if (message.find(kBuildVolumeHeightSubstring) != std::string::npos)
             {

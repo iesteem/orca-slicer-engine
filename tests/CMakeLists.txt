@@ -90,6 +90,7 @@ if(ORCA_STATIC)
         test_filament_count.cpp
         test_unsupported.cpp
         test_accuracy.cpp
+        test_high_flow.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp

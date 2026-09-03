@@ -205,6 +205,11 @@ private:
     // waypoints on an inheritance chain but must never be applied wholesale.
     static bool is_official_preset(const Slic3r::Preset& p);
 
+    // Exact-name lookup with renamed_from fallback (see cpp for why the
+    // rename map is not populated on the engine's preset-load path).
+    static const Slic3r::Preset* find_official_by_name(const Slic3r::PresetCollection& collection,
+                                                       const std::string& name);
+
     // Strip all user-supplied content from m_config: G-code keys (machine +
     // process + filament level), user-authored text (printer_notes /
     // filament_notes), the post_process shell-command list, and external
