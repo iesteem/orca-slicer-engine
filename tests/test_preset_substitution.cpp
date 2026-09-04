@@ -131,26 +131,27 @@ void check_matches_official(const DynamicPrintConfig& actual, const Preset& offi
             continue;
         ++total;
         if (!actual.has(key)) { ++missing; continue; }
-        const Slic3r::ConfigOption* a_opt = actual.option(key);
-        if (!a_opt) { ++missing; continue; }
-        std::string a = a_opt->serialize();
-        std::string b = it->second.get()->serialize();
+        const Slic3r::ConfigOption* actual_opt = actual.option(key);
+        if (!actual_opt) { ++missing; continue; }
+        std::string actual_str = actual_opt->serialize();
+        std::string official_str = it->second.get()->serialize();
         // Aug-2026 high-flow data model: official presets store flow-variant
         // vectors (e.g. inner_wall_speed "300,600", printer_flow_support
         // "standard;high_flow"); the engine config holds the active
         // (standard) scalar. Compare against the first element when actual
         // is scalar.
-        if (a.find(',') == std::string::npos && a.find(';') == std::string::npos)
+        if (actual_str.find(',') == std::string::npos && actual_str.find(';') == std::string::npos)
         {
-            const size_t sep = b.find_first_of(",;");
+            const size_t sep = official_str.find_first_of(",;");
             if (sep != std::string::npos)
-                b = b.substr(0, sep);
+                official_str = official_str.substr(0, sep);
         }
-        if (a == b) ++matched;
+        if (actual_str == official_str) ++matched;
         else
         {
             ++mismatched;
-            FAIL_CHECK(label << ": key \"" << key << "\" = \"" << a << "\" != official \"" << b << "\"");
+            FAIL_CHECK(label << ": key \"" << key << "\" = \"" << actual_str
+                      << "\" != official \"" << official_str << "\"");
         }
     }
     WARN(label << " coverage: " << matched << "/" << total
