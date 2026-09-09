@@ -7,6 +7,7 @@ package/
 package-*.zip
 docs/*
 !docs/precedents/
+!docs/requirements/
 
 # Test byproducts: slicing emits gcode.3mf / gcode next to fixtures or in /tmp.
 # Generated output, not test inputs — never check in. The .gcode_<hash>.3mf
