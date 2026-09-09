@@ -91,6 +91,7 @@ if(ORCA_STATIC)
         test_unsupported.cpp
         test_accuracy.cpp
         test_high_flow.cpp
+        test_print_sequence.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
