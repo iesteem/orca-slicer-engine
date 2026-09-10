@@ -74,11 +74,12 @@ void check_heights(int n, double exp_lh, double exp_flh)
 
 // Nozzle 0.2mm. The fixture references "0.14 Standard @U1 (0.2 nozzle)",
 // which the Aug-2026 official profile merge folded into "0.12mm Standard"
-// (renamed_from includes 0.14) — so the substituted preset now yields
-// layer 0.12, first-layer 0.1.
+// (renamed_from includes 0.14). The folded preset inherits layer 0.12 from
+// fdm_process_U1_0.12_nozzle_0.2 but overrides first-layer to 0.14 in its
+// own diff — so the substituted preset yields layer 0.12, first-layer 0.14.
 TEST_CASE("0.2 nozzle: default heights from preset", "[integration][layerheight]")
 {
-    check_heights(1, 0.12, 0.10);
+    check_heights(1, 0.12, 0.14);
 }
 
 TEST_CASE("0.2 nozzle: user override wins", "[integration][layerheight]")

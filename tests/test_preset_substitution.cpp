@@ -239,6 +239,13 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
     std::set<std::string> proc_skip = dts;
     proc_skip.insert("brim_width");
     proc_skip.insert("compatible_printers");
+    // small_area_infill_flow_compensation_model: not present in any Snapmaker
+    // process preset file — the official value comes from PrintConfig defaults
+    // filled during vendor-config load, so overwrite_all_keys_from has no
+    // preset entry to write and the fixture's author-side empty array ("[]")
+    // survives. Same overwrite-semantics class as compatible_printers above,
+    // not a substitution defect.
+    proc_skip.insert("small_area_infill_flow_compensation_model");
     check_matches_official(mc, *proc, proc_skip, "process");
 
     // brim_width fallback invariant: brim_type==auto_brim => brim_width == 0.
