@@ -175,6 +175,16 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Pre
         const auto& key = it->first;
         const auto& src_opt = it->second;
 
+        // Flow-variant options use declaration-driven segmented storage
+        // (filament_flow_step_size): slot i's segment starts at
+        // sum(step_size[0..i-1]), not at flat index i. A flat per-extruder
+        // copy via set_at() would corrupt the segment alignment and drop the
+        // high_flow variant (source index 0 = standard). Skip them — same rule
+        // as DynamicPrintConfig::set_num_filaments (PrintConfig.cpp).
+        if (key == "filament_flow_support" || key == "filament_flow_step_size" ||
+            is_filament_flow_variant_option(key))
+            continue;
+
         ConfigOption* dst_opt = target.option(key, true);
         if (!dst_opt)
             continue;
