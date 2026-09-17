@@ -8,8 +8,90 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <limits.h>
 
 #include "slic3r_c_api.h"
+
+/* Parse a non-negative decimal integer option value. Returns 0 and stores
+ * the value on success; prints an error naming the option and returns -1 on
+ * garbage input (empty string, non-digits, trailing junk, negative values,
+ * overflow). Replaces raw atoi(), which silently maps "-p abc" to plate 0. */
+static int parse_int_opt(const char* opt, const char* val, int* out)
+{
+    char* end = NULL;
+    if (!val || !val[0] || val[0] == ' ' || val[0] == '\t')
+        goto bad;
+    long v = strtol(val, &end, 10);
+    if (end == val || *end != '\0' || v < 0 || v > INT_MAX)
+        goto bad;
+    *out = (int)v;
+    return 0;
+bad:
+    fprintf(stderr, "Error: invalid value for %s: '%s'\n", opt, val ? val : "");
+    return -1;
+}
+
+/* Append formatted text to buf at pos. Returns the new position, or -1 if
+ * the result would not fit in cap bytes (including the NUL). Never lets pos
+ * pass the end of the buffer — the accumulation idiom it replaces kept
+ * adding snprintf's would-have-written length and wrote past the array. */
+static int appendf(char* buf, int pos, size_t cap, const char* fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + pos, cap - (size_t)pos, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= cap - (size_t)pos)
+        return -1;
+    return pos + n;
+}
+
+/* Append a JSON string literal (with surrounding quotes and escaping) for
+ * value. Returns the new position, or -1 if it does not fit. Paths may
+ * contain backslashes (Windows) or quotes — unescaped they produce invalid
+ * JSON that the engine then rejects. */
+static int append_json_str(char* buf, int pos, size_t cap, const char* value)
+{
+    if (pos < 0)
+        return -1;
+    pos = appendf(buf, pos, cap, "\"");
+    if (pos < 0)
+        return -1;
+    for (const char* p = value ? value : ""; *p; ++p)
+    {
+        char tmp[8];
+        const char* rep = NULL;
+        switch (*p)
+        {
+        case '"':  rep = "\\\""; break;
+        case '\\': rep = "\\\\"; break;
+        case '\n': rep = "\\n"; break;
+        case '\r': rep = "\\r"; break;
+        case '\t': rep = "\\t"; break;
+        default:
+            if ((unsigned char)*p < 0x20)
+            {
+                snprintf(tmp, sizeof(tmp), "\\u%04x", (unsigned char)*p);
+                rep = tmp;
+            }
+            break;
+        }
+        if (rep)
+        {
+            pos = appendf(buf, pos, cap, "%s", rep);
+            if (pos < 0)
+                return -1;
+        }
+        else
+        {
+            pos = appendf(buf, pos, cap, "%c", *p);
+            if (pos < 0)
+                return -1;
+        }
+    }
+    return appendf(buf, pos, cap, "\"");
+}
 
 int main(int argc, char* argv[])
 {
@@ -59,11 +141,13 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--timeout"))
         {
-            if (++i < argc) timeout_sec = atoi(argv[i]);
+            if (++i < argc && parse_int_opt(argv[i - 1], argv[i], &timeout_sec) != 0)
+                return 1;
         }
         else if (!strcmp(argv[i], "--max-size"))
         {
-            if (++i < argc) max_size_mb = atoi(argv[i]);
+            if (++i < argc && parse_int_opt(argv[i - 1], argv[i], &max_size_mb) != 0)
+                return 1;
         }
         else if (!strcmp(argv[i], "--cancel-file"))
         {
@@ -75,7 +159,8 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate"))
         {
-            if (++i < argc) plate_id = atoi(argv[i]);
+            if (++i < argc && parse_int_opt(argv[i - 1], argv[i], &plate_id) != 0)
+                return 1;
         }
         else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format"))
         {
@@ -113,6 +198,14 @@ int main(int argc, char* argv[])
     if (!input_3mf)
     {
         fprintf(stderr, "Error: input file required. Use -h for help.\n");
+        return 1;
+    }
+
+    /* Reject unknown formats here instead of letting the engine silently
+     * map them to gcode.3mf (param-validation: never silently coerce). */
+    if (strcmp(format, "gcode") != 0 && strcmp(format, "gcode.3mf") != 0)
+    {
+        fprintf(stderr, "Error: invalid value for -f/--format: '%s' (expected \"gcode\" or \"gcode.3mf\")\n", format);
         return 1;
     }
 
@@ -172,28 +265,35 @@ int main(int argc, char* argv[])
         return 99;
     }
 
-    /* Build params JSON (incremental to avoid truncation with optional fields) */
-    char params[2048];
-    int pos = snprintf(params, sizeof(params),
+    /* Build params JSON incrementally. Every append is bounds-checked and
+     * every string is JSON-escaped: overflowing paths used to push the
+     * write offset past the end of this buffer (stack OOB write, review
+     * N1) and unescaped Windows-style paths produced unparseable JSON. */
+    char params[8192];
+    int pos = appendf(params, 0, sizeof(params),
         "{\"plate_id\":%d,\"format\":\"%s\"", plate_id, format);
-    pos += snprintf(params + pos, sizeof(params) - pos,
-        ",\"log_path\":\"%s\"", log_file ? log_file : "");
-    pos += snprintf(params + pos, sizeof(params) - pos,
-        ",\"json_output_path\":\"%s\"", json_output ? json_output : "");
-    if (timeout_sec > 0)
-        pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"timeout_seconds\":%d", timeout_sec);
-    if (max_size_mb > 0)
-        pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"max_size_mb\":%d", max_size_mb);
-    if (cancel_file && cancel_file[0])
-        pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"cancel_file\":\"%s\"", cancel_file);
-    if (skip_preset_substitution)
-        pos += snprintf(params + pos, sizeof(params) - pos,
-            ",\"skip_preset_substitution\":true");
-    if (pos < (int)sizeof(params))
-        snprintf(params + pos, sizeof(params) - pos, "}");
+    if (pos >= 0) pos = appendf(params, pos, sizeof(params), ",\"log_path\":");
+    if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), log_file);
+    if (pos >= 0) pos = appendf(params, pos, sizeof(params), ",\"json_output_path\":");
+    if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), json_output);
+    if (pos >= 0 && timeout_sec > 0)
+        pos = appendf(params, pos, sizeof(params), ",\"timeout_seconds\":%d", timeout_sec);
+    if (pos >= 0 && max_size_mb > 0)
+        pos = appendf(params, pos, sizeof(params), ",\"max_size_mb\":%d", max_size_mb);
+    if (pos >= 0 && cancel_file && cancel_file[0])
+    {
+        pos = appendf(params, pos, sizeof(params), ",\"cancel_file\":");
+        if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), cancel_file);
+    }
+    if (pos >= 0 && skip_preset_substitution)
+        pos = appendf(params, pos, sizeof(params), ",\"skip_preset_substitution\":true");
+    if (pos >= 0) pos = appendf(params, pos, sizeof(params), "}");
+    if (pos < 0)
+    {
+        fprintf(stderr, "Error: arguments too long for params buffer\n");
+        slic3r_destroy(ctx);
+        return 1;
+    }
 
     /* Slice */
     char stats[32768] = {0};

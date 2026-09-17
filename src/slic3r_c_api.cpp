@@ -56,8 +56,9 @@ static void set_error(slic3r_ctx_t* ctx, const std::string& msg)
     BOOST_LOG_TRIVIAL(error) << msg;
 }
 
-// Parse CLI params JSON into EngineConfig
-static bool parse_params(const char* json_str, EngineConfig& cfg)
+// Parse CLI params JSON into EngineConfig. On rejection, err_out carries a
+// human-readable reason naming the offending field.
+static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& err_out)
 {
     if (!json_str || !json_str[0])
         return true; // empty = defaults
@@ -66,14 +67,43 @@ static bool parse_params(const char* json_str, EngineConfig& cfg)
     {
         json j = json::parse(json_str);
         if (j.contains("plate_id"))
-            cfg.plate_id = j["plate_id"].get<int>();
+        {
+            int pid = j["plate_id"].get<int>();
+            if (pid < 0)
+            {
+                err_out = "plate_id must be >= 0 (0 = all plates)";
+                return false;
+            }
+            cfg.plate_id = pid;
+        }
         if (j.contains("timeout_seconds"))
-            cfg.timeout_seconds = j["timeout_seconds"].get<int>();
+        {
+            int t = j["timeout_seconds"].get<int>();
+            if (t < 0)
+            {
+                err_out = "timeout_seconds must be >= 0";
+                return false;
+            }
+            cfg.timeout_seconds = t;
+        }
         if (j.contains("max_size_mb"))
-            cfg.max_size_mb = j["max_size_mb"].get<int>();
+        {
+            int m = j["max_size_mb"].get<int>();
+            if (m < 0)
+            {
+                err_out = "max_size_mb must be >= 0";
+                return false;
+            }
+            cfg.max_size_mb = m;
+        }
         if (j.contains("format"))
         {
             std::string fmt = j["format"].get<std::string>();
+            if (fmt != "gcode" && fmt != "gcode.3mf")
+            {
+                err_out = "format must be \"gcode\" or \"gcode.3mf\"";
+                return false;
+            }
             cfg.format = (fmt == "gcode") ? OutputFormat::GCODE : OutputFormat::GCODE_3MF;
         }
         if (j.contains("cancel_file"))
@@ -84,11 +114,16 @@ static bool parse_params(const char* json_str, EngineConfig& cfg)
             cfg.json_output_path = j["json_output_path"].get<std::string>();
         if (j.contains("skip_preset_substitution"))
             cfg.skip_preset_substitution = j["skip_preset_substitution"].get<bool>();
+
+        // plate_id N > 0 selects exactly one plate (1-based); the engine's
+        // single_plate mode drives output naming and per-plate processing.
+        cfg.single_plate = (cfg.plate_id > 0);
         return true;
     }
     catch (const std::exception& e)
     {
         BOOST_LOG_TRIVIAL(error) << "params parse error: " << e.what();
+        err_out = std::string("invalid params JSON: ") + e.what();
         return false;
     }
 }
@@ -103,25 +138,43 @@ SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir)
     if (!ctx)
         return nullptr;
 
-    ctx->resources_dir = resources_dir ? resources_dir : "";
+    // Exception barrier: the header promises all C++ exceptions are caught
+    // at this boundary, including construction-time ones.
+    try
+    {
+        ctx->resources_dir = resources_dir ? resources_dir : "";
 
-    // Initialize Slic3r global state
-    Slic3r::set_resources_dir(ctx->resources_dir);
-    Slic3r::set_data_dir(ctx->resources_dir + "/profiles");
+        // Initialize Slic3r global state
+        Slic3r::set_resources_dir(ctx->resources_dir);
+        Slic3r::set_data_dir(ctx->resources_dir + "/profiles");
 
-    // 3MF loading lazily creates a per-model backup dir under temporary_dir()
-    // (Model::get_backup_path). Without this the empty default resolves to
-    // "/snapmaker_orca_model" at filesystem root and every load fails.
-    Slic3r::set_temporary_dir(boost::filesystem::temp_directory_path().string());
+        // 3MF loading lazily creates a per-model backup dir under temporary_dir()
+        // (Model::get_backup_path). Without this the empty default resolves to
+        // "/snapmaker_orca_model" at filesystem root and every load fails.
+        Slic3r::set_temporary_dir(boost::filesystem::temp_directory_path().string());
 
-    ctx->initialized = true;
+        ctx->initialized = true;
 
-    // Console sink so BOOST_LOG_TRIVIAL messages reach stderr even
-    // without --log. Format matches the file sink for consistency.
-    boost::log::add_console_log(std::cerr,
-                                boost::log::keywords::format =
-                                    (boost::log::expressions::stream << "[" << boost::log::trivial::severity << "]\t"
-                                                                     << boost::log::expressions::smessage));
+        // Console sink so BOOST_LOG_TRIVIAL messages reach stderr even
+        // without --log. Format matches the file sink for consistency.
+        // Registered once per process: add_console_log appends a new sink to
+        // the global core on every call, and multiple contexts in one process
+        // would duplicate every log line.
+        static bool console_sink_added = false;
+        if (!console_sink_added)
+        {
+            boost::log::add_console_log(std::cerr,
+                                        boost::log::keywords::format =
+                                            (boost::log::expressions::stream << "[" << boost::log::trivial::severity << "]\t"
+                                                                             << boost::log::expressions::smessage));
+            console_sink_added = true;
+        }
+    }
+    catch (...)
+    {
+        delete ctx;
+        return nullptr;
+    }
 
     return ctx;
 }
@@ -157,9 +210,10 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
         boost::filesystem::create_directories(unique_dir);
         cfg.temp_dir = unique_dir.string();
 
-        if (!parse_params(params_json, cfg))
+        std::string params_err;
+        if (!parse_params(params_json, cfg, params_err))
         {
-            set_error(ctx, "Failed to parse params JSON");
+            set_error(ctx, "Failed to parse params JSON: " + params_err);
             return SLIC3R_ERR_ARGS;
         }
 

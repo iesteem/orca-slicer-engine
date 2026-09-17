@@ -225,14 +225,32 @@ void add_log_file_sink(const std::string& file_path, unsigned int level)
     namespace expr = boost::log::expressions;
     namespace attrs = boost::log::attributes;
 
-    logging::add_file_log(
+    // add_file_log appends a NEW sink to the global core on every call. In a
+    // long-lived process that slices repeatedly (slic3r_slice installs a sink
+    // per call), every previous sink stays attached: log lines get written to
+    // stale files and file handles leak. Remove the previous file sink before
+    // registering the new one so exactly one file sink is ever attached.
+    static boost::shared_ptr<logging::sinks::sink> s_previous_file_sink;
+    if (s_previous_file_sink)
+    {
+        logging::core::get()->remove_sink(s_previous_file_sink);
+        s_previous_file_sink.reset();
+    }
+
+    s_previous_file_sink = logging::add_file_log(
         keywords::file_name = file_path,
         keywords::format =
             (expr::stream << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
                           << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
                           << "[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
                           << ":" << expr::smessage));
-    logging::add_common_attributes();
+
+    static bool common_attributes_added = false;
+    if (!common_attributes_added)
+    {
+        logging::add_common_attributes();
+        common_attributes_added = true;
+    }
 
     // Map libslic3r integer level (0=fatal..5=trace) to Boost severity enum.
     // Boost.Log enum values: trace=0, debug=1, info=2, warning=3, error=4, fatal=5.

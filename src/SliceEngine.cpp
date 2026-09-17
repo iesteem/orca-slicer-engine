@@ -179,6 +179,23 @@ bool SliceEngine::run()
     // apply_*_official_preset stages below.
     load_system_presets();
 
+    // Hard precondition independent of the substitution policy: later stages
+    // (init_print) dereference m_preset_bundle. --skip-preset-substitution
+    // must only skip the official-preset ENFORCEMENT, not this check —
+    // otherwise the run crashes with SIGSEGV (precedent P-09,
+    // gdb-confirmed 2026-08-06).
+    if (!m_presets_available || !m_preset_bundle)
+    {
+        std::string msg = "System presets not available; cannot slice.";
+        BOOST_LOG_TRIVIAL(error) << msg;
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = msg;
+        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
+        build_statistics();
+        return false;
+    }
+
     if (!m_cfg.skip_preset_substitution)
     {
         if (!apply_preset_substitution())
@@ -1940,9 +1957,12 @@ static void decode_one_plate_thumbnail(PlateData& pd)
         return;
     }
 
-    // Guard 3: file size in [1, MAX_PNG_SIZE].
+    // Guard 3: file size in [PNG_SIGNATURE_LEN, MAX_PNG_SIZE]. Files shorter
+    // than the 8-byte signature must be rejected HERE: Guard 5 reads
+    // file_bytes[0..7], so a 1..7 byte file that passes this guard is read
+    // out of bounds (heap OOB read).
     const boost::uintmax_t file_sz = boost::filesystem::file_size(resolved, ec);
-    if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE) {
+    if (ec || file_sz < static_cast<boost::uintmax_t>(PNG_SIGNATURE_LEN) || file_sz > MAX_PNG_SIZE) {
         BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
                                 << ", bad size " << file_sz;
         return;
@@ -3518,10 +3538,8 @@ int SliceEngine::exit_code() const
         return m_error_type;
     if (m_any_error)
         return EXIT_PREPROCESS_ERROR;
-    // Post-processing warnings are non-fatal — G-code has been generated
-    // and is usable. Treat as success per alignment with desktop behavior.
-    if (m_any_postprocess_warning)
-        return EXIT_OK;
+    // Post-processing warnings are non-fatal (desktop parity): the G-code
+    // has been generated and remains usable, so the exit code stays EXIT_OK.
     return EXIT_OK;
 }
 

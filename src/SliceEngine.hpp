@@ -154,7 +154,10 @@ public:
     }
 
     // Returns the most specific exit code based on what failed.
-    // Precedence: validation > slicing > export > load > postprocess_warning > ok.
+    // Precedence: validation > slicing > export > load > ok.
+    // Post-processing warnings are non-fatal (desktop parity): they never
+    // change the exit code away from EXIT_OK; query any_postprocess_warning()
+    // to surface them to the caller.
     int exit_code() const;
 
     void set_error_type(int code);
