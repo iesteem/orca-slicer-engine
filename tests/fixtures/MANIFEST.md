@@ -45,7 +45,8 @@
 
 | fixture | 锚定行为 |
 |---|---|
-| missing-keys_backfill_10632.3mf | P-01 defaults backfill |
+| missing-keys_backfill_10632.3mf | P-01 defaults backfill（注意：文件名是下划线 missing_keys…，历史上判例曾误写连字符） |
+| thumbnail_short_png.3mf | 缩略图 PNG 仅 3 字节（<8 字节签名）→ 必须被尺寸守卫拒绝，不得进入 magic 比较越界读（geom_above_bed_ok.3mf 改造，2026-09-17） |
 | hollow_embedded_preset_train_city.3mf | P-15 空壳内嵌预设 → exit 6 |
 | high_flow_whitelist.3mf | P-13 高流量生效 |
 | cylinder_four_plate_mixed.3mf | 多盘混合成功/失败 |

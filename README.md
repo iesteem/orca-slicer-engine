@@ -77,6 +77,17 @@ orca-slice-engine <input.3mf> [options]
   -p, --plate <id>      Plate ID (0 = all plates, default: 0)
   -f, --format <fmt>    Output format: gcode | gcode.3mf (default: gcode.3mf)
   -r, --resources <dir> Resources directory (or set ORCA_RESOURCES env var)
+  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit). Note: enforced
+                        BETWEEN plates — the current plate always finishes so its
+                        diagnostics are preserved; skipped plates report
+                        SLICING_TIMEOUT.
+  --max-size <mb>       Max input file size in MB (0 = no limit)
+  --cancel-file <file>  Watchdog file for external cancellation
+  --log [file]          Log file path (default: auto-derived from output)
+  -j, --json [file]     JSON statistics output path (default: auto-derived)
+  --skip-preset-substitution
+                        Skip official preset enforcement (preset LOAD failures
+                        still abort: exit 6 PRESETS_MISSING)
   -v, --verbose         Verbose output
   -h, --help            Show this help
 ```

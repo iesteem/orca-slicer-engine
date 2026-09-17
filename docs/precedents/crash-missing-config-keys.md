@@ -22,7 +22,7 @@ v02.01.04 切片崩溃，exit 139 (SIGSEGV)，崩在 `Print::apply`。
 
 `prepare_merged_config_for_plate`（merged_config = m_config 之后）backfill 所有
 defaults 有而 merged_config 缺的键（`apply_only(defaults, missing, true)`），
-已有值不动。fixture: `tests/fixtures/missing-keys_backfill_10632.3mf`。
+已有值不动。fixture: `tests/fixtures/missing_keys_backfill_10632.3mf`。
 
 ## 已证伪的推测（勿重走）
 

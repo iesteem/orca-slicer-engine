@@ -25,10 +25,12 @@ filament_presets`（PresetBundle.cpp:3625）把 flush matrix 规整到 N×N
 
 ## 修复
 
-引擎 `prepare_merged_config_for_plate` return 前调 `normalize_flush_volumes_
-matrix(DynamicPrintConfig&)`（移植 PresetBundle.cpp:3650-3675）：按
-`filament_diameter.size()` 重建 matrix 为 N×N、`flush_volumes_vector` 为 2N。
-维度已匹配时 early-return（正常模型零改动）。
+引擎在 `normalize_loaded_config()`（run() 加载后全局执行一次，早于逐板
+处理）中调 `normalize_flush_volumes_matrix(DynamicPrintConfig&)`（移植
+PresetBundle.cpp:3650-3675）：按 `filament_diameter.size()` 重建 matrix 为
+N×N、`flush_volumes_vector` 为 2N。维度已匹配时 early-return（正常模型零
+改动）。（历史上该调用位于 `prepare_merged_config_for_plate`，后上移至
+`normalize_loaded_config()`。）
 
 验证：迷你蘑菇从 SIGSEGV@70% → 完整切出 4.8MB gcode.3mf，4 色全解析。
 
