@@ -29,6 +29,7 @@
 
 #include "Types.hpp"
 #include "SliceEngine.hpp"
+#include "TestEngineRun.hpp"
 
 using Catch::Approx;
 
@@ -37,7 +38,7 @@ static const char* kResources = ORCA_TEST_RESOURCES;
 namespace {
 
 // Slice a case, return the engine for config inspection. Output to /tmp.
-std::unique_ptr<SliceEngine> slice_case(int n)
+EngineRun slice_case(int n)
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
@@ -49,9 +50,10 @@ std::unique_ptr<SliceEngine> slice_case(int n)
     cfg.temp_dir = "/tmp";
     cfg.output_base = std::string("/tmp/orca_test_lh_case") + std::to_string(n);
 
-    auto engine = std::make_unique<SliceEngine>(cfg, *(new std::vector<std::string>()));
-    engine->run();
-    return engine;
+    EngineRun r;
+    r.engine = std::make_unique<SliceEngine>(cfg, r.temp_files);
+    r.engine->run();
+    return r;
 }
 
 // Assert both heights for a case. lh exact, flh within margin.

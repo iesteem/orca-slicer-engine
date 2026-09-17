@@ -28,13 +28,14 @@
 
 #include "Types.hpp"                   // Issue, IssueLevel, EXIT_LOAD_ERROR
 #include "SliceEngine.hpp"
+#include "TestEngineRun.hpp"
 
 static const char* kResources = ORCA_TEST_RESOURCES;
 
 namespace {
 
 // Run the full pipeline on an input; return the engine for inspection.
-std::unique_ptr<SliceEngine> run_on(const std::string& input_file)
+EngineRun run_on(const std::string& input_file)
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
@@ -45,9 +46,10 @@ std::unique_ptr<SliceEngine> run_on(const std::string& input_file)
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
 
-    auto engine = std::make_unique<SliceEngine>(cfg, *(new std::vector<std::string>()));
-    engine->run();
-    return engine;
+    EngineRun r;
+    r.engine = std::make_unique<SliceEngine>(cfg, r.temp_files);
+    r.engine->run();
+    return r;
 }
 
 bool has_issue(const SliceOutputStats& s, const std::string& code)

@@ -24,12 +24,13 @@
 
 #include "Types.hpp"
 #include "SliceEngine.hpp"
+#include "TestEngineRun.hpp"
 
 static const char* kResources = ORCA_TEST_RESOURCES;
 
 namespace {
 
-std::unique_ptr<SliceEngine> run_on(const std::string& input_file, const char* tag)
+EngineRun run_on(const std::string& input_file, const char* tag)
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
@@ -41,9 +42,10 @@ std::unique_ptr<SliceEngine> run_on(const std::string& input_file, const char* t
     cfg.temp_dir = "/tmp";
     cfg.output_base = std::string("/tmp/orca_test_acc_") + tag;
 
-    auto engine = std::make_unique<SliceEngine>(cfg, *(new std::vector<std::string>()));
-    engine->run();
-    return engine;
+    EngineRun r;
+    r.engine = std::make_unique<SliceEngine>(cfg, r.temp_files);
+    r.engine->run();
+    return r;
 }
 
 std::set<int> used_extruders(const SliceOutputStats::PlateStats& ps)

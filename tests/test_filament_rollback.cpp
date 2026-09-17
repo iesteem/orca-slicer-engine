@@ -22,6 +22,7 @@
 
 #include "Types.hpp"                   // IssueLevel, EXIT_PREPROCESS_ERROR
 #include "SliceEngine.hpp"
+#include "TestEngineRun.hpp"
 
 static const char* kResources = ORCA_TEST_RESOURCES;
 
@@ -29,7 +30,7 @@ namespace {
 
 // Run the full pipeline on a fixture, writing output to a per-tag path under
 // /tmp so successful slices do not drop gcode byproducts into the fixtures dir.
-std::unique_ptr<SliceEngine> run_on(const std::string& input_file, const char* tag)
+EngineRun run_on(const std::string& input_file, const char* tag)
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
@@ -41,9 +42,10 @@ std::unique_ptr<SliceEngine> run_on(const std::string& input_file, const char* t
     cfg.temp_dir = "/tmp";
     cfg.output_base = std::string("/tmp/orca_test_filament_") + tag;
 
-    auto engine = std::make_unique<SliceEngine>(cfg, *(new std::vector<std::string>()));
-    engine->run();
-    return engine;
+    EngineRun r;
+    r.engine = std::make_unique<SliceEngine>(cfg, r.temp_files);
+    r.engine->run();
+    return r;
 }
 
 bool has_error_issue(const SliceOutputStats& s, const std::string& code)
