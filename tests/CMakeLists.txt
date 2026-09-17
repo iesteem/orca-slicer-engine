@@ -92,7 +92,10 @@ if(ORCA_STATIC)
         test_accuracy.cpp
         test_high_flow.cpp
         test_print_sequence.cpp
+        test_c_api.cpp
+        test_cli.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
+        ${CMAKE_SOURCE_DIR}/src/slic3r_c_api.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
         ${CMAKE_SOURCE_DIR}/src/GeometryCheck.cpp
@@ -114,9 +117,14 @@ if(ORCA_STATIC)
     endforeach()
     target_include_directories(engine-integration PRIVATE ${_int_inc_dirs})
 
+    # test_cli.cpp shells out to the real executable; make sure it is built
+    # first and pass its path in.
+    add_dependencies(engine-integration orca-slice-engine)
+
     target_compile_definitions(engine-integration PRIVATE
         ${ORCA_STATIC_DEFINES}
         ENGINE_VERSION="${ENGINE_VERSION}"
+        ORCA_ENGINE_EXE="$<TARGET_FILE:orca-slice-engine>"
         ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
         ORCA_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
