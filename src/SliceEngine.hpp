@@ -274,12 +274,6 @@ private:
     // to honour user overrides when applying the official preset.
     std::set<std::string> parse_process_user_overrides();
 
-    // When brim_type=auto_brim, set brim_width=0 so the fallback path (when
-    // the algorithm decides no brim is needed) doesn't generate unwanted brim.
-    // The algorithm still sets its own computed width when it determines brim
-    // IS needed. Matches desktop Snapmaker behaviour.
-    void apply_auto_brim_fallback();
-
     // Validate that the loaded config and model are complete and consistent.
     // Checks plate data integrity and ensures required config keys are present.
     bool validate_input();
@@ -492,6 +486,16 @@ private:
     // Export sliced G-code to a temp file and run GCodeProcessor analysis.
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
+
+    // Write-back fidelity fix for auto brim (2026-09 cloud review): the
+    // slicing copy passed to Print::apply carries brim_width=0 (motion parity
+    // with desktop 2.4.0, see prepare_merged_config_for_plate), and the G-code
+    // header echo is generated from that print config. Desktop echoes the
+    // project's brim_width while printing the same algorithm-only motion, so
+    // rewrite the single "; brim_width = ..." header line back to m_config's
+    // value. Touches one comment line in an already-final file — no motion
+    // change. No-op unless brim_type=auto_brim.
+    void restore_brim_width_echo(const std::string& gcode_path);
 
     // Build the thumbnail list for a plate G-code export request: locate this
     // plate's loaded thumbnail in m_plate_data and resize it to each requested

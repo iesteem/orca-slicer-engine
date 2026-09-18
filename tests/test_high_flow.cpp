@@ -162,3 +162,50 @@ TEST_CASE("High-flow variant reaches G-code feedrates (whitelist fixture)", "[in
     boost::filesystem::remove("/tmp/orca_test_hf_whitelist.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
 }
+
+TEST_CASE("Auto-brim header echo preserves project value; motion stays algorithm-only", "[integration][brim]")
+{
+    // 2026-09-18 cloud review defect 1 (brim_width 5→0). The input project
+    // sets brim_type=auto_brim + brim_width=5. Desktop Orca 2.4.0 echoes 5 in
+    // the G-code header while printing algorithm-only motion (this fixture's
+    // geometry makes the auto algorithm decide "no brim" — desktop verified).
+    // The engine used to zero brim_width on m_config, so the header echo AND
+    // the packaged project_settings.config both said 0 while motion matched
+    // desktop exactly: a lying write-back, not a motion defect. Post-fix
+    // contract:
+    //   - header echo carries the merged project value ("; brim_width = 5")
+    //   - motion is untouched: the auto-mode zero moved to the per-plate
+    //     slicing copy (prepare_merged_config_for_plate), so TYPE:Brim must
+    //     stay ABSENT on this fixture — a fallback brim here would be a
+    //     desktop-parity regression.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
+    cfg.skip_preset_substitution = false;
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_brim_echo";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    // Success-path test: any substitution/validation regression shows up as a
+    // false failure here rather than silently passing.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const std::string gcode = extract_gcode("/tmp/orca_test_brim_echo.gcode.3mf");
+
+    REQUIRE(gcode.find("; brim_type = auto_brim") != std::string::npos);
+    REQUIRE(gcode.find("; brim_width = 5\n") != std::string::npos);
+
+    // Motion invariance: no Brim feature may appear on this fixture.
+    CHECK(gcode.find("TYPE:Brim") == std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_brim_echo.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+}

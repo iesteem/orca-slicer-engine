@@ -228,16 +228,18 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
     REQUIRE(proc->vendor->name == PresetBundle::SM_BUNDLE);
 
     auto dts = parse_dts(mc);
-    // apply_auto_brim_fallback intentionally sets brim_width=0 after the
-    // official overwrite when brim_type=auto_brim; exclude it from the "matches
-    // official" check, and assert the fallback explicitly instead.
+    // brim_width no longer needs an exemption: since the 2026-09 auto-brim
+    // write-back fix, m_config keeps the merged value (official process
+    // preset's, unless the user overrode it via different_settings_to_system);
+    // the auto-mode zero lives only on the per-plate slicing copy inside
+    // prepare_merged_config_for_plate, and the G-code header echo is restored
+    // after export (restore_brim_width_echo).
     // compatible_printers: overwrite_all_keys_from_impl only writes vector
     // elements that already exist in dst (loop bound by dst.size()); when the
     // fixture carries an empty compatible_printers, the official value cannot
     // be injected — so it stays empty. That is overwrite-semantics, not a
     // substitution defect; exclude it from the strict match.
     std::set<std::string> proc_skip = dts;
-    proc_skip.insert("brim_width");
     proc_skip.insert("compatible_printers");
     // small_area_infill_flow_compensation_model: not present in any Snapmaker
     // process preset file — the official value comes from PrintConfig defaults
@@ -248,16 +250,23 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
     proc_skip.insert("small_area_infill_flow_compensation_model");
     check_matches_official(mc, *proc, proc_skip, "process");
 
-    // brim_width fallback invariant: brim_type==auto_brim => brim_width == 0.
-    // Use option<ConfigOptionString> + null check (brim_type may be an enum,
-    // not a plain string, so opt_string would deref null).
-    if (const auto* bt = mc.option<Slic3r::ConfigOptionString>("brim_type"))
+    // Auto-brim invariant (2026-09 fix): when brim_type=auto_brim, m_config's
+    // brim_width equals the official process preset's value — it is NOT zeroed
+    // on m_config anymore. Typed lookups matter here: brim_type is
+    // ConfigOptionEnum<BrimType> and brim_width is ConfigOptionFloat; the
+    // previous ConfigOptionString lookups always returned nullptr, so the old
+    // "== 0" assertion was dead code that never executed.
+    if (const auto* bt = mc.option<Slic3r::ConfigOptionEnum<Slic3r::BrimType>>("brim_type"))
     {
-        if (bt->value == "auto_brim")
+        if (bt->value == Slic3r::btAutoBrim)
         {
-            const auto* bw = mc.option<Slic3r::ConfigOptionString>("brim_width");
+            const auto* bw = mc.option<Slic3r::ConfigOptionFloat>("brim_width");
+            const auto* ow = proc->config.option<Slic3r::ConfigOptionFloat>("brim_width");
             REQUIRE(bw);
-            CHECK(bw->value == "0");
+            REQUIRE(ow);
+            INFO("brim_width m_config=" << bw->value << " official=" << ow->value);
+            CHECK(bw->value == ow->value);
+            CHECK(bw->value != 0.0);
         }
     }
 }

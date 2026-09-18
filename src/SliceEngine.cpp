@@ -1395,7 +1395,6 @@ void SliceEngine::apply_process_official_preset()
     {
         BOOST_LOG_TRIVIAL(warning)
             << "default_print_profile not set; cannot determine process preset.";
-        apply_auto_brim_fallback();
         return;
     }
 
@@ -1474,8 +1473,6 @@ void SliceEngine::apply_process_official_preset()
             "Process preset \"" + preset_name + "\" does not resolve to any official system preset; "
             "process settings were kept from the project config"));
     }
-
-    apply_auto_brim_fallback();
 }
 
 const Preset* SliceEngine::find_official_process_preset(const std::string& preset_name) const
@@ -1567,21 +1564,6 @@ std::set<std::string> SliceEngine::parse_process_user_overrides()
             user_overrides.insert(key);
     }
     return user_overrides;
-}
-
-void SliceEngine::apply_auto_brim_fallback()
-{
-    // When brim_type is auto_brim, set brim_width to 0 so that the
-    // fallback path (when the algorithm decides no brim is needed)
-    // doesn't generate unwanted brim. The algorithm still sets its
-    // own computed width when it determines brim IS needed.
-    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
-    if (bt && bt->value == btAutoBrim)
-    {
-        m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
-        BOOST_LOG_TRIVIAL(info)
-            << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
-    }
 }
 
 // ============================================================================
@@ -2465,6 +2447,23 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     // normalize_loaded_config() before the per-plate loop.
     DynamicPrintConfig merged_config = m_config;
 
+    // Slicing-only auto-brim zero (desktop 2.4.0 motion parity). In auto mode
+    // the fork's libslic3r treats brim_width as a fallback that draws a
+    // user-width brim whenever the auto algorithm decides "no brim" — desktop
+    // Orca 2.4.0 prints nothing in that case (verified on cube / 0.6mm-nozzle
+    // fixtures, 2026-09-18). Zeroing only this slicing copy keeps motion
+    // identical to the previous apply_auto_brim_fallback() behaviour while
+    // leaving m_config's brim_width intact for the write-back paths (gcode
+    // header echo restored by restore_brim_width_echo, output 3mf
+    // project_settings.config written from m_config). Must run BEFORE the
+    // per-plate overrides below so a plate-level brim_width override still
+    // reaches the print, matching the old Stage-1.4 ordering.
+    if (auto* bt = merged_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+        bt && bt->value == btAutoBrim)
+    {
+        merged_config.set_key_value("brim_width", new ConfigOptionFloat(0));
+    }
+
     // Apply per-plate config overrides (curr_bed_type, print_sequence, spiral_mode, etc.)
     for (const auto& pd : m_plate_data)
     {
@@ -2877,6 +2876,8 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         result.gcode_path = exported;
 
+        restore_brim_width_echo(result.gcode_path);
+
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
@@ -2941,6 +2942,83 @@ std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsPa
         thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
                                               static_cast<unsigned int>(size.y())));
     return thumbnails;
+}
+
+void SliceEngine::restore_brim_width_echo(const std::string& gcode_path)
+{
+    // Only auto mode diverges: prepare_merged_config_for_plate zeroes
+    // brim_width on the slicing copy, so the header echo (generated from the
+    // print config inside GCode::_do_export) says 0 while desktop 2.4.0
+    // echoes the project value with identical motion. Other brim types reach
+    // the print config untouched and need no rewrite.
+    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+    if (!bt || bt->value != btAutoBrim)
+        return;
+    const auto* bw = m_config.option<ConfigOptionFloat>("brim_width", false);
+    if (!bw)
+        return;
+
+    std::ostringstream value_ss;
+    value_ss << bw->value;  // integral values print without decimals ("5")
+    const std::string expected = "; brim_width = " + value_ss.str();
+
+    const std::string tmp_path = gcode_path + ".brimecho.tmp";
+    std::ifstream in(gcode_path, std::ios::binary);
+    if (!in.is_open())
+    {
+        BOOST_LOG_TRIVIAL(warning)
+            << "brim echo restore: cannot open gcode " << gcode_path;
+        return;
+    }
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+    {
+        BOOST_LOG_TRIVIAL(warning)
+            << "brim echo restore: cannot create temp " << tmp_path;
+        return;
+    }
+
+    // Stream rewrite: the header config echo is one line per key near the top
+    // of the file, but the file can be hundreds of MB, so never buffer it
+    // whole. Replace the single matching line, copy everything else verbatim.
+    static const std::string kPrefix = "; brim_width = ";
+    bool replaced = false;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (!replaced && line.size() > kPrefix.size() &&
+            line.compare(0, kPrefix.size(), kPrefix) == 0)
+        {
+            out << expected << "\n";
+            replaced = true;
+        }
+        else
+        {
+            out << line << "\n";
+        }
+    }
+    in.close();
+    out.close();
+    if (!replaced)
+    {
+        boost::system::error_code rm_ec;
+        boost::filesystem::remove(tmp_path, rm_ec);
+        BOOST_LOG_TRIVIAL(warning)
+            << "brim echo restore: no '; brim_width =' header line found in " << gcode_path;
+        return;
+    }
+    boost::system::error_code ec;
+    boost::filesystem::rename(tmp_path, gcode_path, ec);
+    if (ec)
+    {
+        boost::system::error_code rm_ec;
+        boost::filesystem::remove(tmp_path, rm_ec);
+        BOOST_LOG_TRIVIAL(error)
+            << "brim echo restore: rename failed (" << ec.message() << ") for " << gcode_path;
+        return;
+    }
+    BOOST_LOG_TRIVIAL(info)
+        << "brim_type=auto_brim: header echo brim_width restored to " << value_ss.str();
 }
 
 void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceResult& result)
