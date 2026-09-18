@@ -69,7 +69,7 @@ void rm(const std::string& p)
 TEST_CASE("CLI: backslash log path survives params JSON (escaping)", "[integration][cli][escaping]")
 {
     // Literal backslash in the file name — legal on Linux, fatal to JSON.
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_esc --log '/tmp/orca_cli_esc\\o1'");
 
     INFO(r.out);
@@ -100,7 +100,7 @@ TEST_CASE("CLI: overflowing path lengths keep params JSON well-formed", "[integr
         long_path += std::string(180, 'a') + "/";
     long_path += "out";
 
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o '" + long_path + "'");
 
     INFO(r.out);
@@ -116,7 +116,7 @@ TEST_CASE("CLI: overflowing path lengths keep params JSON well-formed", "[integr
 
 TEST_CASE("CLI: non-numeric plate id rejected", "[integration][cli][validation]")
 {
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_v -p abc");
     INFO(r.out);
     REQUIRE(r.exited);
@@ -126,7 +126,7 @@ TEST_CASE("CLI: non-numeric plate id rejected", "[integration][cli][validation]"
 
 TEST_CASE("CLI: non-numeric timeout rejected", "[integration][cli][validation]")
 {
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_v -t 10x");
     INFO(r.out);
     REQUIRE(r.exited);
@@ -136,7 +136,7 @@ TEST_CASE("CLI: non-numeric timeout rejected", "[integration][cli][validation]")
 
 TEST_CASE("CLI: negative timeout rejected", "[integration][cli][validation]")
 {
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_v -t -5");
     INFO(r.out);
     REQUIRE(r.exited);
@@ -146,7 +146,7 @@ TEST_CASE("CLI: negative timeout rejected", "[integration][cli][validation]")
 
 TEST_CASE("CLI: negative max-size rejected", "[integration][cli][validation]")
 {
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_v --max-size -3");
     INFO(r.out);
     REQUIRE(r.exited);
@@ -156,7 +156,7 @@ TEST_CASE("CLI: negative max-size rejected", "[integration][cli][validation]")
 
 TEST_CASE("CLI: unknown -f format rejected", "[integration][cli][validation]")
 {
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_v -f bogus");
     INFO(r.out);
     REQUIRE(r.exited);
@@ -174,7 +174,7 @@ TEST_CASE("CLI: unknown -f format rejected", "[integration][cli][validation]")
 TEST_CASE("CLI: -p 1 -f gcode slices one plate into one .gcode", "[integration][cli][single_plate]")
 {
     CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf\""
-                          " -r \"" ORCA_TEST_RESOURCES "\" -o /tmp/orca_cli_p1 -p 1 -f gcode");
+                          " -r \"" ORCA_TEST_RESOURCES_ROOT "\" -o /tmp/orca_cli_p1 -p 1 -f gcode");
     INFO(r.out);
     REQUIRE(r.exited);
     REQUIRE(r.exit_code == 0);
@@ -188,7 +188,7 @@ TEST_CASE("CLI: -p 1 -f gcode slices one plate into one .gcode", "[integration][
     REQUIRE(f.good());
     auto j = nlohmann::json::parse(f);
     REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["index"].get<int>() == 1);
+    REQUIRE(j["plates"][0]["plate_id"].get<int>() == 1);
 
     rm("/tmp/orca_cli_p1.gcode");
     rm("/tmp/orca_cli_p1.json");

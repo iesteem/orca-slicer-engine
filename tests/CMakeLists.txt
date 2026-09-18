@@ -128,6 +128,9 @@ if(ORCA_STATIC)
         ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
         ORCA_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
+        # Root containing profiles/ — what slic3r_create() and CLI -r expect
+        # (the C API appends "/profiles" itself; see slic3r_c_api.cpp).
+        ORCA_TEST_RESOURCES_ROOT="${CMAKE_SOURCE_DIR}/package/resources"
     )
 
     target_compile_options(engine-integration PRIVATE

@@ -20,9 +20,11 @@
 
 #include <catch_amalgamated.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include <boost/filesystem.hpp>
 #include <nlohmann/json.hpp>
@@ -32,6 +34,9 @@
 #include "slic3r_c_api.h"
 
 static const char* kResources = ORCA_TEST_RESOURCES;
+// slic3r_create() expects the resources ROOT (it appends "/profiles"
+// itself); kResources is already the profiles dir, so keep the two distinct.
+static const char* kResourcesRoot = ORCA_TEST_RESOURCES_ROOT;
 
 namespace {
 
@@ -73,7 +78,7 @@ uintmax_t file_size_or_zero(const std::string& p)
 
 TEST_CASE("C API: plate_id=1 + format=gcode slices one plate into a .gcode file", "[integration][capi][single_plate]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     const char* params = R"({"plate_id":1,"format":"gcode","log_path":"/tmp/orca_capi_p1.log"})";
@@ -86,7 +91,7 @@ TEST_CASE("C API: plate_id=1 + format=gcode slices one plate into a .gcode file"
     // Exactly one plate in the stats output.
     auto j = nlohmann::json::parse(stats);
     REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["index"].get<int>() == 1);
+    REQUIRE(j["plates"][0]["plate_id"].get<int>() == 1);
 
     // A .gcode file was written; no all-plates .gcode.3mf package.
     REQUIRE(boost::filesystem::exists("/tmp/orca_capi_p1.gcode"));
@@ -102,7 +107,7 @@ TEST_CASE("C API: plate_id=1 + format=gcode slices one plate into a .gcode file"
 
 TEST_CASE("C API: plate_id=2 selects plate 2, not plate 1", "[integration][capi][single_plate]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     const char* params = R"({"plate_id":2,"format":"gcode","log_path":"/tmp/orca_capi_p2.log"})";
@@ -113,7 +118,7 @@ TEST_CASE("C API: plate_id=2 selects plate 2, not plate 1", "[integration][capi]
     REQUIRE(rc == SLIC3R_OK);
     auto j = nlohmann::json::parse(stats);
     REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["index"].get<int>() == 2);
+    REQUIRE(j["plates"][0]["plate_id"].get<int>() == 2);
 
     rm("/tmp/orca_capi_p2.gcode");
     rm("/tmp/orca_capi_p2.json");
@@ -171,7 +176,7 @@ TEST_CASE("C API: skip_preset_substitution with missing presets fails cleanly (P
 
 TEST_CASE("C API: negative plate_id rejected as args error", "[integration][capi][validation]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_v1",
@@ -185,7 +190,7 @@ TEST_CASE("C API: negative plate_id rejected as args error", "[integration][capi
 
 TEST_CASE("C API: unknown format rejected as args error", "[integration][capi][validation]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_v2",
@@ -207,7 +212,7 @@ TEST_CASE("C API: unknown format rejected as args error", "[integration][capi][v
 
 TEST_CASE("C API: negative timeout_seconds and max_size_mb rejected as args error", "[integration][capi][validation]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     REQUIRE(slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_v3",
@@ -232,7 +237,7 @@ TEST_CASE("C API: negative timeout_seconds and max_size_mb rejected as args erro
 
 TEST_CASE("C API: 3-byte plate thumbnail rejected by size guard, slice still succeeds", "[integration][capi][thumbnail]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     const char* params = R"({"log_path":"/tmp/orca_capi_thumb.log"})";
@@ -266,13 +271,24 @@ TEST_CASE("C API: 3-byte plate thumbnail rejected by size guard, slice still suc
 
 TEST_CASE("C API: second slice does not grow the first slice's log (sink leak)", "[integration][capi][logging]")
 {
-    slic3r_ctx_t* ctx = slic3r_create(kResources);
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
     const char* p1 = R"({"log_path":"/tmp/orca_capi_sink1.log"})";
     REQUIRE(slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_sink1", p1, nullptr, 0) == SLIC3R_OK);
-    const uintmax_t size_after_first = file_size_or_zero("/tmp/orca_capi_sink1.log");
+    // libslic3r's async task thread emits trailing records (remove_backup
+    // etc.) for a few ms AFTER slic3r_slice returns. Poll until the file is
+    // quiet before taking the baseline, otherwise those delayed lines get
+    // misread as second-slice leakage.
+    uintmax_t size_after_first = file_size_or_zero("/tmp/orca_capi_sink1.log");
     REQUIRE(size_after_first > 0);
+    for (int i = 0; i < 40; ++i) // up to ~2s
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        uintmax_t now = file_size_or_zero("/tmp/orca_capi_sink1.log");
+        if (now == size_after_first) break;
+        size_after_first = now;
+    }
 
     const char* p2 = R"({"log_path":"/tmp/orca_capi_sink2.log"})";
     REQUIRE(slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_sink2", p2, nullptr, 0) == SLIC3R_OK);

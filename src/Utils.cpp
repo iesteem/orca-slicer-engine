@@ -233,12 +233,20 @@ void add_log_file_sink(const std::string& file_path, unsigned int level)
     static boost::shared_ptr<logging::sinks::sink> s_previous_file_sink;
     if (s_previous_file_sink)
     {
+        // remove_sink does NOT flush: the file backend's internal buffer can
+        // still hold records that get written out later (observed as a stale
+        // log "growing" during the next slice). Flush before detaching.
+        s_previous_file_sink->flush();
         logging::core::get()->remove_sink(s_previous_file_sink);
         s_previous_file_sink.reset();
     }
 
     s_previous_file_sink = logging::add_file_log(
         keywords::file_name = file_path,
+        // Without auto_flush the backend buffers records; a size snapshot
+        // taken right after a slice returns misses the tail, which then
+        // lands on disk during the next slice (looks like cross-slice leak).
+        keywords::auto_flush = true,
         keywords::format =
             (expr::stream << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
                           << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
