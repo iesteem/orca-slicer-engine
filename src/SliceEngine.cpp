@@ -2670,6 +2670,38 @@ void SliceEngine::check_filament_bed_rules(int plate_id, Print& print)
     }
 }
 
+// Desktop parity helper (Plater.cpp collect_filament_slots_from_model_config,
+// :461-484 in the current checkout): the filament slots referenced by ONE
+// config layer (object or volume) are the primary extruder plus the six
+// per-feature filament keys. Values outside [1, num_filaments] (including
+// the "0 = inherit default" sentinel) are ignored, matching the desktop
+// collector exactly.
+static void collect_filament_slots_from_model_config(const ModelConfigObject& config,
+                                                     int num_filaments,
+                                                     std::set<int>& used_slots_0_based)
+{
+    static const std::vector<const char*> feature_keys = {
+        "support_filament",
+        "support_interface_filament",
+        "wall_filament",
+        "sparse_infill_filament",
+        "solid_infill_filament",
+        "wipe_tower_filament",
+    };
+    if (config.has("extruder")) {
+        const int extruder_id = config.extruder();
+        if (extruder_id >= 1 && extruder_id <= num_filaments)
+            used_slots_0_based.insert(extruder_id - 1);
+    }
+    for (const char* key : feature_keys) {
+        if (config.has(key)) {
+            const int val = config.opt_int(key);
+            if (val >= 1 && val <= num_filaments)
+                used_slots_0_based.insert(val - 1);
+        }
+    }
+}
+
 bool SliceEngine::check_filament_temp_mixing(int plate_id)
 {
     // Collect filament slots actually used by this plate, then check for
@@ -2678,6 +2710,14 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     // but keeps the binary high/low classification (no tri-state compatible
     // mode). Reading from m_config avoids the trimmed print.config() which
     // has already lost multi-extruder information via prepare_merged_config.
+    //
+    // Collection sources, in desktop order (Plater.cpp:22250-22315):
+    //   (i) plate config — intentionally skipped: the BBS 3MF plate-config
+    //       whitelist (bbs_3mf.cpp plate-metadata parser) accepts no
+    //       filament keys, so this source is inexpressible in cloud input;
+    //  (ii) object config, (iii) every volume's config — modifiers included
+    //       — plus per-volume extruders: collected in (a) below;
+    //  (iv) global always/conditional keys: (b)/(c) below.
     int num_filaments = 0;
     auto* ftype_opt = m_config.option<ConfigOptionStrings>("filament_type");
     if (ftype_opt)
@@ -2687,10 +2727,14 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
 
     std::set<int> used_slots;
 
-    // (a) Collect extruders from printable model instances on this plate.
-    // Also track whether any object relies on the global default extruder —
-    // when it does, per-feature defaults (wall / infill filaments) affect
-    // the slicing output and must be collected.
+    // (a) Collect filament slots from the objects printed on this plate
+    // (desktop sources ② and ③): object-level config first, then EVERY
+    // volume's config — no is_model_part() filter, so modifier overrides
+    // are seen — plus per-volume extruders (mmu segmentation, extruder_id).
+    // The old implementation only read model-part get_extruders(), which
+    // never looks at feature keys and skips modifiers entirely, so object-
+    // level / part-level feature filaments and modifier extruders were
+    // invisible to the mixing check (review 2026-09-16, item C1).
     //
     // NOTE: Per-plate filtering relies on mark_printable_instances(plate_ids)
     // in process_plate having marked off-plate instances printable=false.
@@ -2699,25 +2743,25 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     bool uses_default_extruder = false;
     for (ModelObject* obj : m_model.objects)
     {
+        bool on_plate = false;
         for (ModelInstance* inst : obj->instances)
+            if (inst->is_printable()) { on_plate = true; break; }
+        if (!on_plate)
+            continue;
+
+        collect_filament_slots_from_model_config(obj->config, num_filaments, used_slots);
+        // An object without an explicit "extruder" key in its config
+        // (or with extruder==0) inherits the global default.  This
+        // matches the desktop Plater::check_filament_temp_mixing logic.
+        if (!obj->config.has("extruder") || obj->config.extruder() == 0)
+            uses_default_extruder = true;
+
+        for (ModelVolume* vol : obj->volumes)
         {
-            if (!inst->is_printable())
-                continue;
-            for (ModelVolume* vol : obj->volumes)
-            {
-                if (!vol->is_model_part())
-                    continue;
-                for (int eid : vol->get_extruders())
-                {
-                    if (eid >= 1 && eid <= num_filaments)
-                        used_slots.insert(eid - 1);
-                }
-            }
-            // An object without an explicit "extruder" key in its config
-            // (or with extruder==0) inherits the global default.  This
-            // matches the desktop Plater::check_filament_temp_mixing logic.
-            if (!obj->config.has("extruder") || obj->config.extruder() == 0)
-                uses_default_extruder = true;
+            collect_filament_slots_from_model_config(vol->config, num_filaments, used_slots);
+            for (int eid : vol->get_extruders())
+                if (eid >= 1 && eid <= num_filaments)
+                    used_slots.insert(eid - 1);
         }
     }
 
