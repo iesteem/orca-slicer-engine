@@ -52,6 +52,26 @@
 | cylinder_four_plate_mixed.3mf | 多盘混合成功/失败 |
 | wipe_tower_toolpath_outside.3mf | P-08 擦塔越界现象 |
 
+### temp_mode 组（高低温混用，2026-09-18 补齐 C1 漏检面）
+
+来源：桌面 U1 工程制备（火烈鸟 11 部件基型，网格已替换为包围盒立方体——
+配置层与原件逐字节一致，13MB→457KB）。统一基线：2 槽 = Generic PLA(低温)
++ Generic ABS(高温)、全局 feature 键全=1、对象显式 extruder=1。
+
+| fixture | 混用来源（唯一 ABS 引用） | 预期（对齐桌面 Plater.cpp:22250-22276） |
+|---|---|---|
+| obj_feature_sparse/wall/solid_infill_abs_fail.3mf | 对象级 feature 键=2 | **未修复应转红**：当前放行，修复后 FILAMENT_TEMP_MIXING |
+| part_feature_sparse/solid/wall_abs_fail.3mf | 零件级 feature 键=2 | 同上 |
+| modifier_extruder_abs_fail.3mf | modifier 的 extruder=2 | 同上 |
+| unused_abs_slot_ok.3mf | 无（ABS 槽闲置） | 永远成功（反误杀） |
+| obj_feature_same_temp_ok.3mf | 对象级键=2 但双槽均 PLA | 永远成功（按槽温度分类） |
+| multi_plate_obj_extruder_fail.3mf | 盘1对象级 extruder=2 | 当前已阻断盘1（归因回归，修复不得破坏） |
+
+注：`obj_feature_*` 早期版本把键设在全局且 `different_settings_to_system`
+为空，被 process 预设替换覆写回官方值（等价闲置槽场景），已作废由上述
+版本替换；全局键要存活必须基于官方预设直接改键（参见既有
+pla_abs_tower_conflict_fail.3mf 的 diff 集记录）。
+
 ### 子目录
 
 `accuracy/ boundary/ build_volume/ build_volume_dir/ filament/ filement_count/
