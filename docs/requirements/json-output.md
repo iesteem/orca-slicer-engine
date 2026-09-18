@@ -27,7 +27,7 @@
 ```jsonc
 {
   "success": true,                    // bool；全部请求的盘成功才为 true
-  "engine_version": "02.01.06",       // = ENGINE_VERSION（CMake 唯一来源）
+  "engine_version": "2.2.0",          // = ENGINE_VERSION（CMake 唯一来源）
   "print_info_total": { ... },        // 跨成功盘聚合
   "issues": [ ... ],                  // 全局级 issue 数组
   "plates": [ ... ]                   // 逐盘
