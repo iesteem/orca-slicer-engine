@@ -490,11 +490,17 @@ private:
     // Write-back fidelity fix for auto brim (2026-09 cloud review): the
     // slicing copy passed to Print::apply carries brim_width=0 (motion parity
     // with desktop 2.4.0, see prepare_merged_config_for_plate), and the G-code
-    // header echo is generated from that print config. Desktop echoes the
+    // config echo is generated from that print config. Desktop echoes the
     // project's brim_width while printing the same algorithm-only motion, so
-    // rewrite the single "; brim_width = ..." header line back to m_config's
+    // rewrite the single "; brim_width = ..." echo line back to m_config's
     // value. Touches one comment line in an already-final file — no motion
     // change. No-op unless brim_type=auto_brim.
+    // Hardening (2026-09-20 review): the match is anchored to the
+    // CONFIG_BLOCK and to the zeroed value ("0") so untrusted custom gcode
+    // cannot hijack it; stream states are validated before the commit rename
+    // (a truncated copy never replaces the original); the temp copy is
+    // RAII-owned on every exit path; and the whole step is best-effort — it
+    // never throws and never turns a successful export into a failed one.
     void restore_brim_width_echo(const std::string& gcode_path);
 
     // Build the thumbnail list for a plate G-code export request: locate this

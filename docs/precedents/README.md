@@ -32,4 +32,5 @@
 | P-17 | nozzle_volume_type 被官方打印机预设整体覆盖重置 | nvt-reset-and-output-relocation.md | 已修复（3640a49，2026-09-20） |
 | P-18 | 输出路径被占用时静默换名（时间戳后缀） | nvt-reset-and-output-relocation.md | 已补可观测性（af80f0b）；换名行为按设计保留 |
 | P-19 | 空盘 rc=0 假成功（零产物退出码） | empty-plate-zero-product-rc.md | 已修复（2026-09-20，选项 A 良性跳过语义） |
+| P-20 | restore_brim_width_echo I/O 失败语义与劫持面 | brim-echo-restore-hardening.md | 已修复（2026-09-20 stage 2.1，f291619 对抗审查跟进；含遗留 P3 清单） |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |

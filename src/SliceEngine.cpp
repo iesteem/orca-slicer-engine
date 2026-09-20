@@ -3056,7 +3056,7 @@ std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsPa
 void SliceEngine::restore_brim_width_echo(const std::string& gcode_path)
 {
     // Only auto mode diverges: prepare_merged_config_for_plate zeroes
-    // brim_width on the slicing copy, so the header echo (generated from the
+    // brim_width on the slicing copy, so the config echo (generated from the
     // print config inside GCode::_do_export) says 0 while desktop 2.4.0
     // echoes the project value with identical motion. Other brim types reach
     // the print config untouched and need no rewrite.
@@ -3064,70 +3064,122 @@ void SliceEngine::restore_brim_width_echo(const std::string& gcode_path)
     if (!bt || bt->value != btAutoBrim)
         return;
     const auto* bw = m_config.option<ConfigOptionFloat>("brim_width", false);
-    if (!bw)
-        return;
+    if (!bw || bw->value == 0)
+        return;  // 0 is what the zeroed slicing copy echoes: nothing to restore
 
     std::ostringstream value_ss;
     value_ss << bw->value;  // integral values print without decimals ("5")
     const std::string expected = "; brim_width = " + value_ss.str();
 
-    const std::string tmp_path = gcode_path + ".brimecho.tmp";
-    std::ifstream in(gcode_path, std::ios::binary);
-    if (!in.is_open())
+    // Best-effort cosmetics, never escalate: export_gcode's catch would flag
+    // GCODE_EXPORT_ERROR and the all-or-nothing packaging would drop the
+    // whole job's output over a comment line. Every failure below degrades
+    // to a log line and leaves the original gcode untouched.
+    try
     {
-        BOOST_LOG_TRIVIAL(warning)
-            << "brim echo restore: cannot open gcode " << gcode_path;
-        return;
-    }
-    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
-    if (!out.is_open())
-    {
-        BOOST_LOG_TRIVIAL(warning)
-            << "brim echo restore: cannot create temp " << tmp_path;
-        return;
-    }
+        const std::string tmp_path = gcode_path + ".brimecho.tmp";
+        std::ifstream in(gcode_path, std::ios::binary);
+        if (!in.is_open())
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "brim echo restore: cannot open gcode " << gcode_path;
+            return;
+        }
+        std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!out.is_open())
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "brim echo restore: cannot create temp " << tmp_path;
+            return;
+        }
 
-    // Stream rewrite: the header config echo is one line per key near the top
-    // of the file, but the file can be hundreds of MB, so never buffer it
-    // whole. Replace the single matching line, copy everything else verbatim.
-    static const std::string kPrefix = "; brim_width = ";
-    bool replaced = false;
-    std::string line;
-    while (std::getline(in, line))
-    {
-        if (!replaced && line.size() > kPrefix.size() &&
-            line.compare(0, kPrefix.size(), kPrefix) == 0)
+        // Own the temp file on every exit path (RAII): removed unless the
+        // commit rename below moves it over the original. The error_code
+        // overload keeps the destructor no-throw.
+        struct TmpFileGuard
         {
-            out << expected << "\n";
-            replaced = true;
-        }
-        else
+            std::string path;
+            bool committed = false;
+            ~TmpFileGuard()
+            {
+                if (!committed)
+                {
+                    boost::system::error_code ec;
+                    boost::filesystem::remove(path, ec);
+                }
+            }
+        } tmp_guard{tmp_path, false};
+
+        // Stream rewrite: the file can be hundreds of MB, so never buffer it
+        // whole — copy line by line, replacing the single echo line. The
+        // echo always sits between the "; CONFIG_BLOCK_START/END" markers
+        // (file head for BBL printers, tail otherwise) and always carries the
+        // zeroed slicing copy's value ("0"); anchoring on both keeps custom
+        // gcode — written outside the block, verbatim from the untrusted
+        // 3MF — from hijacking the rewrite.
+        static const std::string kPrefix = "; brim_width = ";
+        static const std::string kBlockStart = "; CONFIG_BLOCK_START";
+        static const std::string kBlockEnd = "; CONFIG_BLOCK_END";
+        bool replaced = false;
+        bool in_config_block = false;
+        std::string line;
+        while (std::getline(in, line))
         {
-            out << line << "\n";
+            if (line == kBlockStart)
+                in_config_block = true;
+            else if (line == kBlockEnd)
+                in_config_block = false;
+
+            if (!replaced && in_config_block && line.size() > kPrefix.size() &&
+                line.compare(0, kPrefix.size(), kPrefix) == 0 &&
+                line.substr(kPrefix.size()) == "0")
+            {
+                out << expected << "\n";
+                replaced = true;
+            }
+            else
+            {
+                out << line << "\n";
+            }
         }
+        in.close();
+        out.close();
+        // Commit gate: a truncated copy must never replace the original.
+        // Write failures (ENOSPC) surface at close()'s flush; a read failure
+        // sets badbit and ends the getline loop early — both land here and
+        // keep the intact original file.
+        if (in.bad() || !out.good())
+        {
+            BOOST_LOG_TRIVIAL(error)
+                << "brim echo restore: copy failed (I/O error), keeping original " << gcode_path;
+            return;
+        }
+        if (!replaced)
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "brim echo restore: no zeroed '; brim_width = 0' line in the config block of "
+                << gcode_path;
+            return;
+        }
+        boost::system::error_code ec;
+        boost::filesystem::rename(tmp_path, gcode_path, ec);
+        if (ec)
+        {
+            BOOST_LOG_TRIVIAL(error)
+                << "brim echo restore: rename failed (" << ec.message() << ") for " << gcode_path;
+            return;
+        }
+        tmp_guard.committed = true;
+        BOOST_LOG_TRIVIAL(info)
+            << "brim_type=auto_brim: header echo brim_width restored to " << value_ss.str();
     }
-    in.close();
-    out.close();
-    if (!replaced)
+    catch (const std::exception& e)
     {
-        boost::system::error_code rm_ec;
-        boost::filesystem::remove(tmp_path, rm_ec);
+        // Degrade, never escalate (see the note above the try): the echo
+        // stays as sliced; the guard removes the partial temp copy.
         BOOST_LOG_TRIVIAL(warning)
-            << "brim echo restore: no '; brim_width =' header line found in " << gcode_path;
-        return;
+            << "brim echo restore: failed (" << e.what() << "), echo left as-is in " << gcode_path;
     }
-    boost::system::error_code ec;
-    boost::filesystem::rename(tmp_path, gcode_path, ec);
-    if (ec)
-    {
-        boost::system::error_code rm_ec;
-        boost::filesystem::remove(tmp_path, rm_ec);
-        BOOST_LOG_TRIVIAL(error)
-            << "brim echo restore: rename failed (" << ec.message() << ") for " << gcode_path;
-        return;
-    }
-    BOOST_LOG_TRIVIAL(info)
-        << "brim_type=auto_brim: header echo brim_width restored to " << value_ss.str();
 }
 
 void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceResult& result)

@@ -66,6 +66,25 @@ std::string extract_gcode(const std::string& gcode_3mf_path)
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
+// Read one text entry (e.g. "Metadata/project_settings.config") from the
+// packaged .gcode.3mf — the second write-back surface, written from m_config
+// during packaging. Same shell-out rationale as extract_gcode.
+std::string extract_3mf_text(const std::string& gcode_3mf_path, const std::string& entry)
+{
+    const std::string tmp = "/tmp/orca_test_hf_extract_entry.txt";
+    boost::filesystem::remove(tmp);
+    const std::string cmd =
+        "python3 -c \"import zipfile,sys;"
+        "z=zipfile.ZipFile('" + gcode_3mf_path + "');"
+        "sys.exit(1) if '" + entry + "' not in z.namelist() else "
+        "open('" + tmp + "','wb').write(z.read('" + entry + "'))\"";
+    const int rc = std::system(cmd.c_str());
+    REQUIRE(rc == 0);
+    std::ifstream f(tmp, std::ios::binary);
+    REQUIRE(f.good());
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
 // Per-extruder maximum print (non-travel) feedrate in mm/s. Feedrates in the
 // G-code are mm/min (G1 F...). Travel moves on this printer run at
 // F30000 = 500 mm/s which coincides with the high-flow outer wall cap, so
@@ -205,9 +224,18 @@ TEST_CASE("Auto-brim header echo preserves project value; motion stays algorithm
     // Motion invariance: no Brim feature may appear on this fixture.
     CHECK(gcode.find("TYPE:Brim") == std::string::npos);
 
+    // Write-back surface 2 (P-11 acceptance "含 3mf 内嵌 config"): the packaged
+    // project_settings.config is written from m_config, which the fix no
+    // longer zeroes — it must carry the project value too. A packaging-side
+    // regression (config source swap, re-zero before store) turns this red.
+    const std::string settings =
+        extract_3mf_text("/tmp/orca_test_brim_echo.gcode.3mf", "Metadata/project_settings.config");
+    REQUIRE(settings.find("\"brim_width\": \"5\"") != std::string::npos);
+
     boost::system::error_code ec;
     boost::filesystem::remove("/tmp/orca_test_brim_echo.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract_entry.txt", ec);
 }
 
 TEST_CASE("Nozzle volume type survives printer preset substitution", "[integration][highflow]")

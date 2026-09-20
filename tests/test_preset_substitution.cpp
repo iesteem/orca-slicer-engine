@@ -256,18 +256,20 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
     // ConfigOptionEnum<BrimType> and brim_width is ConfigOptionFloat; the
     // previous ConfigOptionString lookups always returned nullptr, so the old
     // "== 0" assertion was dead code that never executed.
-    if (const auto* bt = mc.option<Slic3r::ConfigOptionEnum<Slic3r::BrimType>>("brim_type"))
+    // The preconditions below are REQUIREs on purpose: this fixture
+    // (u1_preset_test.3mf) is auto_brim, and the previous soft `if (bt)` guard
+    // let the invariant die silently for six weeks when the lookup went null.
+    const auto* bt = mc.option<Slic3r::ConfigOptionEnum<Slic3r::BrimType>>("brim_type");
+    REQUIRE(bt);
+    REQUIRE(bt->value == Slic3r::btAutoBrim);
     {
-        if (bt->value == Slic3r::btAutoBrim)
-        {
-            const auto* bw = mc.option<Slic3r::ConfigOptionFloat>("brim_width");
-            const auto* ow = proc->config.option<Slic3r::ConfigOptionFloat>("brim_width");
-            REQUIRE(bw);
-            REQUIRE(ow);
-            INFO("brim_width m_config=" << bw->value << " official=" << ow->value);
-            CHECK(bw->value == ow->value);
-            CHECK(bw->value != 0.0);
-        }
+        const auto* bw = mc.option<Slic3r::ConfigOptionFloat>("brim_width");
+        const auto* ow = proc->config.option<Slic3r::ConfigOptionFloat>("brim_width");
+        REQUIRE(bw);
+        REQUIRE(ow);
+        INFO("brim_width m_config=" << bw->value << " official=" << ow->value);
+        CHECK(bw->value == ow->value);
+        CHECK(bw->value != 0.0);
     }
 }
 
