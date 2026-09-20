@@ -8,13 +8,13 @@
 
 | 码 | 常量 | 语义 | 典型来源 |
 |---|---|---|---|
-| 0 | EXIT_OK | 全部成功（含 gcode.3mf 打包） | 正常切片 |
+| 0 | EXIT_OK | 全部成功（含 gcode.3mf 打包）；多盘**部分成功**（其余盘为良性空盘跳过）同样返回 0（P-19） | 正常切片 |
 | 1 | EXIT_INVALID_ARGS | CLI 参数无效 | main.c |
 | 2 | EXIT_FILE_NOT_FOUND | 输入文件不存在 | main.c |
 | 3 | EXIT_LOAD_ERROR | 3MF 加载/格式失败 | FORMAT_REJECTED、LOAD_3MF_ERROR 类 |
 | 4 | EXIT_SLICING_ERROR | 切片阶段失败（某盘或整体） | SLICING_* 类 |
 | 5 | EXIT_EXPORT_ERROR | G-code 导出失败 | GCODE_EXPORT_ERROR |
-| 6 | EXIT_PREPROCESS_ERROR | 切片前校验失败（config/输入/预设） | 预设替换、几何校验、print_sequence 阻断 |
+| 6 | EXIT_PREPROCESS_ERROR | 切片前校验失败（config/输入/预设）；**零产物守卫**（所有请求盘被跳过/失败，无任何产物时兜底非零，P-19；不遮蔽已记录的更具体码） | 预设替换、几何校验、print_sequence 阻断、零产物 |
 | 7 | EXIT_POSTPROCESS_ERROR | 切片成功但产物不可用 | TOOLPATH_OUTSIDE、空层 |
 
 139 = SIGSEGV，**不是合法退出码**，出现即引擎缺陷（见判例 P-01/P-02/P-09/P-10）。
@@ -36,7 +36,8 @@
 | FILE_SIZE_EXCEEDED | error | 超 max_size_mb |
 | MODEL_EMPTY | error | 模型无对象 |
 | PLATE_NOT_FOUND | error | 指定盘不存在 |
-| NO_PRINTABLE_OBJECTS | error | 盘上无可打印对象 |
+| NO_PRINTABLE_OBJECTS | warning | 盘上无可打印对象（apply 后归零）——良性跳过不阻断（P-19；本行级别曾误标 error，2026-09-20 对齐代码实测 make_warning） |
+| EMPTY_PLATE | warning | 盘无任何可打印实例，良性跳过（P-19）；零产物场景由 run() 零产物守卫兜底 exit 6 |
 
 ### 预设/配置（→ exit 6，部分 warning）
 

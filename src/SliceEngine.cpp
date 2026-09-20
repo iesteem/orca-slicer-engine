@@ -297,6 +297,25 @@ bool SliceEngine::run()
             {
                 boost::filesystem::remove(m_output_path);
             }
+
+            // Zero-product guard: every requested plate was skipped (e.g. all
+            // empty) or failed before export, so the task must not report
+            // success through exit_code() with no artifact on disk. Placed
+            // AFTER the packaging / cleanup decisions above on purpose:
+            // m_any_error feeds the all-or-nothing gate (line ~280) and the
+            // single-plate GCODE removal — setting it earlier would drag
+            // partial output down with it. Partial success (some plates
+            // produced G-code) keeps rc=0: an empty plate among good ones is
+            // a benign skip (desktop parity, see process_plate's EMPTY_PLATE
+            // issue). m_error_type is only raised when still EXIT_OK so a
+            // more specific failure code recorded earlier (slicing=4, etc.)
+            // is not masked by the generic preprocess code.
+            if (!has_output)
+            {
+                m_any_error = true;
+                if (m_error_type == EXIT_OK)
+                    set_error_type(EXIT_PREPROCESS_ERROR);
+            }
         }
         catch (const std::exception& e)
         {
@@ -2066,7 +2085,18 @@ void SliceEngine::process_plate(int plate_id)
     // --- Identify this plate's instances and mark printability ---
     std::set<int> identify_ids = collect_plate_instance_ids(plate_id);
     if (!mark_printable_instances(identify_ids))
+    {
+        // Benign skip (desktop parity): an empty plate among good ones is not
+        // a failure. Warning-level on purpose — patch_orphan_plate_issues
+        // only fabricates failed placeholder plates for error-level issues,
+        // so this stays visible in the JSON issue list (with its plate_id)
+        // without flipping the multi-plate task's overall success. The
+        // zero-product rc guard in run() covers the single-plate / all-empty
+        // cases where this skip leaves the task with no output at all.
+        m_stats.issues.push_back(make_warning(plate_id, "EMPTY_PLATE",
+            "Plate " + std::to_string(plate_id + 1) + " contains no printable objects and was skipped"));
         return;
+    }
 
     // Plate origin = this plate's grid-layout offset. Shared by two downstream
     // steps: run_build_volume_check (translates instances into plate-local
@@ -3906,6 +3936,15 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 void SliceEngine::patch_orphan_plate_issues()
 {
     // Add placeholder plates for plates with issues but not in plate_results.
+    // Severity-aware (benign-skip semantics): only error / serious_warning
+    // orphans fabricate a failed placeholder plate — those indicate a plate
+    // that genuinely failed and must flip overall success in
+    // finalise_statistics. Warning/tip orphans (EMPTY_PLATE,
+    // NO_PRINTABLE_OBJECTS) are benign skips: fabricating a success=false
+    // placeholder for them would drag a 9/10-good multi-plate task's overall
+    // success to false while rc stays 0 — an inconsistent report. They stay
+    // in the global issue list with their plate_id, so callers can still see
+    // which plate was skipped.
     std::set<int> plates_with_results;
     for (const auto& p : m_stats.plates)
         plates_with_results.insert(p.plate_id);
@@ -3915,13 +3954,8 @@ void SliceEngine::patch_orphan_plate_issues()
         if (issue.plate_id < 0 || plates_with_results.find(issue.plate_id) != plates_with_results.end())
             continue;
 
-        auto it = std::find_if(m_stats.plates.begin(), m_stats.plates.end(),
-                               [&](const SliceOutputStats::PlateStats& p) { return p.plate_id == issue.plate_id; });
-        if (it != m_stats.plates.end())
-        {
-            it->issues.push_back(issue);
+        if (issue.level != IssueLevel::error && issue.level != IssueLevel::serious_warning)
             continue;
-        }
 
         SliceOutputStats::PlateStats failed_plate;
         failed_plate.plate_id = issue.plate_id;

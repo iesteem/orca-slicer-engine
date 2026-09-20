@@ -78,3 +78,14 @@ pla_abs_tower_conflict_fail.3mf 的 diff 集记录）。
 file_validation/ gcode_security/ layer_height/ path_conflict/ printer_reject/
 print_sequence/ temp_mode/ unsupported/` —— 与同名 test_*.cpp 一一对应，
 各文件头部注释记录实测行为（断言忠于实测，非想当然）。
+
+### 空盘行为组（C2 修复，2026-09-20）
+
+来源：geom_above_bed_ok.3mf 解包改造——仅编辑 Metadata/model_settings.config
+的 `<plate>` 块（追加无 `<model_instance>` 子块的盘 2 / 删除盘 1 的引用），
+几何与配置层逐字节不变。
+
+| fixture | 盘构成 | 预期 |
+|---|---|---|
+| slice_empty_plate_skip.3mf | 盘1=立方体，盘2=空 | 多盘：rc=0、success=true、EMPTY_PLATE warning（归因盘2）、好盘正常打包；单盘 -p 2：rc=6、success=false、零产物（Case 15/16） |
+| slice_all_plates_empty_fail.3mf | 两盘皆空 | rc=6、success=false、两条 EMPTY_PLATE 各归因其盘、零产物（Case 17） |

@@ -109,6 +109,16 @@ bool has_global_issue(const SliceOutputStats& s, const std::string& code, IssueL
     return false;
 }
 
+// Same, but scoped to one plate (Issue::plate_id holds the internal 0-based
+// plate index; the JSON layer converts to 1-based for display).
+bool has_plate_issue(const SliceOutputStats& s, int plate_id, const std::string& code, IssueLevel level)
+{
+    for (const auto& iss : s.issues)
+        if (iss.plate_id == plate_id && iss.code == code && iss.level == level)
+            return true;
+    return false;
+}
+
 } // namespace
 
 // ============================================================================
@@ -618,4 +628,102 @@ TEST_CASE("Straddling object with 0.05mm above bed: preserved, empty layers, exi
     REQUIRE(has_global_issue(r->engine->stats(), "SLICING_FATAL_ERROR", IssueLevel::error));
     REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_INTENTIONALLY_BELOW_BED", IssueLevel::warning));
     REQUIRE_FALSE(has_global_issue(r->engine->stats(), "OBJECT_BELOW_BED_ADJUSTED", IssueLevel::warning));
+}
+
+// ============================================================================
+// Case 15 — Multi-plate with one empty plate: benign skip, partial success
+// (slice_empty_plate_skip.3mf: plate 1 carries the cube, plate 2's <plate>
+// block has no model_instance). Desktop-parity semantics: an empty plate
+// among good ones is NOT a failure — the good plate slices and packages,
+// rc stays 0, and the skip is visible as a warning-level EMPTY_PLATE issue
+// carrying the skipped plate's id. This case would fail pre-fix in the
+// observability direction (empty plate invisible in JSON) — the companion
+// zero-product failures are Cases 16/17.
+// ============================================================================
+TEST_CASE("Multi-plate with one empty plate: benign skip, partial success", "[integration][slice][ok][empty_plate]")
+{
+    // Pre-clean (stale-artifact trap): generate_output_path silently relocates
+    // to a timestamped path when the target exists, which would make the
+    // exists() assertions below pass vacuously against a stale file.
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_empty_plate_skip.gcode.3mf", ec);
+
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_empty_plate_skip.3mf", "empty_plate_skip");
+
+    // Partial success: good plate sliced and packaged; empty plate is a
+    // benign skip (desktop parity), not a failure.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE_FALSE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    // The skip is visible as a warning attributed to the second plate
+    // (internal 0-based id 1), but gets NO placeholder plate entry —
+    // plates[] holds only the sliced plate, so overall success is untouched
+    // (patch_orphan_plate_issues fabricates placeholders for error-level
+    // orphans only).
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates.front().plate_id == 0);
+    REQUIRE(r->engine->stats().plates.front().success);
+}
+
+// ============================================================================
+// Case 16 — Single-plate mode requesting the EMPTY plate (plate_id=2 of
+// slice_empty_plate_skip.3mf). Pre-fix this was the C2 false-success: rc=0
+// with zero artifacts, no flag anywhere. Post-fix contract: run() returns
+// false, exit_code()=6 (zero-product guard in run(), placed after the
+// packaging gate so it never suppresses partial output), stats.success=false
+// with the canonical no-plates message, and the EMPTY_PLATE warning still
+// attributes the skip to the requested plate. No placeholder plate is
+// fabricated for the warning — the failure classification comes from the
+// zero-plate-results rule in finalise_statistics, not from the benign skip.
+// ============================================================================
+TEST_CASE("Requesting an empty plate: zero product fails with exit 6", "[integration][slice][fail][empty_plate]")
+{
+    // Pre-clean (stale-artifact trap): a leftover file would flip the
+    // exists() assertion below without this run producing anything.
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_empty_plate_requested.gcode.3mf", ec);
+
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_empty_plate_skip.3mf", "empty_plate_requested",
+                      OutputFormat::GCODE_3MF, /*single_plate=*/true, /*plate_id=*/2);
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);  // EXIT_PREPROCESS_ERROR (Types.hpp:16)
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // The skip is attributed to the requested plate (0-based id 1).
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+
+    // Warning-level orphan issues do not fabricate plate entries; the empty
+    // stats.plates is what drives error_message in finalise_statistics.
+    REQUIRE(r->engine->stats().plates.empty());
+    REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
+}
+
+// ============================================================================
+// Case 17 — Multi-plate, ALL plates empty (slice_all_plates_empty_fail.3mf:
+// both <plate> blocks lack model_instance references). Same zero-product
+// contract as Case 16, plus per-plate attribution of every skip.
+// ============================================================================
+TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visible", "[integration][slice][fail][empty_plate]")
+{
+    // Pre-clean (stale-artifact trap), same rationale as Case 16.
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_all_plates_empty.gcode.3mf", ec);
+
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_all_plates_empty_fail.3mf", "all_plates_empty");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Both skips visible, each attributed to its own plate.
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(r->engine->stats().plates.empty());
+    REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
 }
