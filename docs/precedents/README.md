@@ -29,4 +29,6 @@
 | P-14 | 环境与构建约束 | build-environment-constraints.md | 强制约束 |
 | P-15 | 桌面版 vs 云引擎配置流程 | cloud-vs-desktop-config.md | 参考架构 |
 | P-16 | inherits_group 缺格式断言 | inherits-group-format-guard.md | 降级 warning（parity 决策，勿重开） |
+| P-17 | nozzle_volume_type 被官方打印机预设整体覆盖重置 | nvt-reset-and-output-relocation.md | 已修复（3640a49，2026-09-20） |
+| P-18 | 输出路径被占用时静默换名（时间戳后缀） | nvt-reset-and-output-relocation.md | 已补可观测性（af80f0b）；换名行为按设计保留 |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |
