@@ -28,4 +28,5 @@
 | P-13 | 高流量生效三层判定 | high-flow-verification.md | 验证方法论 |
 | P-14 | 环境与构建约束 | build-environment-constraints.md | 强制约束 |
 | P-15 | 桌面版 vs 云引擎配置流程 | cloud-vs-desktop-config.md | 参考架构 |
+| P-16 | inherits_group 缺格式断言 | inherits-group-format-guard.md | 降级 warning（parity 决策，勿重开） |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |
