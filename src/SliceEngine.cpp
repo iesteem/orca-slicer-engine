@@ -1059,9 +1059,33 @@ bool SliceEngine::apply_printer_official_preset()
     if (const auto* pid = m_config.option<ConfigOptionString>("printer_settings_id", false))
         original_printer = pid->value;
 
+    // nozzle_volume_type records which physical nozzle (standard / high_flow)
+    // is mounted on each extruder. The official presets are keyed by nozzle
+    // diameter only and never declare this key, so Preset::normalize
+    // backfills "standard" when the bundle loads them — the wholesale
+    // overwrite below would silently reset a user's high-flow nozzles to
+    // standard in the header echo and the packaged project config
+    // (2026-09-18 cloud review, defect 2). Snapshot the user's hardware
+    // state and graft it back after the overwrite; the official config
+    // still owns the slot count.
+    std::vector<int> user_nozzle_volume_type;
+    if (const auto* nvt = m_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type", false))
+        user_nozzle_volume_type = nvt->values;
+
     // Wholesale overwrite: every key in the official config replaces the
     // user's value (machine G-code keys included).
     overwrite_all_keys_from(m_config, official->config);
+
+    // Graft the user's nozzle hardware state back onto the official vector
+    // (official sets the slot count; user values fill the leading slots).
+    if (!user_nozzle_volume_type.empty())
+    {
+        if (auto* nvt = m_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type", false))
+        {
+            const size_t count = std::min(nvt->values.size(), user_nozzle_volume_type.size());
+            std::copy_n(user_nozzle_volume_type.begin(), count, nvt->values.begin());
+        }
+    }
 
     if (!verify_printer_geometry())
         return false;

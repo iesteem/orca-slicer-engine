@@ -209,3 +209,56 @@ TEST_CASE("Auto-brim header echo preserves project value; motion stays algorithm
     boost::filesystem::remove("/tmp/orca_test_brim_echo.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
 }
+
+TEST_CASE("Nozzle volume type survives printer preset substitution", "[integration][highflow]")
+{
+    // 2026-09-18 cloud review defect 2 (nozzle_volume_type high_flow →
+    // standard, 31/37 outputs). nozzle_volume_type is user hardware state
+    // (which nozzle is mounted per extruder); the official presets are keyed
+    // by diameter only and never declare it, so Preset::normalize backfills
+    // "standard" and the wholesale printer overwrite used to reset it. The
+    // slicing core never reads the key (flow-variant arrays resolve by
+    // filament_volume_type), so the defect is write-back fidelity: header
+    // echo and packaged project config declared the wrong nozzle hardware.
+    // Post-fix contract: header echo carries the user's per-slot values.
+    // Fixture slot 0 = high_flow, slots 1-3 = standard — pins both
+    // preservation and no cross-slot contamination.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
+    cfg.skip_preset_substitution = false;
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_nvt_echo";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+
+    // Pre-run cleanup: a previously FAILED run aborts before its own cleanup
+    // and leaves a stale .gcode.3mf behind; the 3MF writer appends to (or
+    // fails on) an existing archive instead of replacing it, so every retry
+    // would re-read the stale gcode and fail forever. Remove it up front so
+    // each run judges only its own output.
+    boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf");
+
+    engine.run();
+
+    // Success-path test: any substitution/validation regression shows up as a
+    // false failure here rather than silently passing.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const std::string gcode = extract_gcode("/tmp/orca_test_nvt_echo.gcode.3mf");
+
+    REQUIRE(gcode.find("; nozzle_volume_type = high_flow,standard,standard,standard\n") != std::string::npos);
+
+    // The consumable-side flow variant (which the slicing core DOES read)
+    // must stay intact alongside the preserved nozzle hardware state.
+    REQUIRE(gcode.find("; filament_volume_type = high_flow") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+}
