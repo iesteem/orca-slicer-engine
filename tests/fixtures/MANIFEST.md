@@ -48,6 +48,7 @@
 | missing-keys_backfill_10632.3mf | P-01 defaults backfill（注意：文件名是下划线 missing_keys…，历史上判例曾误写连字符） |
 | thumbnail_short_png.3mf | 缩略图 PNG 仅 3 字节（<8 字节签名）→ 必须被尺寸守卫拒绝，不得进入 magic 比较越界读（geom_above_bed_ok.3mf 改造，2026-09-17） |
 | hollow_embedded_preset_train_city.3mf | P-15 空壳内嵌预设 → exit 6 |
+| u1_preset_test_truncated.3mf | C3 短侧截断：u1_preset_test 派生，6 个 per-filament 向量（filament_type/diameter/colour/nozzle_temperature×2/cool_plate_temp）截 2/4，filament_settings_id 保 4 槽 → 修复后全部归 4、槽位值=官方（u1_preset_test.3mf 解包重打包，仅编辑 project_settings.config，几何逐字节不变） |
 | high_flow_whitelist.3mf | P-13 高流量生效 |
 | cylinder_four_plate_mixed.3mf | 多盘混合成功/失败 |
 | wipe_tower_toolpath_outside.3mf | P-08 擦塔越界现象 |
