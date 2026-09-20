@@ -81,6 +81,78 @@ JSON_COUNT=$(find "$PKG_DIR/resources/profiles" -name '*.json' | wc -l)
 PROFILES_SIZE=$(du -sh "$PKG_DIR/resources/profiles" | cut -f1)
 info "  profiles: $PROFILES_SIZE ($JSON_COUNT JSON files)"
 
+# ---- bundle self-check (C5 出厂门, 2026-09-20) ----
+# 校验对象 = 打进本产物的 bundle（非 fork 源头）。所有已实例化 filament 预设
+# 沿 inherits 链合并后必须解析出 filament_vendor，且链不得悬空/成环。
+# 背景：引擎侧 system preset 加载失败是整单致命、无降级（判例 P-09），而
+# bundle 自 25ac1b6 起不进 git 跟踪、打包时从 fork 检出实时拷贝（无锁定），
+# 唯一可靠拦截点是打包时刻——2026-09-18 云审查 C5 终审 cannot_verify 的
+# 闭环手段。缺 @U1 base 层 = U1 预设链悬空，由 dangling 分支捕获。
+command -v python3 >/dev/null 2>&1 || die "Bundle self-check requires python3"
+FILAMENT_DIR="$PKG_DIR/resources/profiles/Snapmaker/filament"
+[ -d "$FILAMENT_DIR" ] || die "Bundle self-check: $FILAMENT_DIR missing — bundle layout changed?"
+python3 - "$FILAMENT_DIR" <<'PYEOF' || die "Bundle self-check FAILED (filament_vendor chain)"
+import json, glob, os, sys
+
+d = sys.argv[1]
+by_name, bad_json = {}, []
+for f in sorted(glob.glob(os.path.join(d, "*.json"))):
+    try:
+        with open(f, encoding="utf-8") as fh:
+            j = json.load(fh)
+    except Exception as e:
+        bad_json.append(f"{os.path.basename(f)}: {e}")
+        continue
+    if isinstance(j, dict) and j.get("name"):
+        by_name[j["name"]] = j
+
+errors = [f"unparseable JSON: {b}" for b in bad_json]
+dangling, missing_vendor, inst = [], [], 0
+for name, j in by_name.items():
+    if j.get("instantiation") != "true":
+        continue
+    inst += 1
+    seen, cur, vendor = set(), j, None
+    while isinstance(cur, dict):
+        if cur.get("filament_vendor"):
+            vendor = cur["filament_vendor"]
+            break
+        inh = cur.get("inherits")
+        if not inh:
+            break
+        if inh in seen:
+            errors.append(f"circular inherits at '{name}' ({inh})")
+            break
+        seen.add(inh)
+        cur = by_name.get(inh)
+        if cur is None:
+            dangling.append(f"{name} -> {inh}")
+            break
+    if not vendor:
+        missing_vendor.append(name)
+
+errors += [f"dangling inherits chain: {n}" for n in dangling]
+errors += [f"no filament_vendor after chain merge: {n}" for n in missing_vendor]
+
+if errors:
+    print(f"  self-check: {inst} instantiated, {len(dangling)} dangling, "
+          f"{len(missing_vendor)} missing vendor", file=sys.stderr)
+    for e in errors[:20]:
+        print(f"    FAIL {e}", file=sys.stderr)
+    if len(errors) > 20:
+        print(f"    ... and {len(errors) - 20} more", file=sys.stderr)
+    sys.exit(1)
+
+# Empty/absent bundle must not pass silently (copy step failure would
+# otherwise yield a vacuous green: 0 presets, 0 errors).
+if inst == 0:
+    print("    FAIL no instantiated presets found — bundle empty or layout changed", file=sys.stderr)
+    sys.exit(1)
+
+print(f"  bundle self-check: {len(by_name)} presets, {inst} instantiated, "
+      f"0 dangling, 0 missing filament_vendor — OK")
+PYEOF
+
 RES_SIZE=$(du -sh "$PKG_DIR/resources" | cut -f1)
 info "Total resources: $RES_SIZE"
 
