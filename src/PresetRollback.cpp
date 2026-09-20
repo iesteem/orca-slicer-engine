@@ -162,6 +162,9 @@ const Preset* PresetRollback::findBaseFilament(const PresetBundle* bundle, const
 // Full overwrite: replace the extruder_idx slot in target with all per-extruder
 // vector values from the source preset. Shared by both the inheritance-chain
 // substitution and filament rollback paths to guarantee consistent semantics.
+// A non-empty dst vector shorter than extruder_idx GROWS via set_at (C3: the
+// slot must be substituted, never silently skipped); only empty vectors are
+// skipped, because set_at pads growth with front() and would be UB on empty.
 
 void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Preset& source, int extruder_idx,
                                            ConfigOptionStrings* filament_ids)
@@ -192,8 +195,19 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Pre
         auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
         if (!dst_vec)
             continue;
+        if (dst_vec->empty())
+            continue;  // set_at on an empty vector is UB (front() padding)
         if (dst_vec->size() <= dst_idx)
-            continue;
+        {
+            // Pre-normalization this silently skipped the whole slot and the
+            // raw 3MF value survived substitution (C3). The slot-count
+            // normalize in apply_preset_substitution makes this unreachable
+            // for real per-filament keys; keys created ad hoc by
+            // option(key, true) land at default length 1 and grow here.
+            BOOST_LOG_TRIVIAL(warning)
+                << "PresetRollback: dst vector \"" << key << "\" holds " << dst_vec->size()
+                << " elements, growing to cover extruder " << extruder_idx;
+        }
 
         auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
         if (src_vec && src_vec->size() > 0)

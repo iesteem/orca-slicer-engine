@@ -70,8 +70,12 @@ constexpr double NOZZLE_FORMAT_EPSILON = 0.05;
 
 // Common implementation for overwriting keys from src onto dst.
 // If except is non-null, keys present in the set are skipped.
-// Scalars are copied wholesale; vectors are copied element-by-element
-// up to the shorter length. Only keys that already exist in dst are touched.
+// Every key (scalar or vector) is copied wholesale — desktop ConfigBase::apply
+// semantics. Vectors replace the whole values array, so a source vector
+// shorter than dst's truncates dst and an empty source vector clears dst;
+// per-filament lengths are reconciled afterwards by
+// normalize_filament_vectors_to_slot_count (2026-09-20 C3 fix). Only keys
+// that already exist in dst are touched.
 inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
                                          const std::set<std::string>* except)
 {
@@ -85,41 +89,143 @@ inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicP
         if (!dst_opt)
             continue;
 
-        if (dst_opt->is_scalar())
-        {
-            // ConfigOptionSingle::set() throws ConfigurationError when the
-            // source type differs. Guard against same-key/different-type
-            // mismatches (symmetric with the vector branch below).
-            if (dst_opt->type() != it->second->type())
-                continue;
-            dst_opt->set(it->second.get());
-        }
-        else
-        {
-            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
-            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
-            if (!dst_vec || !src_vec)
-                continue;
-            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
-                dst_vec->set_at(src_vec, i, i);
-        }
+        // ConfigOptionSingle::set() throws ConfigurationError when the
+        // source type differs. Guard against same-key/different-type
+        // mismatches.
+        if (dst_opt->type() != it->second->type())
+            continue;
+        dst_opt->set(it->second.get());
     }
 }
 
 // Overwrite every key present in `src` onto `dst` (only keys that already
-// exist in `dst`). Scalars are copied wholesale; vectors are copied
-// element-by-element up to the shorter length. No user value is preserved.
+// exist in `dst`). Scalars and vectors are copied wholesale. No user value
+// is preserved.
 inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
 {
     overwrite_all_keys_from_impl(dst, src, nullptr);
 }
 
 // Overwrite every key present in `src` onto `dst`, except keys listed in `except`.
-// Same scalar/vector copy semantics as overwrite_all_keys_from.
+// Same copy semantics as overwrite_all_keys_from.
 inline void overwrite_all_keys_from_except(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
                                            const std::set<std::string>& except)
 {
     overwrite_all_keys_from_impl(dst, src, &except);
+}
+
+// Normalize every per-filament vector in `config` to the project's slot
+// count — the engine-side port of Preset::normalize's filament branch
+// (Preset.cpp), which desktop runs after every preset load/apply and the
+// engine skipped (2026-09-20 C3 fix).
+//
+// Divergence from desktop, on purpose: the slot count n comes from
+// filament_settings_id — the authority the 1.4b substitution loop already
+// iterates and the desktop Plater equally uses to size filament presets —
+// not from filament_diameter.size() as Preset::normalize does. A truncated
+// or foreign-slot-count 3MF is exactly the input this repairs, and its
+// filament_diameter is precisely the corrupted length we must not trust.
+//
+// Semantics (mirrors Preset::normalize as it was designed):
+//   1. Exact-resize the ~23 core filament_option_keys with FullPrintConfig
+//      defaults padding (grows AND shrinks; skips the flow-variant segmented
+//      keys) — see the inline note for why this is engine-side code.
+//   2. Grow-only pass over Preset::filament_options(): backfills missing
+//      keys from defaults, pads short vectors to n (flow-variant keys to
+//      their segment count instead).
+//   3. Grows filament_settings_id to n (no-op when it is the authority).
+// filament_ids (the AMS material-id array) is deliberately untouched —
+// stats readers own it. nozzle_diameter / set_num_extruders is deliberately
+// not ported: extruder-count keys belong to the official machine preset.
+// Returns the slot count (0 when the config declares none).
+size_t normalize_filament_vectors_to_slot_count(DynamicPrintConfig& config)
+{
+    size_t n = 0;
+    if (const auto* fsi = config.option<ConfigOptionStrings>("filament_settings_id", false))
+        n = fsi->values.size();
+    if (n == 0)
+        for (const char* key : {"filament_diameter", "filament_colour"})
+            if (const auto* o = config.option(key, false))
+                if (const auto* v = dynamic_cast<const ConfigOptionVectorBase*>(o))
+                    n = std::max(n, v->size());
+    if (n == 0)
+        return 0;
+
+    // Exact-resize the core per-filament keys (grow AND shrink). The library's
+    // DynamicPrintConfig::set_num_filaments is a complete no-op in this fork —
+    // PrintConfigDef's ctor never calls init_filament_option_keys() (zero
+    // callers tree-wide), so print_config_def.filament_option_keys() is always
+    // empty and its loop iterates nothing. Desktop gets away with it because
+    // the GUI layer sizes these keys via PresetBundle::set_num_filaments; the
+    // engine has no GUI layer, so the exact-resize lives here, mirroring the
+    // key list of PrintConfigDef::init_filament_option_keys (PrintConfig.cpp)
+    // with the same skips (flow-variant segmented keys, default profile).
+    static const std::vector<std::string> core_filament_keys = {
+        "filament_diameter", "min_layer_height", "max_layer_height",
+        "retraction_length", "z_hop", "z_hop_types", "retract_lift_above", "retract_lift_below",
+        "retract_lift_enforce", "retraction_speed", "deretraction_speed",
+        "retract_before_wipe", "retract_restart_extra", "retraction_minimum_travel",
+        "wipe", "wipe_distance",
+        "retract_when_changing_layer", "retract_length_toolchange", "retract_restart_extra_toolchange",
+        "filament_colour", "filament_multi_colors", "filament_colour_mode",
+        "retraction_distances_when_cut", "long_retractions_when_cut"};
+    const auto& defaults = FullPrintConfig::defaults();
+    for (const std::string& key : core_filament_keys)
+    {
+        if (key == "filament_flow_support" || key == "filament_flow_step_size" ||
+            is_filament_flow_variant_option(key))
+            continue;
+        auto* opt = config.option(key, false);
+        if (opt != nullptr && opt->is_vector())
+            static_cast<ConfigOptionVectorBase*>(opt)->resize(n, defaults.option(key));
+    }
+
+    // Flow-variant segment count (Preset::normalize logic): step sizes
+    // composed per slot when present, else the declaration list at n == 1,
+    // else n.
+    size_t flow_count = n;
+    if (n == 1)
+    {
+        if (const auto* ffs = config.option<ConfigOptionStrings>("filament_flow_support", false);
+            ffs && !ffs->values.empty())
+            flow_count = ffs->values.size();
+    }
+    else if (const auto* st = config.option<ConfigOptionInts>("filament_flow_step_size", false);
+             st && st->values.size() == n)
+    {
+        flow_count = 0;
+        for (int s : st->values)
+            flow_count += size_t(std::max(1, s));
+    }
+
+    for (const std::string& key : Preset::filament_options())
+    {
+        if (key == "compatible_prints" || key == "compatible_printers" ||
+            key == "filament_flow_support")
+            continue;
+        ConfigOption* opt = config.option(key, false);
+        if (!opt)
+        {
+            const ConfigOption* def = defaults.option(key);
+            if (!def)
+                continue;
+            config.set_key_value(key, def->clone());
+            opt = config.option(key, false);
+        }
+        if (opt && opt->is_vector())
+        {
+            auto* vec = static_cast<ConfigOptionVectorBase*>(opt);
+            const size_t want = is_filament_flow_variant_option(key) ? flow_count : n;
+            if (vec->size() < want)
+                vec->resize(want, defaults.option(key));
+        }
+    }
+
+    if (auto* fsi = config.option<ConfigOptionStrings>("filament_settings_id", false))
+        if (fsi->values.size() < n)
+            fsi->values.resize(n, std::string());
+
+    return n;
 }
 
 } // namespace
@@ -769,6 +875,13 @@ bool SliceEngine::apply_preset_substitution()
     // engine fails cleanly.
     strip_user_content();
 
+    // Size every per-filament vector to the project's slot count before the
+    // substitution stages run: a 3MF authored on a different slot count (or a
+    // hand-edited one) can carry truncated vectors, and the 1.4b per-slot
+    // loop would silently skip the overflow slots (C3). Idempotent with the
+    // re-normalization after the printer overwrite below.
+    normalize_filament_vectors_to_slot_count(m_config);
+
     // Apply the official Snapmaker U1 printer preset — wholesale-replaces
     // printer config (printable_area, machine G-code, nozzle_diameter,
     // etc.) with official values.
@@ -1105,6 +1218,14 @@ bool SliceEngine::apply_printer_official_preset()
     // Wholesale overwrite: every key in the official config replaces the
     // user's value (machine G-code keys included).
     overwrite_all_keys_from(m_config, official->config);
+
+    // The official machine preset carries filament-length vectors at the
+    // machine's own slot count (e.g. U1's size-4 retraction/wipe/z_hop
+    // vectors); the wholesale overwrite above installs them verbatim, so
+    // reconcile the per-filament lengths back to the project's slot count
+    // before 1.4b runs (C3). Never touches nozzle_volume_type, so the graft
+    // below still sees the official slot count it expects.
+    normalize_filament_vectors_to_slot_count(m_config);
 
     // Graft the user's nozzle hardware state back onto the official vector
     // (official sets the slot count; user values fill the leading slots).
