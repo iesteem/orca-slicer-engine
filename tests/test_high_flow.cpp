@@ -237,10 +237,11 @@ TEST_CASE("Nozzle volume type survives printer preset substitution", "[integrati
     SliceEngine engine(cfg, temp_files);
 
     // Pre-run cleanup: a previously FAILED run aborts before its own cleanup
-    // and leaves a stale .gcode.3mf behind; the 3MF writer appends to (or
-    // fails on) an existing archive instead of replacing it, so every retry
-    // would re-read the stale gcode and fail forever. Remove it up front so
-    // each run judges only its own output.
+    // and leaves a stale .gcode.3mf behind; generate_output_path then
+    // relocates every retry's artifact to a timestamped path (multi-process
+    // collision protection), so the test would re-read the stale gcode and
+    // fail forever. Remove it up front so each run judges only its own
+    // output.
     boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf");
 
     engine.run();
@@ -261,4 +262,68 @@ TEST_CASE("Nozzle volume type survives printer preset substitution", "[integrati
     boost::system::error_code ec;
     boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+}
+
+TEST_CASE("Output path relocation is surfaced, not silent", "[integration][slice]")
+{
+    // generate_output_path (Utils.cpp) appends a timestamp suffix when the
+    // requested output path is already occupied — deliberate multi-process
+    // collision protection, kept unchanged by design. The hazard: rc stays 0
+    // and the artifact lands elsewhere, so a caller reading the requested
+    // path would serve the stale leftover. Contract (observability fix,
+    // 2026-09-20): when relocation happens the engine emits a task-level
+    // OUTPUT_PATH_RELOCATED warning, and stats().output_path() (JSON:
+    // print_info_total.output_file) reports where the artifact really went.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    const std::string contract_path = "/tmp/orca_test_relocate.gcode.3mf";
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test.3mf";
+    cfg.skip_preset_substitution = false;
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_relocate";
+
+    // Also clears any timestamped leftovers from earlier runs of this test.
+    boost::filesystem::remove(contract_path);
+    for (boost::filesystem::directory_iterator it("/tmp"), end; it != end; ++it)
+    {
+        if (it->path().filename().string().rfind("orca_test_relocate.gcode_", 0) == 0)
+            boost::filesystem::remove(it->path());
+    }
+
+    // Occupy the contract path with a stale leftover, as a previously failed
+    // (or interrupted) task would.
+    {
+        std::ofstream f(contract_path, std::ios::binary);
+        f << "STALE";
+    }
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    // The slice itself must succeed; relocation is not a failure.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    // Relocation happened: artifact exists at the reported path, which is
+    // NOT the requested one; the stale bytes stay untouched at the contract
+    // path (behavior unchanged by design).
+    REQUIRE(engine.output_path() != contract_path);
+    REQUIRE(boost::filesystem::exists(engine.output_path()));
+    REQUIRE(boost::filesystem::exists(contract_path));
+
+    // The relocation must be visible in the issue list, not just in the log.
+    bool warned = false;
+    for (const auto& iss : engine.stats().issues)
+        if (iss.code == "OUTPUT_PATH_RELOCATED" && iss.plate_id == -1)
+            warned = true;
+    REQUIRE(warned);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove(contract_path, ec);
+    boost::filesystem::remove(engine.output_path(), ec);
 }

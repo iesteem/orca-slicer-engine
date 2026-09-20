@@ -254,8 +254,19 @@ bool SliceEngine::run()
 
             decode_plate_thumbnails();
 
+            // generate_output_path appends a timestamp suffix when the
+            // requested path is already occupied (multi-process collision
+            // protection). The artifact then lands elsewhere while rc stays
+            // 0 — surface the relocation so callers reading the requested
+            // path know to check stats().output_path() (JSON:
+            // print_info_total.output_file) instead of serving the stale
+            // leftover. The relocation itself is intentional and unchanged.
+            bool output_relocated = false;
             m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
-                                                 m_cfg.single_plate);
+                                                 m_cfg.single_plate, &output_relocated);
+            if (output_relocated)
+                m_stats.issues.push_back(make_warning(-1, "OUTPUT_PATH_RELOCATED",
+                                                      "Output path already exists; artifact written to \"" + m_output_path + "\""));
 
             // Collect plates to process (internal plate_index is 0-based)
             std::vector<int> plates_to_process;

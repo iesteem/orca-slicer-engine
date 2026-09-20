@@ -106,7 +106,7 @@ std::string ensure_extension(const std::string& path, const std::string& ext)
 }
 
 std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
-                                 OutputFormat format, bool single_plate)
+                                 OutputFormat format, bool single_plate, bool* relocated)
 {
     boost::filesystem::path input_path(input_file);
     std::string base_name;
@@ -145,6 +145,8 @@ std::string generate_output_path(const std::string& input_file, const std::strin
     // Prevent multi-process collision: append unique suffix if output file already exists
     if (boost::filesystem::exists(path))
     {
+        if (relocated)
+            *relocated = true;
         auto ts = std::chrono::system_clock::now().time_since_epoch().count();
         boost::filesystem::path p(path);
         path = (p.parent_path() / (p.stem().string() + "_" + std::to_string(ts))).string() + p.extension().string();
