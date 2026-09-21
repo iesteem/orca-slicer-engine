@@ -619,3 +619,34 @@ TEST_CASE("Straddling object with 0.05mm above bed: preserved, empty layers, exi
     REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_INTENTIONALLY_BELOW_BED", IssueLevel::warning));
     REQUIRE_FALSE(has_global_issue(r->engine->stats(), "OBJECT_BELOW_BED_ADJUSTED", IssueLevel::warning));
 }
+
+// ============================================================================
+// Case 15 — Regression: object-level speed overrides delivered via
+// different_settings_to_system must not crash Model::findMaxSpeed during
+// brim generation. Production model 4e59b4a1a391c740.3mf (BBS project,
+// 2 plates) carries support_speed (coFloats) etc. as object-level config;
+// the unchecked dynamic_cast<ConfigOptionFloat*> in the single-arg
+// opt_float(key) null-deref'd → SIGSEGV (exit 139) at "Generating skirt
+// & brim" on unfixed libslic3r builds. Fixed in the OrcaSlicer fork
+// (Model.cpp findMaxSpeed, commit 656353d876).
+//
+// Regressions locked in:
+//   1. Both plates slice successfully — exit 0, success, no error issue
+//      (no crash, no structured failure either).
+//   2. The packaged gcode.3mf exists and is non-trivially sized.
+// ============================================================================
+TEST_CASE("Object-level speed override via different_settings_to_system: no findMaxSpeed crash, 2 plates ok", "[integration][slice][ok][findmax_speed]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/4e59b4a1a391c740.3mf", "findmax_speed_override");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 2);
+    for (const auto& plate : r->engine->stats().plates)
+        REQUIRE(plate.success);
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}

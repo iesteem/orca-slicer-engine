@@ -45,6 +45,7 @@
 
 | fixture | 锚定行为 |
 |---|---|
+| 4e59b4a1a391c740.3mf (6.9M) | 对象级速度覆盖回归：support_speed 经 different_settings_to_system 下放 → findMaxSpeed 单参 opt_float null 解引用 SIGSEGV(139)；fork 656353d876 修复后 2 盘全成功 exit 0。md5 `d5907fe62760db57d9389980ca326c02` |
 | missing-keys_backfill_10632.3mf | P-01 defaults backfill |
 | hollow_embedded_preset_train_city.3mf | P-15 空壳内嵌预设 → exit 6 |
 | high_flow_whitelist.3mf | P-13 高流量生效 |
