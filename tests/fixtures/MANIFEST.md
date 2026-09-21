@@ -51,6 +51,7 @@
 | high_flow_whitelist.3mf | P-13 高流量生效 |
 | cylinder_four_plate_mixed.3mf | 多盘混合成功/失败 |
 | wipe_tower_toolpath_outside.3mf | P-08 擦塔越界现象 |
+| wipe_tower_import_regen_ok.3mf | P-08 阳性对照：2c242c10f0e4b521 经 Orca「导入」重存（塔位 165/244.697→13/214.5 自动重生）→ exit 0 全成功。md5 `1fb1246b4f3d2aed4be0d58a70e17d58` |
 
 ### 子目录
 

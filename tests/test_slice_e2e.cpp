@@ -650,3 +650,34 @@ TEST_CASE("Object-level speed override via different_settings_to_system: no find
     REQUIRE(boost::filesystem::exists(r->output_file));
     REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
 }
+
+// ============================================================================
+// Case 16 — P-08 positive control, paired with Case 9. Same geometry as the
+// P-08 fixture 2c242c10f0e4b521.3mf (wipe tower y=244.697 → tower top 271.21
+// past the 271 printable edge → exit 7), but re-saved through desktop Orca's
+// IMPORT path, which discards the stored wipe_tower_x/y and auto-places a
+// fresh tower (13/214.5). Locks in both halves of the P-08 contract:
+//   1. With an in-bounds tower position the very same model slices clean —
+//      exit 0, no TOOLPATH_OUTSIDE anywhere (the engine only ever rejected
+//      the data, never the geometry).
+//   2. The plate's toolpath_outside flag stays false end-to-end.
+// See docs/precedents/wipe-tower-position-clamp.md (user-side workaround).
+// ============================================================================
+TEST_CASE("P-08 model re-saved via Orca import (regenerated tower) slices clean", "[integration][slice][ok][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_import_regen_ok.3mf", "wipe_tower_regen_ok");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.success);
+    REQUIRE_FALSE(p.toolpath_outside);
+
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
