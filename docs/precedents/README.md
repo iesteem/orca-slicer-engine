@@ -28,4 +28,5 @@
 | P-13 | 高流量生效三层判定 | high-flow-verification.md | 验证方法论 |
 | P-14 | 环境与构建约束 | build-environment-constraints.md | 强制约束 |
 | P-15 | 桌面版 vs 云引擎配置流程 | cloud-vs-desktop-config.md | 参考架构 |
+| P-16 | 无 plate 元数据 3MF 假成功静默失败 | plateless-3mf-synthesis.md | 已修复（21b4ef1，含黄金基准与已证伪方案） |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |

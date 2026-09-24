@@ -42,7 +42,8 @@
   `PLATELESS_NO_PRINTABLE_INSTANCES` error（真实空盘维持 warning+skip，守
   P-19 选项 A）；JSON 增 `PLATE_DATA_SYNTHESIZED` tip。已知分歧（锚定）：
   合成盘成员越床仍走 BUILD_VOLUME 硬错误，桌面为排除续切
-  （plateless_oob_fail.3mf）。测试 Case 17-20。
+  （plateless_oob_fail.3mf）。测试 Case 17-20。见
+  `docs/precedents/plateless-3mf-synthesis.md`（P-16）。
 - **高流量 flow-variant presets 端到端支持**（fdcff12）。切片变体 = 打印槽
   `filament_volume_type` 在 flow_support 中的索引；nozzle_volume_type 不参与。
   判定方法见 `docs/precedents/high-flow-verification.md`。
