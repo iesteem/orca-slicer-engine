@@ -33,6 +33,16 @@
 
 ### 2026-09
 
+- **无 plate 元数据 3MF 支持（D1'''）**：第三方导出的 3MF（slice_info 仅
+  header、无 model_settings `<plate>`）此前一律 "Skipping empty plate" 静默
+  失败。现按桌面 Orca 语义合成单盘：全部 printable 实例入册
+  （`loaded_id = id().id`，与导出器 identify_id 写出值一致，6 个匹配点零
+  分支接通）。`printable="0"` 实例不入册（桌面同排除）。配套：validate_input
+  空盘兜底改为 `PLATE_DATA_MISSING` 硬不变量；合成盘零可打印实例报
+  `PLATELESS_NO_PRINTABLE_INSTANCES` error（真实空盘维持 warning+skip，守
+  P-19 选项 A）；JSON 增 `PLATE_DATA_SYNTHESIZED` tip。已知分歧（锚定）：
+  合成盘成员越床仍走 BUILD_VOLUME 硬错误，桌面为排除续切
+  （plateless_oob_fail.3mf）。测试 Case 17-20。
 - **高流量 flow-variant presets 端到端支持**（fdcff12）。切片变体 = 打印槽
   `filament_volume_type` 在 flow_support 中的索引；nozzle_volume_type 不参与。
   判定方法见 `docs/precedents/high-flow-verification.md`。

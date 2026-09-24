@@ -53,6 +53,15 @@
 | wipe_tower_toolpath_outside.3mf | P-08 擦塔越界现象 |
 | wipe_tower_import_regen_ok.3mf | P-08 阳性对照：2c242c10f0e4b521 经 Orca「导入」重存（塔位 165/244.697→13/214.5 自动重生）→ exit 0 全成功。md5 `1fb1246b4f3d2aed4be0d58a70e17d58` |
 
+### 无 plate 元数据组（D1''' 合成盘行为，2026-09-24）
+
+| fixture | 锚定行为 |
+|---|---|
+| plateless_single.3mf (25KB) | 第三方导出（slice_info 仅 header、无 model_settings `<plate>`、Application="Snapmaker Orca" 走 other-vendor 拆分）；合成单盘全 printable 实例 → exit 0、plates:[1]。桌面黄金基准（Orca 2.4.0 同文件 gcode）：1 对象、中心 (71.25,37)、68 层、13.65mm、21.28g、无擦除塔。md5 `07633924413a0c1fda3d31a2fd88146b` |
+| plateless_zbake.3mf (11KB) | 同上 + instance tz=48.613 命中 Z-bake Step-1（世界 z[0,97.23]），验证合成盘与 Z-bake 叠加路径。md5 `bf95d17d97dba5309e3f4a7cfb2b98e7` |
+| plateless_unprintable.3mf (25KB) | plateless_single 派生：item 加 printable="0" → 全文件无可打印实例 → exit 6 + PLATELESS_NO_PRINTABLE_INSTANCES error |
+| plateless_oob_fail.3mf (93KB) | 4 对象无盘文件，obj4 xmin=0 < 床界 0.5 → 合成盘成员 PARTLY_OUTSIDE 走既有 BUILD_VOLUME 硬错误（与桌面"排除续切"的已知分歧，锚定现行为） |
+
 ### 子目录
 
 `accuracy/ boundary/ build_volume/ build_volume_dir/ filament/ filement_count/

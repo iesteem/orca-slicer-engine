@@ -25,7 +25,7 @@
 注意：几何缺陷检查（GEOM_*）历史上**全为 warning 不阻断**，
 `has_geom_error` 阻断分支是死代码（判例 P-12）。
 
-## Issue Code 全表（65 个，按域分组）
+## Issue Code 全表（68 个，按域分组）
 
 ### 输入/加载（→ exit 3）
 
@@ -37,6 +37,9 @@
 | MODEL_EMPTY | error | 模型无对象 |
 | PLATE_NOT_FOUND | error | 指定盘不存在 |
 | NO_PRINTABLE_OBJECTS | error | 盘上无可打印对象 |
+| PLATE_DATA_MISSING | error | 载入后无任何盘数据（内部不变量，按构造不可达的防御性报错） |
+| PLATELESS_NO_PRINTABLE_INSTANCES | error | 无 plate 元数据且全文件无可打印实例（printable="0"）→ exit 6（真实空盘仍走 warning+skip，P-19 选项 A） |
+| PLATE_DATA_SYNTHESIZED | tip | 3MF 无 plate 元数据，已按桌面语义合成单盘（可切片，信息级） |
 
 ### 预设/配置（→ exit 6，部分 warning）
 

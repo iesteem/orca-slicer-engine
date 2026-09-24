@@ -480,6 +480,9 @@ bool SliceEngine::read_3mf_model()
 {
     // Reset substitution state from any prior run
     m_config_substitutions = ConfigSubstitutionContext(ForwardCompatibilitySubstitutionRule::Enable);
+    // Reset synthesized-plate state from any prior run (mirrors the
+    // m_config_substitutions reset; see the member declaration in the header)
+    m_synthesized_single_plate = false;
     LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::AddDefaultInstances |
                             LoadStrategy::LoadAuxiliary;
 
@@ -527,6 +530,57 @@ bool SliceEngine::read_3mf_model()
     {
         record_load_error("MODEL_EMPTY", "3MF file contains no sliceable model objects");
         return false;
+    }
+
+    // Desktop Orca never requires plate metadata: a 3MF without <plate>
+    // records (third-party exporter output) keeps the GUI's default single
+    // plate with geometric instance assignment — equivalent to "plate 1 =
+    // every printable instance". Model that here by synthesizing the single
+    // plate and enrolling every printable instance, so all six
+    // loaded_id / obj_inst_map matching sites (mark_printable_instances,
+    // the three run_build_volume_check loops, check_spiral_lift, and the
+    // populate_plate_data_for_export rebuild) work without further branches.
+    //
+    // loaded_id = inst->id().id: globally unique, always > 0, and identical
+    // to what the gcode.3mf exporter writes as identify_id when SaveStrategy
+    // lacks UseLoadedId — every libslic3r fallback site
+    // ((loaded_id > 0) ? loaded_id : id().id) therefore computes the same
+    // value it did before. Instances with printable="0" stay unenrolled:
+    // desktop excludes them from slicing.
+    if (m_plate_data.empty())
+    {
+        PlateData* pd = new PlateData(); // owned by m_plate_data / ~SliceEngine
+        pd->plate_index                = 0;
+        int enrolled = 0, excluded = 0, key = 0;
+        for (const ModelObject* obj : m_model.objects)
+        {
+            for (size_t j = 0; j < obj->instances.size(); ++j)
+            {
+                ModelInstance* inst = obj->instances[j];
+                if (!inst->printable)
+                {
+                    ++excluded;
+                    continue;
+                }
+                // map key only needs uniqueness (engine consumers read
+                // value.second exclusively); a running counter also stays
+                // collision-free should a BBS-flagged file without plate
+                // records ever carry multi-instance objects.
+                inst->loaded_id = inst->id().id;
+                pd->obj_inst_map.emplace(++key,
+                                         std::make_pair(static_cast<int>(j),
+                                                        static_cast<int>(inst->id().id)));
+                ++enrolled;
+            }
+        }
+        m_plate_data.push_back(pd);
+        m_synthesized_single_plate = true;
+        BOOST_LOG_TRIVIAL(info) << "3MF has no plate metadata: synthesized single plate ("
+                                << enrolled << " printable instance(s) enrolled, " << excluded
+                                << " excluded as printable=0)";
+        m_stats.issues.push_back(make_tip(-1, "PLATE_DATA_SYNTHESIZED",
+                                           "The 3MF file contains no plate metadata; slicing it as a single plate "
+                                           "containing all printable objects (desktop Orca behaviour)."));
     }
     return true;
 }
@@ -1573,13 +1627,19 @@ void SliceEngine::apply_auto_brim_fallback()
 
 bool SliceEngine::validate_input()
 {
-    // Check plate availability
+    // Invariant: read_3mf_model() guarantees m_plate_data is non-empty —
+    // either the 3MF carried <plate> records or a single plate was
+    // synthesized (desktop parity for metadata-less files). An empty list
+    // here is an internal regression; fail loudly rather than silently
+    // looping over zero plates, which would exit 0 with no output.
     if (m_plate_data.empty())
     {
-        BOOST_LOG_TRIVIAL(warning) << "No plate data in 3MF, treating as single plate";
-        PlateData* pd = new PlateData();
-        pd->plate_index = 0;
-        m_plate_data.push_back(pd);
+        BOOST_LOG_TRIVIAL(error) << "Internal invariant violated: no plate data after model load";
+        m_any_error            = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = "No plate data available after model load (internal error)";
+        m_stats.issues.push_back(make_error(-1, "PLATE_DATA_MISSING", m_stats.error_message));
+        return false;
     }
 
     // Validate requested plate exists
@@ -2135,6 +2195,25 @@ bool SliceEngine::mark_printable_instances(const std::set<int>& plate_ids)
 
     if (count == 0)
     {
+        // A synthesized single plate with zero members means the whole file
+        // has no printable instance (e.g. every item is printable="0") —
+        // desktop refuses to slice such a file upfront, so hard-fail here
+        // instead of returning a silent exit-0-with-no-output.
+        //
+        // Real (metadata-backed) empty plates keep the historical warning +
+        // skip: one empty plate must not sink the other plates (precedent
+        // P-19, option A on feature-2.2.0).
+        if (m_synthesized_single_plate)
+        {
+            BOOST_LOG_TRIVIAL(error) << "Synthesized single plate has no printable instances";
+            m_any_error            = true;
+            set_error_type(EXIT_PREPROCESS_ERROR);
+            m_stats.issues.push_back(
+                make_error(-1, "PLATELESS_NO_PRINTABLE_INSTANCES",
+                           "The 3MF file has no plate metadata and none of its objects is printable; "
+                           "there is nothing to slice."));
+            return false;
+        }
         BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate";
         return false;
     }

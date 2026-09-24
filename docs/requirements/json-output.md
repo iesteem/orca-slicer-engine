@@ -88,6 +88,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v02.01.07 (2026-09-24) | 无 plate 元数据 3MF 合成单盘：`issues[]` 新增 tip 级 `PLATE_DATA_SYNTHESIZED`；此类文件 plates[] 首次可含成功盘（plate_id=1、无 model_thumbnail） |
 | v02.01.10 (2026-06-11) | `plates[].filaments[].filament_id` → `id`。libslic3r 内部 `FilamentInfo::filament_id` 不变 |
 
 ## 已知语义注意点
@@ -99,3 +100,7 @@
   ——两者口径不同。
 - all-or-nothing 打包（P-05）下，任一盘失败 → `success=false` 且
   `output_file=""`，即使其余盘切片成功（其 per-plate 数据仍在 plates[] 里）。
+- 无 plate 元数据的 3MF（第三方导出）按桌面 Orca 语义合成单盘切全部
+  printable 实例，并发 tip 级 `PLATE_DATA_SYNTHESIZED`（云端可用其区分
+  "真单盘文件"与"无盘文件被合成"）；合成盘无缩略图源，
+  `model_thumbnail` 为空。
