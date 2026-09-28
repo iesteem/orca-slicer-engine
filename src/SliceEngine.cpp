@@ -17,6 +17,8 @@
 #include <boost/log/trivial.hpp>
 
 #include "libslic3r/BuildVolume.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/CustomGCode.hpp"
 
 #include "libslic3r/BoundingBox.hpp"
@@ -28,14 +30,15 @@
 #include "libslic3r/FilamentHotBedNozzleRules.hpp"
 
 #include "PresetRollback.hpp"
+#include "PlateGrid.hpp"
+#include "SlicingDeadline.hpp"
+#include "BuildVolumeClassify.hpp"
+#include "ValidateClassify.hpp"
 
 using namespace Slic3r;
 
 namespace
 {
-
-// 1/5, same as GUI's LOGICAL_PART_PLATE_GAP
-constexpr double LOGICAL_PART_PLATE_GAP = 0.2;
 
 // Check if a plate result indicates a wipe tower tool change mismatch.
 // CGAL/float differences on some platforms cause non-consecutive extruder
@@ -121,6 +124,18 @@ inline void overwrite_all_keys_from_except(DynamicPrintConfig& dst, const Dynami
 
 } // namespace
 
+// ----------------------------------------------------------------------------
+// File-local free-function forward declarations.
+//
+// These helpers do not touch any SliceEngine member state (pure input→output),
+// so they are kept as file-local `static` functions rather than members. They
+// are defined further down but declared here because call sites in member
+// functions appear before their definitions.
+// ----------------------------------------------------------------------------
+static void decode_one_plate_thumbnail(Slic3r::PlateData& pd);
+static bool  all_gcode_layers_valid(const PlateSliceResult& slice_result);
+static void  remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result);
+
 SliceEngine::SliceEngine(const EngineConfig& cfg, std::vector<std::string>& temp_files)
     : m_cfg(cfg), m_temp_files(temp_files)
 {
@@ -155,11 +170,6 @@ bool SliceEngine::run()
     // apply_*_official_preset stages below.
     load_system_presets();
 
-    // Merge project-embedded presets (read from the .3mf input) into the
-    // bundle so the apply_*_official_preset stages can resolve inheritance
-    // references to them. Never blocks.
-    load_project_presets();
-
     if (!m_cfg.skip_preset_substitution)
     {
         if (!apply_preset_substitution())
@@ -168,6 +178,10 @@ bool SliceEngine::run()
             return false;
         }
     }
+
+    // Runs even when substitution was skipped: both fixes guard against
+    // libslic3r SEGVs and are independent of the substitution policy.
+    normalize_loaded_config();
 
     if (validate_input())
     {
@@ -194,7 +208,23 @@ bool SliceEngine::run()
             // sinking preserved). Done once at load, before geometry checks and the
             // per-plate loop, so every later stage sees the same coordinates the
             // desktop would.
-            ensure_models_on_bed();
+            bake_instance_z_into_mesh();
+
+            // Assign a global, monotonic arrange_order to every instance once per
+            // task. This is model-wide (plate-agnostic), so it belongs here rather
+            // than inside the per-plate process_plate loop, where it was previously
+            // re-written with identical values N times. Note libslic3r re-derives
+            // the final ordering during Print::validate() / GCode export
+            // (sort_object_instances_by_model_order); this just seeds a non-zero
+            // value on m_model before any Print copies it.
+            assign_arrange_order();
+
+            // Populate Model::extruderParamsMap once per task. Config-only (reads
+            // m_config, which is final after apply_filament_official_preset in
+            // validate_input above), writes a static Model member, no Print or
+            // plate dependency -- so it belongs here, not in the per-plate loop
+            // where it was previously re-run with identical results N times.
+            setup_extruder_params();
 
             decode_plate_thumbnails();
 
@@ -255,6 +285,133 @@ bool SliceEngine::run()
     build_statistics();
 
     return !m_plate_results.empty();
+}
+
+bool SliceEngine::run_preset_substitution_only()
+{
+    // Config-only prefix of run(): load the project, validate the printer
+    // model, load system/project presets, and apply official substitution.
+    // No geometry checks, slicing, or export. The call sequence mirrors the
+    // prefix of run() (SliceEngine.cpp:146-183) and MUST stay in sync with it.
+    if (!load_3mf())
+    {
+        build_statistics();
+        return false;
+    }
+
+    if (!validate_printer_model())
+    {
+        build_statistics();
+        return false;
+    }
+
+    // Collect config warnings (never blocks the pipeline).
+    collect_config_warnings();
+
+    // Load vendor presets so apply_*_official_preset can resolve.
+    load_system_presets();
+
+    if (!m_cfg.skip_preset_substitution)
+    {
+        if (!apply_preset_substitution())
+        {
+            build_statistics();
+            return false;
+        }
+    }
+
+    normalize_loaded_config();
+
+    // m_config now holds the substitution result; run()'s later stages do not
+    // modify the preset keys, so callers can read it via config().
+    build_statistics();
+    return !m_any_error;
+}
+
+bool SliceEngine::run_geometry_preprocess_only()
+{
+    // Config + geometry-preprocessing prefix of run(): everything in run() up to
+    // and including setup_extruder_params (SliceEngine.cpp:146-226), minus the
+    // per-plate slicing loop, package_output, and export. The geometry stages
+    // mutate m_model in place (Z baked into mesh, arrange_order stamped); after
+    // return it is readable via model(). No slicing, no export.
+    //
+    // The call sequence mirrors the prefix of run() and MUST stay in sync.
+
+    // --- Config half (same prefix as run_preset_substitution_only) ---
+    if (!load_3mf())
+    {
+        build_statistics();
+        return false;
+    }
+
+    if (!validate_printer_model())
+    {
+        build_statistics();
+        return false;
+    }
+
+    collect_config_warnings();
+    load_system_presets();
+
+    if (!m_cfg.skip_preset_substitution)
+    {
+        if (!apply_preset_substitution())
+        {
+            build_statistics();
+            return false;
+        }
+    }
+
+    normalize_loaded_config();
+
+    // --- Geometry-half preprocessing (mirrors run():185-226) ---
+    if (!validate_input())
+    {
+        build_statistics();
+        return false;
+    }
+
+    try
+    {
+        // Geometry defect detection (once for the whole model, before per-plate).
+        {
+            auto geom_issues = run_geometry_checks(m_model);
+            for (auto& issue : geom_issues)
+            {
+                m_stats.issues.push_back(std::move(issue));
+            }
+        }
+
+        // Bake instance Z into mesh + seat objects on bed (desktop parity).
+        bake_instance_z_into_mesh();
+
+        // Stamp a global, monotonic arrange_order on every instance.
+        assign_arrange_order();
+
+        // Populate Model::extruderParamsMap from the final config.
+        setup_extruder_params();
+    }
+    catch (const std::exception& e)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled exception in geometry preprocessing: " << e.what();
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(
+            -1, "INTERNAL_ERROR",
+            "An unexpected internal error occurred during geometry preprocessing. Please try again or contact support."));
+    }
+    catch (...)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in geometry preprocessing";
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(
+            make_error(-1, "INTERNAL_FATAL", "Unhandled unknown exception in geometry preprocessing"));
+    }
+
+    build_statistics();
+    return !m_any_error;
 }
 
 // ============================================================================
@@ -495,44 +652,12 @@ void SliceEngine::load_system_presets()
     }
 }
 
-// Project-embedded presets: loaded from the .3mf input file during load_3mf
-// (m_project_presets), merged into m_preset_bundle here. Logically part of
-// Stage 1.3 — paired with load_system_presets so the apply_*_official_preset
-// stages below see a unified bundle of system + project presets.
+// Unified official-preset predicate shared by the printer, filament, and
+// process substitution paths. See declaration in SliceEngine.hpp.
 
-void SliceEngine::load_project_presets()
+bool SliceEngine::is_official_preset(const Preset& p)
 {
-    // Precondition: m_preset_bundle is populated by load_system_presets().
-    // When system presets are unavailable, there is nowhere to merge project
-    // presets into, so we skip silently — apply_*_official_preset also
-    // early-exits when m_presets_available is false.
-    if (!m_presets_available || !m_preset_bundle) return;
-    if (m_project_presets.empty()) return;
-
-    PresetBundle& preset_bundle = *m_preset_bundle;
-    try
-    {
-        PresetsConfigSubstitutions preset_subs = preset_bundle.load_project_embedded_presets(
-            m_project_presets, ForwardCompatibilitySubstitutionRule::Enable);
-
-        for (const auto& preset_sub : preset_subs)
-        {
-            for (const auto& substitution : preset_sub.substitutions)
-            {
-                const char* key = substitution.opt_def ? substitution.opt_def->opt_key.c_str() : "?";
-                m_stats.issues.push_back(make_warning(-1, "PRESET_SUBSTITUTION",
-                                                      std::string("Embedded preset '") + preset_sub.preset_name +
-                                                          "' key '" + key + "' was substituted"));
-            }
-        }
-    }
-    catch (const std::exception& e)
-    {
-        // Graceful degradation: a malformed embedded preset must not abort
-        // the pipeline. The apply_*_official_preset stages below tolerate
-        // missing references via inheritance-chain fallbacks.
-        BOOST_LOG_TRIVIAL(warning) << "Failed to load project embedded presets: " << e.what();
-    }
+    return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
 }
 
 // ============================================================================
@@ -583,6 +708,85 @@ bool SliceEngine::apply_preset_substitution()
     // Non-blocking: substitution failure is a warning, not a fatal error.
     apply_process_official_preset();
     return true;
+}
+
+// Normalise flush_volumes_matrix / flush_volumes_vector to match the actual
+// filament slot count. 3MF files authored by editing the AMS colour palette
+// sometimes ship a flush matrix whose dimension no longer matches the filament
+// count (e.g. a 3x3 matrix with 4 filament slots). The desktop GUI repairs this
+// in PresetBundle::update_multi_material_filament_presets; the headless engine
+// has no GUI, so it must do the same here. Without it, Print::_make_wipe_tower
+// (libslic3r) hits its `filament_diameter.size() > sqrt(matrix.size())` guard,
+// skips wipe-tower/tool-ordering construction, and the subsequent skirt&brim
+// step dereferences an empty ToolOrdering -> SIGSEGV. Ported from
+// PresetBundle.cpp:3650-3675 (upstream OrcaSlicer).
+static void normalize_flush_volumes_matrix(DynamicPrintConfig& config)
+{
+    constexpr double kEps = 1e-4; // matches libslic3r EPSILON (libslic3r.h)
+
+    const auto* fd_opt = config.option<ConfigOptionFloats>("filament_diameter");
+    if (!fd_opt) return;
+    const size_t num_filaments = fd_opt->values.size();
+    if (num_filaments == 0) return;
+
+    auto* m_opt = config.option<ConfigOptionFloats>("flush_volumes_matrix");
+    if (!m_opt) return; // absent → backfill already supplied the 4x4 default
+    const std::vector<double> old_matrix = m_opt->values;
+    const size_t old_n = static_cast<size_t>(std::sqrt(static_cast<double>(old_matrix.size())) + kEps);
+    if (num_filaments == old_n) return;
+
+    // Resize flush_volumes_vector to 2*num_filaments (default 140. per upstream).
+    auto* v_opt = config.option<ConfigOptionFloats>("flush_volumes_vector");
+    std::vector<double> filaments = v_opt ? v_opt->values : std::vector<double>{};
+    while (filaments.size() < 2 * num_filaments) {
+        filaments.push_back(filaments.size() > 1 ? filaments[0] : 140.);
+        filaments.push_back(filaments.size() > 1 ? filaments[1] : 140.);
+    }
+    while (filaments.size() > 2 * num_filaments) {
+        filaments.pop_back();
+        filaments.pop_back();
+    }
+
+    // Rebuild the matrix to num_filaments x num_filaments: copy old pairs that
+    // still fit, synthesise the rest (diagonal=0, off-diagonal=load+unload).
+    std::vector<double> new_matrix;
+    new_matrix.reserve(num_filaments * num_filaments);
+    for (size_t i = 0; i < num_filaments; ++i)
+        for (size_t j = 0; j < num_filaments; ++j) {
+            if (i < old_n && j < old_n)
+                new_matrix.push_back(old_matrix[i * old_n + j]);
+            else
+                new_matrix.push_back(i == j ? 0. : filaments[2 * i] + filaments[2 * j + 1]);
+        }
+
+    m_opt->values = std::move(new_matrix);
+    if (v_opt) v_opt->values = std::move(filaments);
+}
+
+void SliceEngine::normalize_loaded_config()
+{
+    // (a) Backfill any PrintConfig keys the 3MF / preset chain left undefined.
+    // Print::apply() and GCode::_do_export() dereference several options
+    // without a null check (e.g. seam_slope_type, thumbnails), so a config
+    // that omits them SEGVs deep inside libslic3r. The desktop GUI never sees
+    // this because it always operates on a full PrintConfig; the CLI path
+    // must add the missing keys from FullPrintConfig defaults itself. Only
+    // keys absent from m_config are taken — values the project/preset
+    // already set are kept.
+    {
+        const auto& defaults = FullPrintConfig::defaults();
+        t_config_option_keys missing;
+        for (const std::string& key : defaults.keys())
+            if (!m_config.has(key))
+                missing.emplace_back(key);
+        if (!missing.empty())
+            m_config.apply_only(defaults, missing, true);
+    }
+
+    // (b) Repair a flush_volumes_matrix whose dimension doesn't match the
+    // filament slot count (common in 3MFs whose AMS palette was edited).
+    // See normalize_flush_volumes_matrix above.
+    normalize_flush_volumes_matrix(m_config);
 }
 
 void SliceEngine::strip_user_content()
@@ -773,8 +977,7 @@ bool SliceEngine::apply_printer_official_preset()
             if (!parent.empty())
             {
                 const Preset* candidate = m_preset_bundle->printers.find_preset(parent, false);
-                if (candidate && candidate->name == parent &&
-                    candidate->vendor && candidate->vendor->name == PresetBundle::SM_BUNDLE)
+                if (candidate && candidate->name == parent && is_official_preset(*candidate))
                 {
                     official_printer_name = parent;
                 }
@@ -933,14 +1136,14 @@ bool SliceEngine::resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_
     // user-modified copies of the official values, symmetric with the printer
     // and process apply paths.
 
-    auto is_official_preset = [](const Preset& p) -> bool
-    {
-        return p.vendor && p.vendor->name == PresetBundle::SM_BUNDLE;
-    };
     auto find_in_system = [this](const std::string& name) -> Preset*
     {
+        // Same acceptance rule as find_official_process_preset: genuine system
+        // presets only (official Snapmaker vendor, not project-embedded). The
+        // is_project_embedded check guards the seam where an embedded preset
+        // inherits from an official one and shares its vendor pointer.
         auto* p = m_preset_bundle->filaments.find_preset(name, false);
-        if (p && p->name == name)
+        if (p && p->name == name && !p->is_project_embedded && is_official_preset(*p))
             return p;
         return nullptr;
     };
@@ -1165,8 +1368,7 @@ void SliceEngine::apply_process_official_preset()
             if (!parent.empty())
             {
                 const Preset* candidate = m_preset_bundle->prints.find_preset(parent, false);
-                if (candidate && candidate->name == parent &&
-                    candidate->vendor && candidate->vendor->name == PresetBundle::SM_BUNDLE)
+                if (candidate && candidate->name == parent && is_official_preset(*candidate))
                 {
                     process_system_name = parent;
                 }
@@ -1178,6 +1380,8 @@ void SliceEngine::apply_process_official_preset()
 
     if (official)
     {
+        m_last_process_preset_name = official->name;
+
         std::set<std::string> user_overrides = parse_process_user_overrides();
 
         BOOST_LOG_TRIVIAL(info)
@@ -1210,10 +1414,19 @@ void SliceEngine::apply_process_official_preset()
     }
     else
     {
+        m_last_process_preset_name.clear();
         BOOST_LOG_TRIVIAL(warning)
             << "No system process preset found for \"" << preset_name
             << "\" (not in system presets and no system ancestor in"
             << " inheritance chain); process settings not updated.";
+        // Mirrors the unified substitution policy: unlike printer/filament,
+        // a process preset that cannot be resolved to an official system
+        // preset is not fatal here — slicing continues with the project
+        // config values. Surface it in issues so callers can see the
+        // official process preset was never applied.
+        m_stats.issues.push_back(make_warning(-1, "PROCESS_NOT_SUBSTITUTED",
+            "Process preset \"" + preset_name + "\" does not resolve to any official system preset; "
+            "process settings were kept from the project config"));
     }
 
     apply_auto_brim_fallback();
@@ -1224,10 +1437,19 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     // Look up a process preset by name: system presets first, then project
     // embedded. Follows the same pattern as resolve_filament.
 
+    // "System" here means a genuine system preset: load_project_embedded_presets
+    // merges 3MF-embedded presets into m_preset_bundle->prints, so find_preset
+    // can return a user-authored embedded preset that merely shares the name
+    // space. Such presets are waypoints on an inheritance chain, not official
+    // configs safe to apply wholesale.
     auto find_in_system = [this](const std::string& name) -> const Preset*
     {
+        // Official = Snapmaker vendor (is_official_preset). This also excludes
+        // project-embedded presets (no vendor of their own), making the old
+        // !is_project_embedded check redundant — kept as belt-and-braces since
+        // a hollow-shell embedded preset must never be applied wholesale.
         const Preset* p = m_preset_bundle->prints.find_preset(name, false);
-        if (p && p->name == name) return p;
+        if (p && p->name == name && !p->is_project_embedded && is_official_preset(*p)) return p;
         return nullptr;
     };
 
@@ -1245,8 +1467,12 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
     if (const Preset* sys = find_in_system(preset_name))
         return sys;
 
-    // Case 2: Not a direct system match — walk the inheritance chain
-    // to find a system preset ancestor.
+    // Case 2: Not a direct system match — walk the inheritance chain through
+    // project-embedded presets to find a *system* preset ancestor. Embedded
+    // presets are only waypoints on the chain, never the return value: a
+    // user-authored embedded preset (possibly a hollow shell whose only real
+    // content is "inherits") must not be applied wholesale as if it were
+    // official — that would overwrite valid project config with empty values.
     const Preset* current = find_in_project(preset_name);
     std::set<std::string> visited;
     while (current)
@@ -1372,24 +1598,51 @@ bool SliceEngine::validate_input()
 // Stage 3: Global preprocessing (ensure on bed)
 // ============================================================================
 
-void SliceEngine::ensure_models_on_bed()
+void SliceEngine::bake_instance_z_into_mesh()
 {
-    // Seat every object flat on the bed before slicing.
+    // Relocate each object's Z so it survives libslic3r's Print::apply, which
+    // zeroes the Z component of every instance transform ("Z offset is
+    // discarded to ensure first layer starts at Z=0", PrintApply.cpp:155).
+    // An object stored with instance.z != 0 would have that Z silently
+    // dropped, clipping whatever the author placed above/below the bed.
     //
-    // The desktop app, when opening a 3MF project, calls
-    // ModelObject::ensure_on_bed(allow_negative_z=true) (Plater.cpp), which
-    // PRESERVES intentional sinking — a model stored below the bed stays sunk
-    // and is sliced clipped at z=0. That is correct for an interactive editor
-    // (sinking is a deliberate tool, e.g. flattening a base against the bed),
-    // but wrong for cloud slicing: the user uploads a model expecting the whole
-    // thing printed and has no way to reposition it. A stored Z that sinks the
-    // model would silently drop the bottom of the G-code.
+    // Strategy: move all Z information out of instance space into mesh-vertex
+    // space, where Print::apply cannot touch it. Two phases per object:
     //
-    // So we pass allow_negative_z=false (the same path the Snapmaker CLI takes
-    // when its `ensure_on_bed` option is enabled): each object's lowest point is
-    // snapped to z=0. Partly-sunk, fully-sunk and floating objects are all
-    // corrected. We deliberately diverge from the desktop *default* here; this
-    // matches the desktop's force-on-bed behaviour.
+    //   Step 1 -- bake the existing instance.z offset into the mesh, then
+    //             zero every instance.z. After this, instance.z is 0 for all
+    //             instances of this object, and the mesh has been translated
+    //             by the equivalent local-space Z.
+    //
+    //   Step 2 -- apply the desktop "intentional sinking" rule
+    //             (allow_negative_z=true semantics from ModelObject::
+    //              ensure_on_bed) to decide whether the object also needs
+    //             raising, and if so bake that raise into the mesh too.
+    //
+    // Single-part sinking rule (mirrors Model.cpp:1829-1835):
+    //   - min_z >= SINKING_Z_THRESHOLD (-0.001)  -> already on bed, no raise
+    //   - max_z < 0                              -> fully buried, raise to bed
+    //   - min_z < 0 AND max_z >= 0              -> straddling: author
+    //                                              intentionally sank it,
+    //                                              leave in place
+    // Multi-part rule (mirrors Model.cpp:1836-1840): raise only when the
+    // whole object's max_z < SINKING_MIN_Z_THRESHOLD (0.05). Multi-part
+    // objects do not get the "intentional straddling" carve-out -- only
+    // their max_z matters.
+    //
+    // Note (assumption): baking Z into the mesh assumes every instance of
+    // this ModelObject shares the same rotation. libslic3r's ModelObject
+    // uses one mesh shared across instances, and our world->local Z
+    // conversion uses instances.front()'s rotation matrix. Per-instance
+    // rotation with non-zero Z is not supported by this path. Current
+    // callers (3MF import + arrange) never produce that combination; if
+    // they ever do, the bake will be correct only for the first instance.
+    //
+    // Side effect on the world position of the object: ideally zero. We
+    // compensate every instance-space mutation with an equal and opposite
+    // mesh-space mutation, so the final world-space Z equals what
+    // ensure_on_bed(true) would have produced -- but lives entirely in
+    // mesh-vertex space, safe from Print::apply.
     for (ModelObject* obj : m_model.objects)
     {
         if (obj->instances.empty())
@@ -1398,20 +1651,16 @@ void SliceEngine::ensure_models_on_bed()
         // 3MF import before instance transforms were finalized.
         obj->invalidate_bounding_box();
 
-        // Print::apply zeroes the Z component of the instance transform
-        // matrix (PrintApply.cpp:155 — "Z offset is discarded to ensure
-        // first layer starts at Z=0").  Any Z in the instance offset is
-        // silently dropped, which clips objects that rely on it.
-        //
-        // Fix: bake the instance Z offset into mesh vertices, zero the
-        // instance Z offset, then apply ensure_on_bed to the corrected
-        // geometry.  The Z survives Print::apply because it lives in
-        // mesh-vertex space.
-        //
-        // translate() moves mesh vertices in LOCAL space, but the instance
-        // rotation may flip or reorient the local Z axis.  We must convert
-        // the world-space Z shift to local coordinates via the inverse of
-        // the instance rotation (matrix without offset).
+        // Local helper: convert a world-space (0,0,dz) shift to local mesh
+        // space using the front instance's rotation (no offset component).
+        // translate() writes mesh vertices in local space; if the instance
+        // is rotated, the world-Z axis is not aligned with local-Z, so the
+        // shift must be un-rotated first.
+        auto world_z_to_local = [obj](double dz) {
+            auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
+            Vec3d world_shift(0, 0, dz);
+            return rot_no_off.inverse() * world_shift;
+        };
 
         // --- Step 1: bake existing instance Z offset into mesh vertices ---
         double inst_z = 0.0;
@@ -1424,11 +1673,7 @@ void SliceEngine::ensure_models_on_bed()
 
         if (std::abs(inst_z) > 1e-4)
         {
-            // Convert world-space (0,0,inst_z) to local space using the
-            // inverse of the instance rotation (no offset).
-            auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
-            Vec3d world_shift(0, 0, inst_z);
-            Vec3d local_shift = rot_no_off.inverse() * world_shift;
+            Vec3d local_shift = world_z_to_local(inst_z);
             obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
             // Zero all instance Z offsets.
             for (ModelInstance* inst : obj->instances)
@@ -1438,37 +1683,157 @@ void SliceEngine::ensure_models_on_bed()
             }
         }
 
-        // --- Step 2: correct any remaining sinking ---
+        // --- Step 2: apply the desktop sinking rule, baking any raise into the mesh ---
+        //
+        // We do NOT call ModelObject::ensure_on_bed here. ensure_on_bed's only
+        // side effect is to mutate instance offset (translate_instances ->
+        // set_offset, Model.cpp:1845-1862); it never touches mesh vertices.
+        // Using it would force the same "call then undo the side effect"
+        // pattern the previous implementation relied on -- readable only if
+        // the reader remembers that detail, and brittle across libslic3r
+        // versions if that contract ever changes.
+        //
+        // Instead we replicate the allow_negative_z=true decision (Model.cpp:
+        // 1829-1841) locally to compute z_shift, then bake z_shift into the
+        // mesh ourselves. Same final world-space Z as ensure_on_bed(true),
+        // but the raise lives in mesh-vertex space where Print::apply cannot
+        // discard it.
+        constexpr double kSinkingZThreshold     = -0.001;  // Model.hpp: SINKING_Z_THRESHOLD
+        constexpr double kSinkingMinZThreshold   = 0.05;   // Model.hpp: SINKING_MIN_Z_THRESHOLD
+        constexpr double kEpsilon                 = 1e-4;
+
         {
             obj->invalidate_bounding_box();
-            double before = obj->min_z();
-            obj->ensure_on_bed(false);
-            double after = obj->min_z();
-            double z_shift = after - before;
+            const double min_z_before = obj->min_z();
+            const double max_z_before = obj->max_z();  // for diagnostics; geometry never mutates here
+            const size_t  parts       = obj->parts_count();
 
-            if (std::abs(z_shift) > 1e-4)
+            // Replicate ensure_on_bed(allow_negative_z=true):
+            //   single-part: raise only if (min_z >= -0.001) or (max_z < 0).
+            //                Straddling (min_z < 0 AND max_z >= 0) is left alone.
+            //   multi-part:  raise only if max_z < 0.05.
+            // Straddling single-part objects are the author's intentional
+            // sinking and are preserved exactly; the multi-part rule has no
+            // such carve-out, only an absolute max_z cutoff.
+            double z_shift = 0.0;
+            if (parts == 1)
             {
-                // Convert world-space z_shift to local (same as step 1).
-                auto rot_no_off = obj->instances.front()->get_transformation().get_matrix_no_offset();
-                Vec3d world_shift(0, 0, z_shift);
-                Vec3d local_shift = rot_no_off.inverse() * world_shift;
+                if (min_z_before >= kSinkingZThreshold || max_z_before < 0.0)
+                    z_shift = -min_z_before;
+            }
+            else
+            {
+                if (max_z_before < kSinkingMinZThreshold)
+                    z_shift = kSinkingMinZThreshold - max_z_before;
+            }
+
+            if (std::abs(z_shift) > kEpsilon)
+            {
+                Vec3d local_shift = world_z_to_local(z_shift);
                 obj->translate(local_shift.x(), local_shift.y(), local_shift.z());
-                // Undo the instance-offset change ensure_on_bed just made.
-                for (ModelInstance* inst : obj->instances)
-                {
-                    Vec3d off = inst->get_offset();
-                    inst->set_offset(Vec3d(off.x(), off.y(), off.z() - z_shift));
-                }
+                // No instance offset change: the raise is entirely in the mesh.
             }
 
             obj->invalidate_bounding_box();
-            if (std::abs(z_shift) > 1e-6 || std::abs(before) > 1e-6)
+            if (std::abs(z_shift) > 1e-6 || std::abs(min_z_before) > 1e-6)
             {
-                BOOST_LOG_TRIVIAL(info) << "ensure_on_bed: object \"" << obj->name << "\" inst_z=" << inst_z
+                BOOST_LOG_TRIVIAL(info) << "bake_instance_z_into_mesh: object \"" << obj->name
+                                        << "\" inst_z=" << inst_z
+                                        << " parts=" << parts
                                         << " z_shift=" << z_shift;
+            }
+
+            // Diagnostic warning when the object's stored Z sat below the bed.
+            // Two distinct cases, kept separate because their semantics are
+            // different and the previous combined text conflated them:
+            //
+            //   (a) z_shift != 0  -> The sinking rule fired. The object was
+            //      either fully buried below the bed or its bottom was
+            //      essentially on the bed and got snapped up. Either way we
+            //      raised it; surface that so the silent correction is
+            //      visible.
+            //
+            //   (b) z_shift == 0 AND min_z_before < 0  -> Only reachable for
+            //      single-part objects: straddling (min_z<0 AND max_z>=0).
+            //      This is a genuine author-intended sinking (e.g. a base
+            //      flattened against the bed) and is preserved as stored.
+            //      Multi-part objects with max_z >= 0.05 never raise, but
+            //      they also don't reach here as "intentional" -- they were
+            //      simply above the threshold, not sank -- so the
+            //      "intentional" wording is only used for the single-part
+            //      straddle case.
+            //
+            // We include the original instance.z in the message so a user
+            // debugging can tell apart "stored with instance.z=0 and a
+            // negative mesh" from "stored with instance.z=N and a mesh that
+            // combined to a negative world Z" -- both produce the same
+            // post-Step-1 mesh state, but the upstream project state differs.
+            if (min_z_before < -kEpsilon)
+            {
+                if (std::abs(z_shift) > kEpsilon)
+                {
+                    char buf[200];
+                    std::snprintf(buf, sizeof(buf),
+                                  "Object \"%s\" was stored below the print bed "
+                                  "(min Z=%.2fmm, original instance Z=%.2fmm, parts=%zu); "
+                                  "auto-raised by %.2fmm to sit on the bed.",
+                                  obj->name.c_str(), min_z_before, inst_z, parts, z_shift);
+                    m_stats.issues.push_back(make_warning(
+                        -1, "OBJECT_BELOW_BED_ADJUSTED", buf, obj->name,
+                        "If the sinking was intentional, reposition the object's Z in your slicer before exporting."));
+                }
+                else
+                {
+                    // Reached when no raise was applied but min_z_before < 0.
+                    // Two sub-cases land here:
+                    //   - single-part straddling (min_z<0 AND max_z>=0):
+                    //     the author intentionally sank the base -- preserved
+                    //     as stored, the "intentionally straddles" wording is
+                    //     accurate.
+                    //   - multi-part with max_z >= 0.05 and min_z < 0:
+                    //     the multi-part rule did not fire because only max_z
+                    //     matters; the object is partially below the bed but
+                    //     was not deliberately sank in the single-part sense.
+                    //     The wording below is slightly off for this sub-case
+                    //     (it's not "intentional"), but we keep one issue code
+                    //     to match the previous behavior. The "parts=N" field
+                    //     lets users tell the two apart.
+                    char buf[224];
+                    std::snprintf(buf, sizeof(buf),
+                                  "Object \"%s\" intentionally straddles the print bed "
+                                  "(Z %.2f to %.2fmm, original instance Z=%.2fmm, parts=%zu); "
+                                  "preserved as-is, the below-bed portion will not be printed.",
+                                  obj->name.c_str(), min_z_before, max_z_before, inst_z, parts);
+                    m_stats.issues.push_back(make_warning(
+                        -1, "OBJECT_INTENTIONALLY_BELOW_BED", buf, obj->name,
+                        "Reposition the object in your slicer if the below-bed portion was meant to be printed."));
+                }
             }
         }
     }
+}
+
+// Global model/config preparation, run once from run() before the per-plate loop
+// (after bake_instance_z_into_mesh, before decode_plate_thumbnails).
+
+void SliceEngine::assign_arrange_order()
+{
+    int order = 1;
+    for (ModelObject* obj : m_model.objects)
+        for (ModelInstance* inst : obj->instances)
+            inst->arrange_order = order++;
+}
+
+void SliceEngine::setup_extruder_params()
+{
+    int num_extruders = 0;
+    if (m_config.has("filament_diameter"))
+    {
+        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
+        if (fd)
+            num_extruders = static_cast<int>(fd->values.size());
+    }
+    Model::setExtruderParams(m_config, num_extruders);
 }
 
 // ============================================================================
@@ -1501,7 +1866,7 @@ void SliceEngine::decode_plate_thumbnails()
     }
 }
 
-void SliceEngine::decode_one_plate_thumbnail(PlateData& pd)
+static void decode_one_plate_thumbnail(PlateData& pd)
 {
     // PNG file signature (PNG spec section 5.2, first 8 bytes are fixed).
     static constexpr unsigned char PNG_SIGNATURE[] =
@@ -1635,41 +2000,44 @@ void SliceEngine::process_plate(int plate_id)
     // (which in turn requires bundle availability). Not assert-guarded —
     // structural contract, no-op in Release.
 
-    // --- Filter instances for this plate ---
-    std::set<int> identify_ids;
-    if (!filter_instances(plate_id, identify_ids))
+    // --- Identify this plate's instances and mark printability ---
+    std::set<int> identify_ids = collect_plate_instance_ids(plate_id);
+    if (!mark_printable_instances(identify_ids))
         return;
 
-    // Calculate plate dimensions and origin (done before build-volume check
-    // so the check can translate instances into plate-local coordinates).
-    // printable_area is guaranteed valid by apply_printer_official_preset().
-    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
-    BoundingBoxf bbox;
-    for (const Vec2d& pt : pa->values)
-        bbox.merge(pt);
-    Vec3d origin = setup_print_origin(plate_id, bbox.size().x(), bbox.size().y());
-
-    // --- Build volume check (uses plate-local coordinates) ---
+    // Plate origin = this plate's grid-layout offset. Shared by two downstream
+    // steps: run_build_volume_check (translates instances into plate-local
+    // coordinates) and prepare_plate_print (positions the plate in global space). Plate
+    // dimensions are derived from printable_area inside setup_print_origin.
+    Vec3d origin = setup_print_origin(plate_id);
     if (!run_build_volume_check(plate_id, identify_ids, origin))
         return;
 
     // --- Timeout check (before heavy slicing work) ---
-    if (!check_timeout(plate_id))
+    // Deliberately placed AFTER the cheap pre-stage checks
+    // (collect_plate_instance_ids / mark_printable_instances /
+    // setup_print_origin / run_build_volume_check), not at the top of
+    // process_plate. within_slicing_deadline() depends only on
+    // m_has_timeout / m_timeout_deadline (no local state), so moving it up
+    // would be data-safe -- but those pre-stages also push diagnostics
+    // (empty-plate / build-volume warnings) into m_stats. Keeping the
+    // timeout gate just before the heavy Print work means those warnings
+    // still land in the JSON alongside the SLICING_TIMEOUT error, instead
+    // of being skipped. build_statistics() runs unconditionally in run(),
+    // so the timeout error is emitted either way.
+    if (!within_slicing_deadline(plate_id))
         return;
 
     // --- Create Print ---
     Print print;
     init_print(print);
 
-    // --- Apply model ---
-    if (!apply_model(plate_id, print, origin))
+    // --- Prepare plate print ---
+    if (!prepare_plate_print(plate_id, print, origin))
         return;
 
-    // --- Assign arrange_order ---
-    assign_arrange_order();
-
-    // --- Set global extruder params & speed table ---
-    setup_extruder_params(print);
+    // --- Set print speed table (needs this plate's Print config) ---
+    setup_print_speed_table(print);
 
     // --- Validation ---
     if (!run_validation(plate_id, print))
@@ -1687,11 +2055,15 @@ void SliceEngine::process_plate(int plate_id)
         return;
 
     // --- Empty G-code layers check ---
-    if (!check_empty_gcode_layers(plate_id, slice_result))
+    if (!all_gcode_layers_valid(slice_result))
+    {
+        remove_unusable_gcode(plate_id, slice_result);  // discard: delete the unusable G-code file
+        finalise_plate_result(plate_id, slice_result); // archive: mirrors the normal path (issues left for build_statistics)
         return;
+    }
 
     // --- Post-processing ---
-    do_postprocessing(plate_id, slice_result);
+    do_postprocessing(plate_id, slice_result, Vec2d(origin.x(), origin.y()));
 
     // --- Finalise ---
     finalise_plate_result(plate_id, slice_result);
@@ -1701,26 +2073,31 @@ void SliceEngine::process_plate(int plate_id)
 // Per-plate sub-stages (in call order)
 // ============================================================================
 
-bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids)
+std::set<int> SliceEngine::collect_plate_instance_ids(int plate_id) const
 {
+    std::set<int> ids;
     for (const auto& pd : m_plate_data)
     {
         if (pd->plate_index == plate_id)
         {
             for (const auto& [object_id, inst_info] : pd->obj_inst_map)
             {
-                identify_ids.insert(inst_info.second);
+                ids.insert(inst_info.second);
             }
             break;
         }
     }
+    return ids;
+}
 
+bool SliceEngine::mark_printable_instances(const std::set<int>& plate_ids)
+{
     int count = 0;
     for (ModelObject* obj : m_model.objects)
     {
         for (ModelInstance* inst : obj->instances)
         {
-            bool on_plate = (identify_ids.find(static_cast<int>(inst->loaded_id)) != identify_ids.end());
+            bool on_plate = (plate_ids.find(static_cast<int>(inst->loaded_id)) != plate_ids.end());
             inst->printable = on_plate;
             inst->print_volume_state = on_plate ? ModelInstancePVS_Inside : ModelInstancePVS_Fully_Outside;
             if (on_plate)
@@ -1728,31 +2105,38 @@ bool SliceEngine::filter_instances(int plate_id, std::set<int>& identify_ids)
         }
     }
 
-    BOOST_LOG_TRIVIAL(info) << "Filtered model: " << count << " instances on plate " << (plate_id + 1);
+    BOOST_LOG_TRIVIAL(info) << "Marked " << count << " instances printable";
 
     if (count == 0)
     {
-        BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate " << (plate_id + 1);
+        BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate";
         return false;
     }
     return true;
 }
 
-Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id, double plate_width, double plate_depth)
+Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id)
 {
-    // Compute plate origin using the same grid layout formula as the desktop GUI
-    // (PartPlate::update_plate_layout_arrange). Each plate occupies a cell in a
-    // row-major grid with LOGICAL_PART_PLATE_GAP spacing between plates.
+    // Derive plate dimensions from printable_area. Guarded the same way as
+    // run_build_volume_check: if printable_area is absent/empty, return a zero
+    // origin -- the build-volume check short-circuits on the same condition, so
+    // the origin is never consumed in that case.
+    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.empty())
+        return Vec3d::Zero();
+    BoundingBoxf bbox;
+    for (const Vec2d& pt : pa->values)
+        bbox.merge(pt);
+    double plate_width  = bbox.size().x();
+    double plate_depth  = bbox.size().y();
+
+    // Grid-layout origin (row-major, LOGICAL_PART_PLATE_GAP spacing). Pure
+    // arithmetic lives in orca::compute_plate_origin (unit-tested); this thin
+    // wrapper only bridges m_config/m_plate_data to its arguments.
     int total_plates = static_cast<int>(m_plate_data.size());
-    int cols = compute_column_count(total_plates);
-    int row = plate_id / cols;
-    int col = plate_id % cols;
+    orca::PlateOrigin o = orca::compute_plate_origin(plate_id, total_plates, plate_width, plate_depth);
 
-    double origin_x = col * (plate_width * (1.0 + LOGICAL_PART_PLATE_GAP));
-    double origin_y = -row * (plate_depth * (1.0 + LOGICAL_PART_PLATE_GAP));
-
-    Vec3d origin(origin_x, origin_y, 0.0);
-    return origin;
+    return Vec3d(o.x, o.y, 0.0);
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)
@@ -1805,21 +2189,31 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
 
             if (inst->print_volume_state == ModelInstancePVS_Partly_Outside)
             {
+                // The instance offsets were shifted to plate-local above, so
+                // instance_bounding_box returns plate-local coordinates here.
+                BoundingBoxf3 wb = obj->instance_bounding_box(*inst);
+                push_build_volume_issues(plate_id, obj->name, wb, build_volume);
                 log_plate_message("[Pre-processing]", "ERROR", plate_id,
                                   "Object \"" + obj->name +
-                                      "\" is placed on the boundary of or exceeds the build volume.");
+                                      "\" exceeds the build volume (see issues for direction).");
                 has_partly_outside = true;
-                m_stats.issues.push_back(
-                    make_error(plate_id, "BUILD_VOLUME_PARTLY_OUTSIDE",
-                               "Object \"" + obj->name + "\" is placed on the boundary of or exceeds the build volume",
-                               obj->name));
             }
             else if (inst->print_volume_state == ModelInstancePVS_Fully_Outside)
             {
-                m_stats.issues.push_back(make_warning(
+                // Desktop blocks slicing for off-plate objects: a fully-outside
+                // instance makes on_slice_button_status disable the slice
+                // button (GLCanvas3D.cpp:2876-2877 gates on contained_min_one,
+                // which requires EVERY printable instance to be at least
+                // partly inside). The cloud engine has no "grey out and skip"
+                // UI concept, so escalate to a blocking error.
+                log_plate_message("[Pre-processing]", "ERROR", plate_id,
+                                  "Object \"" + obj->name + "\" is completely outside the build volume.");
+                has_partly_outside = true;
+                m_stats.issues.push_back(make_error(
                     plate_id, "BUILD_VOLUME_FULLY_OUTSIDE",
                     "Object \"" + obj->name + "\" is completely outside the build volume and will not be printed",
-                    obj->name));
+                    obj->name,
+                    "Move the object back onto the build plate before slicing."));
             }
         }
     }
@@ -1855,49 +2249,29 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     return true;
 }
 
-bool SliceEngine::check_timeout(int plate_id)
+void SliceEngine::push_build_volume_issues(int plate_id, const std::string& object_name,
+                                           const BoundingBoxf3& bbox, const BuildVolume& build_volume)
 {
-    if (!m_has_timeout || std::chrono::steady_clock::now() <= m_timeout_deadline)
-        return true;
-
-    BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
-    m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
-                                        "Slicing timed out. The model may be too complex. If you believe this is "
-                                        "an error, please submit an appeal for review."));
-    m_any_error = true;
-    set_error_type(EXIT_SLICING_ERROR);
-    return false;
-}
-
-void SliceEngine::init_print(Print& print)
-{
-    print.set_status_callback(
-        [&print, this](const PrintBase::SlicingStatus& s)
-        {
-            default_status_callback(s, &print, &m_cfg.cancel_file);
-        });
-    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
-}
-
-void SliceEngine::assign_arrange_order()
-{
-    int order = 1;
-    for (ModelObject* obj : m_model.objects)
-        for (ModelInstance* inst : obj->instances)
-            inst->arrange_order = order++;
-}
-
-void SliceEngine::setup_extruder_params(Print& print)
-{
-    int num_extruders = 0;
-    if (m_config.has("filament_diameter"))
-    {
-        auto fd = m_config.option<ConfigOptionFloats>("filament_diameter");
-        if (fd)
-            num_extruders = static_cast<int>(fd->values.size());
-    }
-    Model::setExtruderParams(m_config, num_extruders);
-    Model::setPrintSpeedTable(m_config, print.config());
+    // Directional subdivision of a Partly_Outside instance. The build_volume
+    // itself already concluded the instance collides with the volume boundary
+    // (calc_print_volume_state); here we classify WHICH axis, so the JSON
+    // consumer can act (raise / lower / reposition) without re-deriving it.
+    //
+    // Pure classification lives in orca::classify_build_volume_issues
+    // (unit-tested). This thin wrapper only bridges the libslic3r types
+    // (BoundingBoxf3 / BuildVolume) to the raw-double inputs the pure function
+    // expects, then folds the results into m_stats.issues.
+    const BoundingBoxf bed2d = build_volume.bounding_volume2d();
+    auto issues = orca::classify_build_volume_issues(
+        plate_id, object_name,
+        bbox.min.x(), bbox.max.x(),
+        bbox.min.y(), bbox.max.y(),
+        bbox.min.z(), bbox.max.z(),
+        build_volume.printable_height(),
+        bed2d.min.x(), bed2d.max.x(),
+        bed2d.min.y(), bed2d.max.y());
+    for (auto& issue : issues)
+        m_stats.issues.push_back(std::move(issue));
 }
 
 void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
@@ -1959,7 +2333,36 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
     }
 }
 
-bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
+bool SliceEngine::within_slicing_deadline(int plate_id)
+{
+    // Pure time comparison lives in orca::deadline_expired (unit-tested). The
+    // m_has_timeout guard is essential: with no timeout requested,
+    // m_timeout_deadline is a default (epoch) time_point and must never trigger
+    // an expiry. Sample now() once to match the original single-read semantics.
+    auto now = std::chrono::steady_clock::now();
+    if (!(m_has_timeout && orca::deadline_expired(now, m_timeout_deadline)))
+        return true;
+
+    BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
+    m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
+                                        "Slicing timed out. The model may be too complex. If you believe this is "
+                                        "an error, please submit an appeal for review."));
+    m_any_error = true;
+    set_error_type(EXIT_SLICING_ERROR);
+    return false;
+}
+
+void SliceEngine::init_print(Print& print)
+{
+    print.set_status_callback(
+        [&print, this](const PrintBase::SlicingStatus& s)
+        {
+            default_status_callback(s, &print, &m_cfg.cancel_file);
+        });
+    print.is_BBL_printer() = m_preset_bundle->is_bbl_vendor();
+}
+
+bool SliceEngine::prepare_plate_print(int plate_id, Print& print, const Vec3d& origin)
 {
     // plate_index from m_plate_data is already 0-based (import does -1 conversion)
     print.set_plate_index(plate_id);
@@ -1969,6 +2372,7 @@ bool SliceEngine::apply_model(int plate_id, Print& print, const Vec3d& origin)
     print.set_plate_origin(origin);
 
     DynamicPrintConfig merged_config = prepare_merged_config_for_plate(plate_id);
+
     print.apply(m_model, merged_config);
 
     if (print.num_object_instances() == 0)
@@ -2008,7 +2412,9 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     // AMS per-layer, height-range, vase, by-object, empty-layer).
     //
     // Work on a per-plate copy so per-plate overrides below do not leak into
-    // subsequent plates (m_config is shared across the pipeline).
+    // subsequent plates (m_config is shared across the pipeline). Key backfill
+    // and flush-matrix normalization are done once on m_config by
+    // normalize_loaded_config() before the per-plate loop.
     DynamicPrintConfig merged_config = m_config;
 
     // Apply per-plate config overrides (curr_bed_type, print_sequence, spiral_mode, etc.)
@@ -2020,7 +2426,13 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
             break;
         }
     }
+
     return merged_config;
+}
+
+void SliceEngine::setup_print_speed_table(Print& print)
+{
+    Model::setPrintSpeedTable(m_config, print.config());
 }
 
 bool SliceEngine::run_validation(int plate_id, Print& print)
@@ -2097,99 +2509,55 @@ void SliceEngine::emit_validate_warning(int plate_id, const StringObjectExceptio
     auto [obj_name, opt_hint] = format_exception_context(warning);
     BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
 
-    std::string wcode;
-    switch (warning.type)
+    // Pure classification (warning-path code table) lives in
+    // orca::classify_validate_exception (unit-tested). NOTE: the ORGANIC type
+    // escalates to error level on the warning path too.
+    auto cls = orca::classify_validate_exception(static_cast<int>(warning.type), /*is_error_path=*/false, warning.string);
+    std::string message = cls.fixed_message.empty() ? (warning.string + opt_hint) : cls.fixed_message;
+
+    if (cls.level == IssueLevel::error)
     {
-    case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-        wcode = "PRINT_VALIDATE_WARNING_FILAMENT_BED_MISMATCH";
-        break;
-    case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-        wcode = "PRINT_VALIDATE_WARNING_FILAMENT_TEMP_MISMATCH";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-        wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_SEQ";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-        wcode = "PRINT_VALIDATE_WARNING_OBJECT_COLLISION_LAYER";
-        break;
-    case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-        wcode = "PRINT_VALIDATE_WARNING_LAYER_HEIGHT_LIMIT";
-        break;
-    case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
-        m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
-            "Organic supports do not support variable layer height. "
-            "Please disable variable layer height or switch to non-organic support type.",
-            obj_name,
-            "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
+        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
+        m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
-        break;
-    default:
-        wcode = "PRINT_VALIDATE_WARNING";
-        break;
     }
-    if (!wcode.empty())
-        m_stats.issues.push_back(make_warning(plate_id, wcode, warning.string + opt_hint, obj_name));
+    else
+    {
+        m_stats.issues.push_back(make_warning(plate_id, cls.code, message, obj_name));
+    }
 }
 
 bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException& err)
 {
     auto [obj_name, opt_hint] = format_exception_context(err);
-    // STRING_EXCEPT_NOT_DEFINED (type 0) is used by the library for generic
-    // checks (e.g. exceeds-build-volume-height) that the desktop GUI treats
-    // as non-fatal warnings. Match that behaviour.
-    if (err.type == STRING_EXCEPT_NOT_DEFINED)
-    {
-        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-        if (err.string.find("Variable layer height is not supported with Organic supports") != std::string::npos)
-        {
-            m_stats.issues.push_back(make_error(plate_id, "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT",
-                "Organic supports do not support variable layer height. "
-                "Please disable variable layer height or switch to non-organic support type.",
-                obj_name,
-                "In Snapmaker Orca, disable variable layer height or change support type to default (non-organic)."));
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
-        }
-        else
-        {
-            m_stats.issues.push_back(make_warning(plate_id, "PRINT_VALIDATE_WARNING",
-                                                  err.string + opt_hint, obj_name));
-        }
-        // NOT_DEFINED never aborts slicing — falls through to subsequent checks.
-        return true;
-    }
+    // Pure classification (error-path code table, NOT_DEFINED substring match,
+    // continue/abort contract) lives in orca::classify_validate_exception
+    // (unit-tested). This thin wrapper adds logging, Issue construction and the
+    // member side effects (m_any_error / set_error_type).
+    auto cls = orca::classify_validate_exception(static_cast<int>(err.type), /*is_error_path=*/true, err.string);
 
-    BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
-    std::string ecode;
-    switch (err.type)
+    // NOT_DEFINED (continue_slicing=true) is logged at warning level, matching
+    // the original code; all other error-path types are logged at error level.
+    // (BOOST_LOG_TRIVIAL needs a literal severity name, so branch explicitly.)
+    if (cls.continue_slicing)
+        BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+    else
+        BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
+
+    std::string message = cls.fixed_message.empty() ? (err.string + opt_hint) : cls.fixed_message;
+    if (cls.level == IssueLevel::error)
     {
-    case STRING_EXCEPT_FILAMENT_NOT_MATCH_BED_TYPE:
-        ecode = "PRINT_VALIDATE_FILAMENT_BED_MISMATCH";
-        break;
-    case STRING_EXCEPT_FILAMENTS_DIFFERENT_TEMP:
-        ecode = "PRINT_VALIDATE_FILAMENT_TEMP_MISMATCH";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT:
-        ecode = "PRINT_VALIDATE_OBJECT_COLLISION_SEQ";
-        break;
-    case STRING_EXCEPT_OBJECT_COLLISION_IN_LAYER_PRINT:
-        ecode = "PRINT_VALIDATE_OBJECT_COLLISION_LAYER";
-        break;
-    case STRING_EXCEPT_LAYER_HEIGHT_EXCEEDS_LIMIT:
-        ecode = "PRINT_VALIDATE_LAYER_HEIGHT_LIMIT";
-        break;
-    case STRING_EXCEPT_ORGANIC_SUPPORT_VARIABLE_LAYER:
-        ecode = "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT";
-        break;
-    default:
-        ecode = "PRINT_VALIDATE_ERROR";
-        break;
+        std::string suggestion = cls.fixed_message.empty() ? std::string{} : orca::kOrganicFixedSuggestion;
+        m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
+        m_any_error = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
     }
-    m_stats.issues.push_back(make_error(plate_id, ecode, err.string + opt_hint, obj_name));
-    m_any_error = true;
-    set_error_type(EXIT_PREPROCESS_ERROR);
-    return false;
+    else
+    {
+        m_stats.issues.push_back(make_warning(plate_id, cls.code, message, obj_name));
+    }
+    return cls.continue_slicing;
 }
 
 bool SliceEngine::check_print_by_object(int plate_id, Print& print)
@@ -2273,8 +2641,8 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     // when it does, per-feature defaults (wall / infill filaments) affect
     // the slicing output and must be collected.
     //
-    // NOTE: Per-plate filtering relies on filter_instances(plate_id) at
-    // process_plate:1533 having marked off-plate instances printable=false.
+    // NOTE: Per-plate filtering relies on mark_printable_instances(plate_ids)
+    // in process_plate having marked off-plate instances printable=false.
     // The is_printable() guard inside this loop is the per-plate filter —
     // equivalent to desktop model_object_is_on_plate().
     bool uses_default_extruder = false;
@@ -2450,113 +2818,18 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     {
         GCodeProcessor::s_IsBBLPrinter = print.is_BBL_printer();
 
-        auto thumbnail_cb = [this](const Slic3r::ThumbnailsParams& params) -> std::vector<Slic3r::ThumbnailData>
-        {
-            std::vector<Slic3r::ThumbnailData> thumbnails;
-            const Slic3r::ThumbnailData* source = nullptr;
-            for (const auto& pd : m_plate_data)
-            {
-                if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
-                {
-                    source = &pd->plate_thumbnail;
-                    break;
-                }
-            }
-            if (!source)
-                return thumbnails;
-            for (const auto& size : params.sizes)
-                thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
-                                                      static_cast<unsigned int>(size.y())));
-            return thumbnails;
+        auto thumbnail_cb = [this](const Slic3r::ThumbnailsParams& params) {
+            return make_plate_thumbnails(params);
         };
 
         std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         result.gcode_path = exported;
 
-        // Capture the post-trim filament colours the slicer actually used (print.config()
-        // reflects the merged_config after apply, including any single-extruder remap).
-        // assemble_plate_stats reads these so the reported colour matches the G-code header
-        // instead of the raw, pre-trim m_config (whose index 0 may point at a different slot).
-        if (print.config().has("filament_colour")) {
-            const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
-            if (fc) result.filament_colours = fc->values;
-        }
-        // Capture the post-trim filament types for the same reason as colours above:
-        // the slicer applies the merged_config after single-extruder remap, so print.config()
-        // holds the type array indexed the way the G-code header is, unlike the raw m_config.
-        if (print.config().has("filament_type")) {
-            const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
-            if (ft) result.filament_types = ft->values;
-        }
-        // Capture post-trim nozzle / filament diameters / densities so downstream stats
-        // compute length/weight against the values the slicer actually used, not the raw
-        // pre-trim m_config (whose index 0 may point at a different slot after single-extruder
-        // remap). Same rationale as colours/types above.
-        if (print.config().has("nozzle_diameter")) {
-            const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
-            if (nd) result.nozzle_diameters = nd->values;
-        }
-        if (print.config().has("filament_diameter")) {
-            const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
-            if (fd) result.filament_diameters = fd->values;
-        }
-        if (print.config().has("filament_density")) {
-            const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
-            if (fden) result.filament_densities = fden->values;
-        }
-
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
 
-        // Collect PrintBase warnings with message_id-aware grading.
-        // Desktop CLI treats EmptyGcodeLayers and GcodeOverlap as
-        // CLI_SLICING_ERROR (hard exit). Cloud engine flags the plate
-        // but continues processing remaining plates.
-        auto grade_warning = [&](const PrintStateBase::Warning& w)
-        {
-            if (!w.current)
-                return;
-            auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
-            if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers)
-            {
-                result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
-                                                   "Empty G-code layers detected: " + w.message));
-                m_any_error = true;
-                set_error_type(EXIT_POSTPROCESS_ERROR);
-            }
-            else if (msg_type == PrintStateBase::SlicingGcodeOverlap)
-            {
-                result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
-                                                     "G-code overlap detected: " + w.message));
-                m_any_postprocess_warning = true;
-            }
-            else if (w.level == PrintStateBase::WarningLevel::CRITICAL)
-            {
-                result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
-            }
-            else
-            {
-                result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
-            }
-        };
-
-        for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step)
-        {
-            const auto& wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
-            for (const auto& w : wstate.warnings)
-                grade_warning(w);
-        }
-
-        for (const PrintObject* obj : print.objects())
-        {
-            for (int step = 0; step < static_cast<int>(PrintObjectStep::posCount); ++step)
-            {
-                const auto& wstate = obj->step_state_with_warnings(static_cast<PrintObjectStep>(step));
-                for (const auto& w : wstate.warnings)
-                    grade_warning(w);
-            }
-        }
+        collect_print_warnings(plate_id, print, result);
 
         const PrintStatistics& ps = print.print_statistics();
         result.total_weight = ps.total_weight;
@@ -2564,6 +2837,8 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         result.total_used_filament = ps.total_used_filament;
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
+
+        capture_post_trim_config_snapshot(print, result);
 
         return true;
     }
@@ -2596,43 +2871,233 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
     }
 }
 
-bool SliceEngine::check_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result)
+std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsParams& params) const
 {
-    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
-    // exists but is effectively empty. Skip post-processing and flag as failed.
-    bool has_empty_gcode_layers = false;
-    for (const auto& iss : slice_result.issues)
+    std::vector<ThumbnailData> thumbnails;
+    const ThumbnailData* source = nullptr;
+    for (const auto& pd : m_plate_data)
     {
-        if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
+        if (pd->plate_index == params.plate_id && pd->plate_thumbnail.is_valid())
         {
-            has_empty_gcode_layers = true;
+            source = &pd->plate_thumbnail;
             break;
         }
     }
-    if (!has_empty_gcode_layers)
-        return true;
+    if (!source)
+        return thumbnails;
+    for (const auto& size : params.sizes)
+        thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
+                                              static_cast<unsigned int>(size.y())));
+    return thumbnails;
+}
 
+void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceResult& result)
+{
+    // message_id-aware grading. Desktop CLI treats EmptyGcodeLayers and
+    // GcodeOverlap as CLI_SLICING_ERROR (hard exit). The cloud engine flags the
+    // plate but continues processing remaining plates.
+    auto grade_warning = [&](const PrintStateBase::Warning& w)
+    {
+        if (!w.current)
+            return;
+        auto msg_type = static_cast<PrintStateBase::SlicingNotificationType>(w.message_id);
+        if (msg_type == PrintStateBase::SlicingEmptyGcodeLayers)
+        {
+            result.issues.push_back(make_error(plate_id, "PRINT_EMPTY_GCODE_LAYERS",
+                                               "Empty G-code layers detected: " + w.message));
+            m_any_error = true;
+            set_error_type(EXIT_POSTPROCESS_ERROR);
+        }
+        else if (msg_type == PrintStateBase::SlicingGcodeOverlap)
+        {
+            result.issues.push_back(make_warning(plate_id, "PRINT_GCODE_OVERLAP",
+                                                 "G-code overlap detected: " + w.message));
+            m_any_postprocess_warning = true;
+        }
+        else if (w.level == PrintStateBase::WarningLevel::CRITICAL)
+        {
+            result.issues.push_back(make_warning(plate_id, "PRINT_WARNING_CRITICAL", w.message));
+        }
+        else
+        {
+            result.issues.push_back(make_warning(plate_id, "PRINT_WARNING", w.message));
+        }
+    };
+
+    for (int step = 0; step < static_cast<int>(PrintStep::psCount); ++step)
+    {
+        const auto& wstate = print.step_state_with_warnings(static_cast<PrintStep>(step));
+        for (const auto& w : wstate.warnings)
+            grade_warning(w);
+    }
+
+    for (const PrintObject* obj : print.objects())
+    {
+        for (int step = 0; step < static_cast<int>(PrintObjectStep::posCount); ++step)
+        {
+            const auto& wstate = obj->step_state_with_warnings(static_cast<PrintObjectStep>(step));
+            for (const auto& w : wstate.warnings)
+                grade_warning(w);
+        }
+    }
+}
+
+void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResult& result)
+{
+    // print.config() is the merged config the slicer actually applied: m_config plus
+    // FullPrintConfig::defaults() backfill plus per-plate overrides, normalised by
+    // print.apply(). This is the source of truth for the "; filament_colour" /
+    // "; filament_type" headers emitted in the G-code. The downstream stats/export
+    // consumers (populate_plate_data_for_export, assemble_plate_stats) run post-slice
+    // with no Print object in scope, so the only way they can read print.config() is
+    // via this snapshot. m_config itself is NOT equivalent — it predates apply(), so
+    // it lacks the backfill/override normalisation and can diverge even without any
+    // per-extruder remap. Stash by value so consumers read the slice-accurate values.
+    if (print.config().has("filament_colour")) {
+        const auto* fc = print.config().option<ConfigOptionStrings>("filament_colour");
+        if (fc) result.filament_colours = fc->values;
+    }
+    if (print.config().has("filament_type")) {
+        const auto* ft = print.config().option<ConfigOptionStrings>("filament_type");
+        if (ft) result.filament_types = ft->values;
+    }
+    // Same rationale as colours/types: snapshot the nozzle / filament diameters /
+    // densities from the post-apply print.config() so downstream stats compute
+    // length/weight against the values the slicer actually used, not the un-merged
+    // m_config.
+    if (print.config().has("nozzle_diameter")) {
+        const auto* nd = print.config().option<ConfigOptionFloats>("nozzle_diameter");
+        if (nd) result.nozzle_diameters = nd->values;
+    }
+    if (print.config().has("filament_diameter")) {
+        const auto* fd = print.config().option<ConfigOptionFloats>("filament_diameter");
+        if (fd) result.filament_diameters = fd->values;
+    }
+    if (print.config().has("filament_density")) {
+        const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
+        if (fden) result.filament_densities = fden->values;
+    }
+}
+
+// Guard: returns true when every G-code layer is valid, i.e. export_gcode
+// produced no PRINT_EMPTY_GCODE_LAYERS issue. Pure query of slice_result -- no
+// member state. File-local free function.
+static bool all_gcode_layers_valid(const PlateSliceResult& slice_result)
+{
+    // EmptyGcodeLayers means the plate has no valid layers; the G-code file
+    // exists but is effectively empty. export_gcode pushes this issue during
+    // the slice pipeline; here we only read the flag (pure query).
+    for (const auto& iss : slice_result.issues)
+    {
+        if (iss.code == "PRINT_EMPTY_GCODE_LAYERS")
+            return false;
+    }
+    return true;
+}
+
+// Remove the G-code file produced for a plate whose layers are all invalid
+// (empty-layer plate) -- the file is unusable, so delete it rather than ship it.
+// Only removes the file (plate_id is just for the log line); issues stay in
+// slice_result for finalise_plate_result + build_statistics to collect. File-local
+// free function: no member state.
+static void remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
+{
     boost::filesystem::remove(slice_result.gcode_path);
     BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
                                << ": empty G-code layers, G-code file discarded";
-    for (auto& iss : slice_result.issues)
-        m_stats.issues.push_back(std::move(iss));
-    slice_result.issues.clear();
-    slice_result.gcode_result.moves.clear();
-    slice_result.gcode_result.moves.shrink_to_fit();
-    slice_result.gcode_result.lines_ends.clear();
-    slice_result.gcode_result.lines_ends.shrink_to_fit();
-    m_plate_results[plate_id] = slice_result;
-    return false;
 }
 
-void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result)
+// Compute gcode_result.toolpath_outside, replicating desktop
+// GCodeViewer::load_toolpaths (GCodeViewer.cpp:2354-2419). On desktop this flag
+// is produced by the GUI's GCodeViewer and only consumed afterwards; the
+// headless export path never sets it, so without this port the
+// TOOLPATH_OUTSIDE check below reads a field that is always false. Two
+// headless-specific adaptations:
+//  - the bed polygon comes from the engine config (GCodeProcessor's
+//    apply_config(const PrintConfig&) at GCodeProcessor.cpp:794 fills
+//    printable_height but never printable_area);
+//  - moves are stored in global grid-layout coordinates (store_move_vertex
+//    adds the plate offset back, GCodeProcessor.cpp:4797) while the written
+//    G-code text is plate-local, so the check shifts the bounding box into
+//    plate-local space first — same as the desktop viewer renders each plate.
+static void compute_toolpath_outside(GCodeProcessorResult& gcode_result, const DynamicPrintConfig& config,
+                                     const Slic3r::Vec2d& plate_origin)
+{
+    const auto* printable_area_opt = config.option<ConfigOptionPoints>("printable_area");
+    if (!printable_area_opt || printable_area_opt->values.empty())
+        return; // no bed defined — nothing to check against
+
+    // Shift moves into plate-local coordinates (see comment above) so that
+    // both the bbox-based Rectangle branch and the per-move Circle/Convex
+    // branches of all_paths_inside see the same plate-local space. moves
+    // are visualization-only data the engine drops right after this check
+    // (finalise_plate_result), so in-place mutation is safe.
+    if (plate_origin.squaredNorm() > 0.0) {
+        const Vec3f shift(-static_cast<float>(plate_origin.x()),
+                          -static_cast<float>(plate_origin.y()), 0.0f);
+        for (auto& move : gcode_result.moves) {
+            move.position += shift;
+            // Arc interpolation points live in the same global grid space as
+            // position (store_move_vertex adds the plate offset to both), so
+            // they must shift too — otherwise arc moves on non-origin plates
+            // pull the paths bbox into neighbouring plate cells and trip
+            // TOOLPATH_OUTSIDE.
+            for (auto& p : move.interpolation_points)
+                p += shift;
+        }
+    }
+
+    // Desktop m_paths_bounding_box: Extrude moves only (custom-gcode moves and
+    // zero-width/height moves excluded), arc interpolation points included.
+    BoundingBoxf3 paths_bbox;
+    Points pts;
+    auto merge = [&paths_bbox, &pts](const Vec3f& position) {
+        paths_bbox.merge(position.cast<double>());
+        pts.emplace_back(Point(scale_(position.x()), scale_(position.y())));
+    };
+    for (const auto& move : gcode_result.moves) {
+        if (move.type == EMoveType::Extrude && move.extrusion_role != erCustom &&
+            move.width != 0.0f && move.height != 0.0f) {
+            merge(move.position);
+            if (move.is_arc_move_with_interpolation_points())
+                for (const auto& p : move.interpolation_points)
+                    if (move.width != 0.0f && move.height != 0.0f)
+                        merge(p);
+        }
+    }
+    if (paths_bbox.defined) {
+        const BuildVolume build_volume(printable_area_opt->values, gcode_result.printable_height);
+        bool contained = build_volume.all_paths_inside(gcode_result, paths_bbox);
+        if (contained && !gcode_result.bed_exclude_area.empty()) {
+            // Desktop checks the toolpath convex hull against each bed exclude
+            // area polygon (GCodeViewer.cpp:2404-2417); the exclude bounding
+            // boxes are built from 4-point groups (PartPlate.cpp:386-403).
+            const Polygon convex_hull_2d = Geometry::convex_hull(std::move(pts));
+            BoundingBoxf3 exclude_bb;
+            for (size_t i = 0; i < gcode_result.bed_exclude_area.size(); ++i) {
+                if (i % 4 == 0)
+                    exclude_bb = BoundingBoxf3();
+                const Vec2d& p = gcode_result.bed_exclude_area[i];
+                exclude_bb.merge(Vec3d(p(0), p(1), 0.0));
+                if (i % 4 == 3 &&
+                    !intersection({ exclude_bb.polygon(true) }, { convex_hull_2d }).empty()) {
+                    contained = false;
+                    break;
+                }
+            }
+        }
+        gcode_result.toolpath_outside = !contained;
+    }
+}
+
+void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, const Slic3r::Vec2d& plate_origin)
 {
     bool has_postprocess_error = false;
     bool has_postprocess_warning = false;
 
     // Toolpaths outside print volume. Desktop blocks printing via
     // is_slice_result_ready_for_print() when toolpath_outside is true.
+    compute_toolpath_outside(result.gcode_result, m_config, plate_origin);
     if (result.gcode_result.toolpath_outside)
     {
         log_plate_message("[Post-processing]", "ERROR", plate_id,
@@ -2652,10 +3117,12 @@ void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result)
                 max_z = move.position.z();
         if (max_z - result.gcode_result.printable_height >= 1e-6)
         {
-            log_plate_message("[Post-processing]", "WARNING", plate_id,
+            // Desktop shows this as ErrorType::SLICING_ERROR
+            // (GLCanvas3D.cpp:9858), blocking the print dialog.
+            log_plate_message("[Post-processing]", "ERROR", plate_id,
                               "A G-code path goes beyond the max print height.");
-            has_postprocess_warning = true;
-            Issue h = make_warning(plate_id, "TOOL_HEIGHT_OUTSIDE",
+            has_postprocess_error = true;
+            Issue h = make_error(plate_id, "TOOL_HEIGHT_OUTSIDE",
                                    "A G-code path goes beyond the max print height. "
                                    "The object may not print correctly.");
             h.z_height = static_cast<double>(max_z);
@@ -2935,7 +3402,7 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         pd->gcode_file = result.gcode_path;
         pd->is_sliced_valid = true;
         pd->printer_model_id = printer_model_id;
-        // Per-plate nozzle string: prefer the post-trim snapshot (matches the single value
+        // Per-plate nozzle string: prefer the snapshot (the post-apply print.config() value
         // the slicer actually used on this plate), fall back to the raw m_config N-slot string.
         pd->nozzle_diameters = !result.nozzle_diameters.empty()
                                    ? join_nozzles(result.nozzle_diameters)
@@ -2962,16 +3429,18 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         for (auto& info : pd->slice_filaments_info)
         {
             size_t idx = static_cast<size_t>(info.id);
-            // Prefer the post-trim types captured at slice time (result.filament_types),
-            // mirroring the colour handling above. m_config is the raw pre-trim array, whose
-            // index 0 may point at a different slot after single-extruder remap.
+            // Prefer the types captured at slice time (result.filament_types), which mirror
+            // the post-apply print.config() values written to the G-code header. m_config is
+            // the raw pre-apply array, which lacks backfill/per-plate overrides and (on a
+            // single-extruder plate) may have its index 0 point at a different slot.
             if (idx < result.filament_types.size())
                 info.type = result.filament_types[idx];
             else if (filament_types && idx < filament_types->values.size())
                 info.type = filament_types->values[idx];
-            // Use the post-trim colours captured at slice time (result.filament_colours),
-            // which match the G-code header. m_config holds the raw pre-trim array, whose
-            // index 0 may point at a different slot after single-extruder remap.
+            // Use the colours captured at slice time (result.filament_colours), which match
+            // the G-code header. m_config holds the raw pre-apply array, which lacks
+            // backfill/per-plate overrides and (on a single-extruder plate) may have its
+            // index 0 point at a different slot.
             if (idx < result.filament_colours.size())
                 info.color = result.filament_colours[idx];
             else if (filament_colors && idx < filament_colors->values.size())
@@ -3067,6 +3536,11 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 
     plate_stats.issues = result.issues;
     plate_stats.plate_count = static_cast<int>(m_plate_data.size());
+    // Diagnostic flags are meaningful regardless of plate success (a plate
+    // fails precisely BECAUSE toolpath_outside fired) — fill them before the
+    // early return, unlike the stats below which need a successful slice.
+    plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
+    plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
 
     if (!plate_stats.success)
         return;
@@ -3089,40 +3563,42 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.total_filament_g = result.total_weight;
     plate_stats.total_cost = result.total_cost;
     plate_stats.support_used = result.support_used;
-    plate_stats.toolpath_outside = result.gcode_result.toolpath_outside;
-    plate_stats.long_retraction_when_cut = result.gcode_result.long_retraction_when_cut;
 
-    // Prefer the post-trim diameters/densities captured at slice time (result.filament_*),
-    // which match what the slicer applied. gcode_result mirrors the same merged config but
-    // is kept as a fallback for paths that don't populate the snapshot (e.g. failed plates).
-    //
-    // NOTE: result.filament_diameters/densities are std::vector<double> (post-trim snapshot),
-    // while GCodeProcessorResult::filament_diameters/densities are std::vector<float>. The two
-    // cannot share one ?: branch. Downstream consumes both as `double`, so normalise to a
-    // stable vector<double> owned by a named local (avoids a dangling reference to a temporary).
-    auto pick_doubles = [](const std::vector<double>& snapshot,
-                           const std::vector<float>& gcode) -> std::vector<double> {
-        if (!snapshot.empty())
-            return snapshot;                       // copy: vector<double> -> vector<double>
-        return std::vector<double>(gcode.begin(), gcode.end());  // widen float -> double
+    // Prefer the diameters/densities captured at slice time (result.filament_*), which
+    // mirror the post-apply print.config() the slicer applied. gcode_result mirrors the
+    // same merged config but is kept as a fallback for paths that don't populate the
+    // snapshot (e.g. failed plates).
+    // Note: result.filament_* are std::vector<double> (from ConfigOptionFloats) while
+    // gcode_result.filament_* are std::vector<float> (libslic3r GCodeProcessorResult), so the
+    // snapshot-vs-fallback choice must stay as a runtime branch, not a ?: over mismatched types.
+    const auto& fd_snapshot = result.filament_diameters;        // vector<double>
+    const auto& fdens_snapshot = result.filament_densities;     // vector<double>
+    const auto& fd_fallback = result.gcode_result.filament_diameters;    // vector<float>
+    const auto& fdens_fallback = result.gcode_result.filament_densities; // vector<float>
+    bool use_snapshot = !fd_snapshot.empty() && !fdens_snapshot.empty();
+
+    // Lookup helpers: return the per-extruder diameter/density as double from whichever
+    // source is active, with an out-of-range guard (size_t idx, never negative here).
+    auto diameter_of = [&](size_t i) -> double {
+        return use_snapshot ? (i < fd_snapshot.size() ? fd_snapshot[i] : 0.0)
+                            : (i < fd_fallback.size() ? fd_fallback[i] : 0.0);
     };
-    const std::vector<double> fd    = pick_doubles(result.filament_diameters,
-                                                   result.gcode_result.filament_diameters);
-    const std::vector<double> fdens = pick_doubles(result.filament_densities,
-                                                   result.gcode_result.filament_densities);
+    auto density_of = [&](size_t i) -> double {
+        return use_snapshot ? (i < fdens_snapshot.size() ? fdens_snapshot[i] : 0.0)
+                            : (i < fdens_fallback.size() ? fdens_fallback[i] : 0.0);
+    };
 
     for (const auto& [extruder_id, volume] : result.filament_volumes)
     {
-        if (extruder_id < fd.size() && extruder_id < fdens.size())
-        {
-            double diameter = fd[extruder_id];
-            double density = fdens[extruder_id];
-            double cross_section = M_PI * 0.25 * diameter * diameter;
-            double used_m = (volume / cross_section) * 0.001;
-            double used_g = volume * density * 0.001;
-            plate_stats.filament_used_m[extruder_id] = used_m;
-            plate_stats.filament_used_g[extruder_id] = used_g;
-        }
+        double diameter = diameter_of(extruder_id);
+        double density = density_of(extruder_id);
+        if (diameter <= 0.0)
+            continue;
+        double cross_section = M_PI * 0.25 * diameter * diameter;
+        double used_m = (volume / cross_section) * 0.001;
+        double used_g = volume * density * 0.001;
+        plate_stats.filament_used_m[extruder_id] = used_m;
+        plate_stats.filament_used_g[extruder_id] = used_g;
     }
 
     double total_support_m = 0.0, total_support_g = 0.0;
@@ -3134,12 +3610,13 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     {
         for (const auto& [extruder_id, volume] : volumes)
         {
-            if (extruder_id < fd.size() && extruder_id < fdens.size())
-            {
-                double cross_section = M_PI * 0.25 * fd[extruder_id] * fd[extruder_id];
-                m_acc += (volume / cross_section) * 0.001;
-                g_acc += volume * fdens[extruder_id] * 0.001;
-            }
+            double diameter = diameter_of(extruder_id);
+            if (diameter <= 0.0)
+                continue;
+            double density = density_of(extruder_id);
+            double cross_section = M_PI * 0.25 * diameter * diameter;
+            m_acc += (volume / cross_section) * 0.001;
+            g_acc += volume * density * 0.001;
         }
     };
     accumulate(ps.support_volumes_per_extruder, total_support_m, total_support_g);
@@ -3151,9 +3628,9 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.model_filament_g =
         plate_stats.total_filament_g - total_support_g - total_flush_g - total_wipe_tower_g;
 
-    // Prefer the post-trim nozzle diameters captured at slice time; fall back to the raw
-    // m_config (which on a single-extruder plate still has N slots) for paths that never
-    // populated the snapshot.
+    // Prefer the nozzle diameters captured at slice time (the post-apply print.config()
+    // values); fall back to the raw m_config (which still has N slots) for paths that
+    // never populated the snapshot.
     if (!result.nozzle_diameters.empty())
     {
         plate_stats.nozzle_diameters = result.nozzle_diameters;
@@ -3171,16 +3648,16 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
         m_config.has("filament_colour") ? m_config.option<ConfigOptionStrings>("filament_colour") : nullptr;
 
     // Filament colours must match what was actually used at slice time, not the raw
-    // m_config.  prepare_merged_config_for_plate may trim a multi-filament config down
-    // to the single extruder a plate uses (remap slot keep_idx → 0), so m_config's
-    // index 0 can point at a different colour than the one in the emitted G-code.
-    // result.filament_colours holds the post-trim values captured in export_gcode from
-    // print.config() (which mirrors the merged_config the slicer really applied) — read
-    // from there first, fall back to m_config.
+    // m_config. prepare_merged_config_for_plate builds the per-plate merged config
+    // (m_config + backfill + per-plate override, plus a possible single-extruder remap
+    // that keeps slot keep_idx → 0), so m_config's index 0 can point at a different
+    // colour than the one in the emitted G-code. result.filament_colours holds the
+    // post-apply values captured in export_gcode from print.config() — read from there
+    // first, fall back to m_config.
     const auto& result_colors = result.filament_colours;
-    // Post-trim filament types captured at slice time — same rationale as the colours:
-    // m_config's index 0 may point at a different slot after single-extruder remap, so read
-    // the values that actually went into the G-code first, fall back to m_config.
+    // Filament types captured at slice time — same rationale as the colours: m_config's
+    // index 0 may point at a different slot after single-extruder remap, so read the
+    // values that actually went into the G-code first, fall back to m_config.
     const auto& result_types = result.filament_types;
 
     for (const auto& [extruder_id, used_g] : plate_stats.filament_used_g)
@@ -3193,16 +3670,16 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 
         const size_t ext_sz = static_cast<size_t>(extruder_id);
         if (ext_sz < result_types.size())
-            detail.type = result_types[extruder_id];
+            detail.type = result_types[ext_sz];
         else if (ftypes && ext_sz < ftypes->values.size())
-            detail.type = ftypes->values[extruder_id];
+            detail.type = ftypes->values[ext_sz];
         else
             detail.type = "Unknown";
 
         if (ext_sz < result_colors.size())
-            detail.color = result_colors[extruder_id];
+            detail.color = result_colors[ext_sz];
         else if (fcolors && ext_sz < fcolors->values.size())
-            detail.color = fcolors->values[extruder_id];
+            detail.color = fcolors->values[ext_sz];
         else
             detail.color = "#000000";
 

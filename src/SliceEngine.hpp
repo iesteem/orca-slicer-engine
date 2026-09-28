@@ -67,6 +67,68 @@ public:
     // m_cfg.skip_preset_substitution is set.
     bool apply_preset_substitution();
 
+    // One-shot normalization of m_config, run once per pipeline (in every entry
+    // point) after the preset-substitution stage — including when substitution
+    // was skipped, because both fixes guard against libslic3r SEGVs and are
+    // independent of the substitution policy:
+    //  (a) backfill PrintConfig keys the 3MF / preset chain left undefined;
+    //  (b) repair flush_volumes_matrix / flush_volumes_vector dimensions
+    //      (normalize_flush_volumes_matrix).
+    // Both are global (plate-agnostic) and idempotent, so running them once on
+    // m_config — instead of per-plate inside prepare_merged_config_for_plate —
+    // also lets earlier readers (setup_extruder_params, per-plate checks) see
+    // the normalized config.
+    void normalize_loaded_config();
+
+    // Run only the load + preset-substitution prefix of the pipeline (load_3mf,
+    // validate_printer_model, collect_config_warnings, load_system_presets,
+    // apply_preset_substitution), then stop — no geometry
+    // checks, no slicing, no export. Intended for config-only inspection / cloud
+    // preflight: after it returns, m_config holds the substitution result and is
+    // readable via config(). Returns false on any failure in the prefix (same
+    // per-step error handling as run()). The call sequence MUST stay in sync
+    // with the prefix of run(); see SliceEngine.cpp.
+    bool run_preset_substitution_only();
+
+    // Run the preset-substitution prefix AND the geometry-half preprocessing
+    // prefix of run() (validate_input, run_geometry_checks, bake_instance_z_into_mesh,
+    // assign_arrange_order, setup_extruder_params), then stop — no slicing, no
+    // export. Intended for integration testing the geometry preprocessing
+    // stages: after it returns, m_model holds the post-preprocessing geometry
+    // (Z baked into mesh, arrange_order assigned) and is readable via model().
+    // Returns false on any failure in the prefix (same per-step error handling
+    // as run()). The call sequence MUST stay in sync with run(); see
+    // SliceEngine.cpp.
+    bool run_geometry_preprocess_only();
+
+    // Read-only access to the merged config (final after the
+    // preset-substitution stage plus normalize_loaded_config; run() leaves it
+    // unchanged past that point).
+    const Slic3r::DynamicPrintConfig& config() const
+    {
+        return m_config;
+    }
+
+    // Read-only access to the loaded model. Geometry-half stages mutate it in
+    // place: bake_instance_z_into_mesh moves instance Z into mesh vertices,
+    // assign_arrange_order stamps every instance. Final after
+    // run_geometry_preprocess_only() / run(). Exposed for integration tests that
+    // inspect the resulting model state.
+    const Slic3r::Model& model() const
+    {
+        return m_model;
+    }
+
+    // Name of the official process preset that apply_process_official_preset
+    // most recently resolved and applied. Empty if none was found/applied.
+    // Unlike filament (which writes the resolved name back to
+    // filament_settings_id), the process path keeps the name in a local, so
+    // expose it here for diagnostics / testing.
+    const std::string& last_process_preset_name() const
+    {
+        return m_last_process_preset_name;
+    }
+
     // Results after run()
     const SliceOutputStats& stats() const
     {
@@ -134,10 +196,12 @@ private:
     // directory into m_preset_bundle. Must be called before preset substitution.
     void load_system_presets();
 
-    // Load project-embedded presets (read from the .3mf input during
-    // load_3mf) into m_preset_bundle, alongside the system presets loaded
-    // by load_system_presets. Never blocks — load failures only log a warning.
-    void load_project_presets();
+    // Unified "is this an official Snapmaker preset" check for the printer,
+    // filament, and process substitution paths. Official = vendor is the
+    // Snapmaker bundle. Project-embedded presets (no vendor / other vendor)
+    // and other vendors' system presets are NOT official — they may be
+    // waypoints on an inheritance chain but must never be applied wholesale.
+    static bool is_official_preset(const Slic3r::Preset& p);
 
     // Strip all user-supplied content from m_config: G-code keys (machine +
     // process + filament level), user-authored text (printer_notes /
@@ -210,8 +274,21 @@ private:
     // Checks plate data integrity and ensures required config keys are present.
     bool validate_input();
 
-    // Drop any floating objects onto the print bed by adjusting instance Z offsets.
-    void ensure_models_on_bed();
+    // Relocate each object's Z information from instance space into mesh-vertex
+    // space so it survives libslic3r's Print::apply (which discards instance Z).
+    // Also applies the desktop "intentional sinking" rule (single-part
+    // straddling preserved, fully-buried raised). See SliceEngine.cpp for the
+    // full rationale and the per-instance rotation assumption.
+    void bake_instance_z_into_mesh();
+
+    // Assign sequential arrange_order values to all model instances. Run-once
+    // (global, plate-agnostic) -- called from run() before the per-plate loop.
+    void assign_arrange_order();
+
+    // Count filaments from config and populate Model::extruderParamsMap
+    // (per-extruder material / bed / end temperatures). Config-only, no Print
+    // dependency. Run-once from run() before the per-plate loop.
+    void setup_extruder_params();
 
     /**
      * @brief Load and decode plate thumbnails from disk for the current plate set.
@@ -261,13 +338,6 @@ private:
      */
     void decode_plate_thumbnails();
 
-    // Decode a single plate's thumbnail PNG from disk into
-    // PlateData::plate_thumbnail.pixels. Runs the full trust-boundary
-    // validation chain (path extension, canonicalisation under system temp
-    // root, size bounds, PNG magic, decode). On any failure, leaves
-    // plate_thumbnail in its prior empty state. Used by decode_plate_thumbnails.
-    void decode_one_plate_thumbnail(Slic3r::PlateData& pd);
-
     // Run the full slicing pipeline for a single plate: filter instances, check
     // build volume, slice, export G-code, and post-process. Results are stored
     // in m_plate_results[plate_id].
@@ -307,13 +377,20 @@ private:
 
     // --- Per-plate sub-stages (in call order) ---
 
-    // Filter model instances: mark those belonging to the given plate as
-    // printable, insert their loaded_id into identify_ids. Returns false if
-    // the plate has no printable instances (empty plate).
-    bool filter_instances(int plate_id, std::set<int>& identify_ids);
+    // Collect the loaded_id of every model instance that belongs to the given
+    // plate (pure query; does not modify the model).
+    std::set<int> collect_plate_instance_ids(int plate_id) const;
+
+    // Mark every model instance printable according to whether its loaded_id is
+    // in plate_ids (on-plate -> printable + Inside, off-plate -> not printable +
+    // Fully_Outside). Returns false if no instance is on the plate (empty plate).
+    bool mark_printable_instances(const std::set<int>& plate_ids);
 
     // Compute the global coordinate origin for a plate in the grid layout.
-    Slic3r::Vec3d setup_print_origin(int plate_id, double plate_width, double plate_depth);
+    // Plate dimensions are derived internally from m_config "printable_area";
+    // returns Zero if printable_area is absent/empty (the build-volume check
+    // short-circuits on the same condition, so the origin is unused then).
+    Slic3r::Vec3d setup_print_origin(int plate_id);
 
     // Check all instances on this plate against the build volume: flag objects
     // outside/partly outside the printable area, and check spiral-lift
@@ -321,9 +398,20 @@ private:
     // (fatal error).
     bool run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Slic3r::Vec3d& origin);
 
-    // Check whether the global slicing timeout has been exceeded. Returns false
-    // if timed out (fatal error), after logging and pushing SLICING_TIMEOUT.
-    bool check_timeout(int plate_id);
+    // Subdivide a partly-outside instance's violation into directional error
+    // codes (TOO_HIGH / OUTSIDE_XY) using its plate-local world
+    // bounding box. `bbox` must already be in plate-local coordinates (plate
+    // origin subtracted). One object may yield multiple issues.
+    void push_build_volume_issues(int plate_id, const std::string& object_name,
+                                  const Slic3r::BoundingBoxf3& bbox, const Slic3r::BuildVolume& build_volume);
+
+    // Guard: returns true while the global slicing deadline has not expired
+    // (caller may proceed with heavy slicing). Returns false once it has --
+    // logging SLICING_TIMEOUT, pushing the issue, and setting the exit code
+    // before returning. Used as a precondition check, hence the question-style
+    // name and false-on-expiry convention shared with the other process_plate
+    // sub-steps.
+    bool within_slicing_deadline(int plate_id);
 
     // Create a Print object for the plate: set status callback and BBL flag.
     // Returns a configured Print ready for model application.
@@ -337,21 +425,22 @@ private:
     void check_spiral_lift_near_boundary(int plate_id, const Slic3r::BuildVolume& build_volume,
                                          const std::set<int>& identify_ids);
 
-    // Set plate index and origin on the Print, build the merged config, and
-    // apply the model objects. Returns false if no printable objects result.
-    bool apply_model(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
+    // Prepare this plate's Print: stamp plate index + grid-layout origin, build
+    // the per-plate merged config, and apply the model objects. Returns false if
+    // no printable objects result.
+    bool prepare_plate_print(int plate_id, Slic3r::Print& print, const Slic3r::Vec3d& origin);
 
-    // Assign sequential arrange_order values to all model instances.
-    void assign_arrange_order();
-
-    // Set global extruder parameters and print speed table from config.
-    void setup_extruder_params(Slic3r::Print& print);
+    // Populate Model::printSpeedMap (per-structure speeds, bed poly, exclude
+    // areas) from config; needs the plate's Print config for bed_exclude_area.
+    void setup_print_speed_table(Slic3r::Print& print);
 
     // Build the per-plate merged DynamicPrintConfig consumed by print.apply().
     // Starts from m_config and layers per-plate config overrides (curr_bed_type,
-    // print_sequence, …) from PlateData on top. Multi-extruder / wipe-tower
-    // handling is delegated to libslic3r's ToolOrdering — no filament trimming
-    // is performed here (see prepare_merged_config_for_plate impl for rationale).
+    // print_sequence, …) from PlateData on top. Key backfill and flush-matrix
+    // normalization are NOT done here — they are global and run once in
+    // normalize_loaded_config() before the per-plate loop. Multi-extruder /
+    // wipe-tower handling is delegated to libslic3r's ToolOrdering — no
+    // filament trimming is performed here (see impl for rationale).
     Slic3r::DynamicPrintConfig prepare_merged_config_for_plate(int plate_id);
 
     // Run Print::validate and classify all resulting warnings and errors into
@@ -394,33 +483,42 @@ private:
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
 
-    // Check for the EmptyGcodeLayers condition: the G-code file exists but
-    // contains no valid layers. On detection, removes the empty file, drains
-    // per-plate issues into m_stats, and stores the result. Returns false when
-    // empty layers are found (caller should abort); true for normal results.
-    bool check_empty_gcode_layers(int plate_id, PlateSliceResult& slice_result);
+    // Build the thumbnail list for a plate G-code export request: locate this
+    // plate's loaded thumbnail in m_plate_data and resize it to each requested
+    // size. Returns an empty vector if the plate has no valid thumbnail.
+    std::vector<Slic3r::ThumbnailData> make_plate_thumbnails(const Slic3r::ThumbnailsParams& params) const;
+
+    // Collect PrintBase slicing warnings (Print + per-PrintObject step states) into
+    // result.issues with message_id-aware grading: EmptyGcodeLayers -> error,
+    // GcodeOverlap -> warning, others by level. Desktop CLI hard-exits on
+    // EmptyGcodeLayers; the cloud engine flags the plate but keeps going.
+    void collect_print_warnings(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
+
+    // Snapshot filament colour/type, nozzle diameter, filament diameter/density from
+    // print.config() into result. print.config() is the merged config the slicer actually
+    // applied (m_config + backfill + per-plate override, normalised by print.apply()), so
+    // these values match the gcode headers and let downstream stats — which run post-slice
+    // with no Print in scope — read slice-accurate values instead of the un-merged m_config.
+    void capture_post_trim_config_snapshot(Slic3r::Print& print, PlateSliceResult& result);
 
     // Post-slicing analysis: extract filament usage, compute cost, embed
-    // thumbnails, and collect per-plate issues into result.issues.
-    void do_postprocessing(int plate_id, PlateSliceResult& result);
+    // thumbnails, and collect per-plate issues into result.issues. plate_origin
+    // (grid-layout offset of this plate) shifts G-code visualization moves
+    // into plate-local space for the toolpath-outside check.
+    void do_postprocessing(int plate_id, PlateSliceResult& result, const Slic3r::Vec2d& plate_origin);
 
     // Free G-code visualization data (moves/lines_ends) and store the result
     // into m_plate_results. Must be called after post-processing for each plate.
     void finalise_plate_result(int plate_id, PlateSliceResult& result);
 
-    // --- State ---
+    // --- Input (frozen at construction) ---
     EngineConfig m_cfg;
     std::string m_output_path;
-    SliceOutputStats m_stats;
-    std::chrono::steady_clock::time_point m_timeout_deadline;
-    bool m_has_timeout = false;
+    // Reference: temp G-code files are tracked here so the caller can clean them
+    // up; the engine appends, the caller owns the storage.
     std::vector<std::string>& m_temp_files;
-    std::map<int, PlateSliceResult> m_plate_results;
-    bool m_any_error = false;
-    bool m_any_postprocess_warning = false;
-    int m_error_type = EXIT_OK; // most severe exit code encountered
 
-    // Loaded data
+    // --- Loaded model & config (filled by load_3mf) ---
     Slic3r::Model m_model;
     Slic3r::DynamicPrintConfig m_config;
     Slic3r::ConfigSubstitutionContext m_config_substitutions{Slic3r::ForwardCompatibilitySubstitutionRule::Enable};
@@ -433,7 +531,23 @@ private:
     bool m_is_bbl_3mf = false;
     Slic3r::Semver m_file_version;
 
-    // Preset validation (requires system profiles at resources_dir/profiles/)
+    // --- Preset system (loaded from resources/profiles/) ---
     std::unique_ptr<Slic3r::PresetBundle> m_preset_bundle;
     bool m_presets_available = false;
+    std::string m_last_process_preset_name; // set by apply_process_official_preset
+
+    // --- Per-plate results (produced during slicing) ---
+    std::map<int, PlateSliceResult> m_plate_results;
+
+    // --- Statistics & diagnostics (aggregated for JSON output) ---
+    SliceOutputStats m_stats;
+
+    // --- Run control: timeout ---
+    std::chrono::steady_clock::time_point m_timeout_deadline;
+    bool m_has_timeout = false;
+
+    // --- Run control: error & exit code ---
+    bool m_any_error = false;
+    bool m_any_postprocess_warning = false;
+    int m_error_type = EXIT_OK; // most severe exit code encountered
 };

@@ -50,8 +50,8 @@ std::string PresetRollback::getFilamentVendor(const DynamicPrintConfig& config, 
 //
 // Nozzle match: via filament's compatible_printers → target printer preset → nozzle_diameter numeric comparison.
 
-// 通过 filament 的 compatible_printers，筛出目标机型的 printer，
-// 读取 printer 的 nozzle_diameter 与目标值做 ε 比较。
+// Use the filament's compatible_printers to filter down to the target printer,
+// read its nozzle_diameter, and compare against the target value (epsilon test).
 static bool filament_supports_nozzle(const PresetBundle& bundle, const Preset& filament, double target_nozzle,
                                      const std::string& printer_model)
 {

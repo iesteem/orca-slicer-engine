@@ -8,9 +8,9 @@
  *   - make_tip()     — verifies level, empty suggestion, empty object_name
  */
 
-#include <catch2/catch_all.hpp>
+#include <catch_amalgamated.hpp>
 
-#include "Issue.hpp"
+#include "Types.hpp"
 
 // ============================================================================
 // make_error
@@ -18,7 +18,7 @@
 
 TEST_CASE("make_error: basic fields", "[types][issue]") {
     Issue issue = make_error(1, "TEST_ERR", "A test error occurred");
-    CHECK(issue.level    == "error");
+    CHECK(issue.level    == IssueLevel::error);
     CHECK(issue.plate_id == 1);
     CHECK(issue.code     == "TEST_ERR");
     CHECK(issue.message  == "A test error occurred");
@@ -32,7 +32,7 @@ TEST_CASE("make_error: with object name and suggestion", "[types][issue]") {
                              "Overhang angle exceeds limit",
                              "MyObject",
                              "Add supports or reduce overhang angle");
-    CHECK(issue.level       == "error");
+    CHECK(issue.level       == IssueLevel::error);
     CHECK(issue.plate_id    == 3);
     CHECK(issue.code        == "OVERHANG");
     CHECK(issue.object_name == "MyObject");
@@ -51,7 +51,7 @@ TEST_CASE("make_error: global plate_id is -1", "[types][issue]") {
 
 TEST_CASE("make_warning: basic fields", "[types][issue]") {
     Issue issue = make_warning(2, "TEMP_WARN", "Temperature may be too high");
-    CHECK(issue.level    == "warning");
+    CHECK(issue.level    == IssueLevel::warning);
     CHECK(issue.plate_id == 2);
     CHECK(issue.code     == "TEMP_WARN");
     CHECK(issue.z_height == -1.0);
@@ -60,7 +60,7 @@ TEST_CASE("make_warning: basic fields", "[types][issue]") {
 TEST_CASE("make_warning: with optional fields", "[types][issue]") {
     Issue issue = make_warning(0, "SPEED", "Print speed exceeds recommended",
                                "Base", "Reduce speed");
-    CHECK(issue.level       == "warning");
+    CHECK(issue.level       == IssueLevel::warning);
     CHECK(issue.object_name == "Base");
     CHECK(issue.suggestion  == "Reduce speed");
 }
@@ -71,7 +71,7 @@ TEST_CASE("make_warning: with optional fields", "[types][issue]") {
 
 TEST_CASE("make_tip: basic fields", "[types][issue]") {
     Issue issue = make_tip(0, "TIP_001", "Consider using a brim");
-    CHECK(issue.level    == "tip");
+    CHECK(issue.level    == IssueLevel::tip);
     CHECK(issue.plate_id == 0);
     CHECK(issue.code     == "TIP_001");
     CHECK(issue.message  == "Consider using a brim");
