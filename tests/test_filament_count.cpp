@@ -42,7 +42,6 @@ EngineRun run_on(const std::string& input_file, const char* tag)
 
     EngineConfig cfg;
     cfg.input_file = input_file;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = std::string("/tmp/orca_test_fc_") + tag;

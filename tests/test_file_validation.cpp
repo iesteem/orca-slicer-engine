@@ -42,7 +42,6 @@ EngineRun run_on(const std::string& input_file)
 
     EngineConfig cfg;
     cfg.input_file = input_file;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
 

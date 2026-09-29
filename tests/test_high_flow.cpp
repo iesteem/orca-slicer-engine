@@ -130,7 +130,6 @@ TEST_CASE("High-flow variant reaches G-code feedrates (whitelist fixture)", "[in
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = "/tmp/orca_test_hf_whitelist";
@@ -202,7 +201,6 @@ TEST_CASE("Auto-brim header echo preserves project value; motion stays algorithm
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = "/tmp/orca_test_brim_echo";
@@ -256,7 +254,6 @@ TEST_CASE("Nozzle volume type survives printer preset substitution", "[integrati
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = "/tmp/orca_test_nvt_echo";
@@ -309,7 +306,6 @@ TEST_CASE("Output path relocation is surfaced, not silent", "[integration][slice
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = "/tmp/orca_test_relocate";

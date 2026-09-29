@@ -58,7 +58,6 @@ std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag)
 
     EngineConfig cfg;
     cfg.input_file = fixture_path;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = base;
@@ -88,7 +87,6 @@ std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag,
 
     EngineConfig cfg;
     cfg.input_file = fixture_path;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = base;

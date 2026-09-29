@@ -112,8 +112,6 @@ static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& e
             cfg.log_path = j["log_path"].get<std::string>();
         if (j.contains("json_output_path"))
             cfg.json_output_path = j["json_output_path"].get<std::string>();
-        if (j.contains("skip_preset_substitution"))
-            cfg.skip_preset_substitution = j["skip_preset_substitution"].get<bool>();
 
         // plate_id N > 0 selects exactly one plate (1-based); the engine's
         // single_plate mode drives output naming and per-plate processing.

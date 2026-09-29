@@ -5,7 +5,8 @@
  *
  * Covers defects found in the 2026-09-16 full review:
  *   - #18  single_plate never wired: plate_id in params_json was ignored
- *   - (N3) skip_preset_substitution + missing presets crashed (P-09)
+ *   - (N3) missing presets must fail cleanly, never SIGSEGV (P-09); the
+ *          deprecated skip_preset_substitution JSON key must be ignored
  *   - (C)  parse_params accepted negative plate_id / timeout / max_size_mb
  *          and silently mapped unknown format to gcode.3mf
  *   - (C)  add_log_file_sink accumulated one sink per slic3r_slice call
@@ -128,13 +129,15 @@ TEST_CASE("C API: plate_id=2 selects plate 2, not plate 1", "[integration][capi]
 }
 
 // ============================================================================
-// (N3) skip_preset_substitution must NOT skip the "presets failed to load"
-// hard precondition. With an empty resources dir the bundle is null; the
-// engine must fail cleanly with PRESETS_MISSING (exit 6) instead of crashing
-// in init_print (P-09: gdb-confirmed SIGSEGV chain).
+// (N3) A missing-preset load must fail cleanly with PRESETS_MISSING (exit 6)
+// instead of crashing in init_print (P-09: gdb-confirmed SIGSEGV chain, back
+// when --skip-preset-substitution bypassed the load check). The params JSON
+// still carries the now-removed skip_preset_substitution key on purpose:
+// parse_params must silently ignore unknown keys so callers that used the
+// deprecated flag keep working (no crash, no args error).
 // ============================================================================
 
-TEST_CASE("C API: skip_preset_substitution with missing presets fails cleanly (P-09)", "[integration][capi][presets]")
+TEST_CASE("C API: missing presets fails cleanly; deprecated skip_preset_substitution key ignored (P-09)", "[integration][capi][presets]")
 {
     const std::string empty_res = "/tmp/orca_capi_empty_res";
     boost::system::error_code ec;
@@ -145,9 +148,10 @@ TEST_CASE("C API: skip_preset_substitution with missing presets fails cleanly (P
 
     const char* params = R"({"skip_preset_substitution":true,"log_path":"/tmp/orca_capi_p09.log"})";
     char stats[32768] = {0};
-    // If the defect is present this call SIGSEGVs and the whole test binary
-    // dies; the REQUIREs below simply never run. Surviving to assert rc==6 is
-    // the regression contract.
+    // If the P-09 defect were present this call SIGSEGVs and the whole test
+    // binary dies; the REQUIREs below simply never run. Surviving to assert
+    // rc==6 is the regression contract. An unknown JSON key that is NOT
+    // silently ignored would surface as SLIC3R_ERR_ARGS here.
     int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_p09", params, stats, sizeof(stats));
 
     REQUIRE(rc == SLIC3R_ERR_PREPROCESS);

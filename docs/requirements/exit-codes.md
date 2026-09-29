@@ -43,7 +43,7 @@
 
 | Code | Level | 说明 |
 |---|---|---|
-| PRESETS_MISSING | error | system presets 加载失败（默认路径干净失败；配 --skip-preset-substitution 会崩，见 P-09） |
+| PRESETS_MISSING | error | system presets 加载失败（干净失败；历史上配 --skip-preset-substitution 会崩，见 P-09，该参数已移除） |
 | PROCESS_SUBSTITUTED / PROCESS_NOT_SUBSTITUTED | mixed | 工艺预设替换结果 |
 | PRINTER_SUBSTITUTED / PRINTER_PRESET_NOT_APPLIED / PRINTER_PRESET_LOAD_ERROR | mixed | 打印机预设 |
 | PRINTER_MODEL_MISSING / PRINTER_MODEL_UNSUPPORTED | error | 非 Snapmaker U1 拒绝 |

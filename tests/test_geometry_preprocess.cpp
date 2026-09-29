@@ -56,10 +56,11 @@ static const char* kResources = ORCA_TEST_RESOURCES;
 //   - Z < 0  (intentional sinking): preserved               -> min_z < 0
 //   - partial sink (object straddles z=0): preserved         -> min_z < 0 < max_z
 //
-// Each sub-case is driven with skip_preset_substitution=true to isolate the
-// geometry stage. Assertions are sign/interval invariants derived from the
-// original instance Z (read from the 3MF transform), NOT from fixture-specific
-// dimensions — so they stay valid across model sizes.
+// Assertions are sign/interval invariants derived from the original instance Z
+// (read from the 3MF transform), NOT from fixture-specific dimensions — so they
+// stay valid across model sizes and across the full production config path
+// (preset substitution included: these fixtures embed official preset names,
+// making substitution a near-identity rewrite).
 // ============================================================================
 
 namespace {
@@ -73,7 +74,6 @@ void run_preprocess_on(SliceEngine*& out_engine, const char* fixture_path,
 
     EngineConfig cfg;
     cfg.input_file = fixture_path;
-    cfg.skip_preset_substitution = true;  // isolate geometry stage
     cfg.temp_dir = "/tmp";
 
     engine_storage = std::make_unique<SliceEngine>(cfg, temp_files);
@@ -218,8 +218,8 @@ TEST_CASE("assign_arrange_order stamps monotonic 1-based ordering", "[integratio
 // map has no public getter, so its CONTENT cannot be asserted from outside
 // (NOT VERIFIED). The real value of this case is a no-crash guard: extruder-
 // count mismatches have caused SIGSEGVs before ([[mushroom-toolordering-sigsegv]],
-// [[modifier-extruder-trim-bug]]). Running the full substitution path
-// (skip_preset_substitution=false) then setup_extruder_params without crashing
+// [[modifier-extruder-trim-bug]]). Running the full production path (preset
+// substitution included) then setup_extruder_params without crashing
 // is a meaningful regression signal even though the map itself is unchecked.
 // ============================================================================
 TEST_CASE("setup_extruder_params derives extruder count from filament_diameter", "[integration][geom][extruder]")
@@ -229,7 +229,6 @@ TEST_CASE("setup_extruder_params derives extruder count from filament_diameter",
 
     EngineConfig cfg;
     cfg.input_file = kFixture;
-    cfg.skip_preset_substitution = false;
     cfg.temp_dir = "/tmp";
 
     std::vector<std::string> temp_files;

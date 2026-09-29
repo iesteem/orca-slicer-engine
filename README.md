@@ -85,9 +85,6 @@ orca-slice-engine <input.3mf> [options]
   --cancel-file <file>  Watchdog file for external cancellation
   --log [file]          Log file path (default: auto-derived from output)
   -j, --json [file]     JSON statistics output path (default: auto-derived)
-  --skip-preset-substitution
-                        Skip official preset enforcement (preset LOAD failures
-                        still abort: exit 6 PRESETS_MISSING)
   -v, --verbose         Verbose output
   -h, --help            Show this help
 ```

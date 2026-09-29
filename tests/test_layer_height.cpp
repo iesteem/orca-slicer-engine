@@ -45,7 +45,6 @@ EngineRun slice_case(int n)
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/layer_height/case" + std::to_string(n) + ".3mf";
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = std::string("/tmp/orca_test_lh_case") + std::to_string(n);

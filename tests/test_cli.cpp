@@ -195,3 +195,25 @@ TEST_CASE("CLI: -p 1 -f gcode slices one plate into one .gcode", "[integration][
     rm("/tmp/orca_cli_p1.log");
     rm("/tmp/orca_cli_capture.txt");
 }
+
+// ============================================================================
+// Deprecated --skip-preset-substitution flag — removed 2026-09-29. main.c
+// silently ignores unknown options, so callers still passing the flag must get
+// a normal slice (exit 0, output produced): the flag is dead weight, never an
+// error. Official preset substitution runs as always.
+// ============================================================================
+
+TEST_CASE("CLI: deprecated --skip-preset-substitution silently ignored, slice proceeds", "[integration][cli][deprecated]")
+{
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
+                          + "\" -o /tmp/orca_cli_dep --skip-preset-substitution");
+    INFO(r.out);
+    REQUIRE(r.exited);
+    REQUIRE(r.exit_code == 0);
+    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_dep.gcode.3mf"));
+
+    rm("/tmp/orca_cli_dep.gcode.3mf");
+    rm("/tmp/orca_cli_dep.json");
+    rm("/tmp/orca_cli_dep.log");
+    rm("/tmp/orca_cli_capture.txt");
+}

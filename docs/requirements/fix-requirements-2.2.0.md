@@ -54,6 +54,8 @@
 - **背景**：06 在 `--skip-preset-substitution` 下系统预设加载失败仍继续，后续 is_bbl_vendor/get_current_vendor_type 解引用空配置 → SIGSEGV（实测 rc=139 core dump，所有输入必崩）。修复 95a2246（N3，判例 P-09）。
 - **需求**：load_system_presets 成功与否必须无条件门控后续流程；skip 开关只跳过替换逻辑，不得跳过预设可用性校验；失败路径必须输出结构化 JSON（PRESETS_MISSING）与 rc=6。
 - **验收**：`--skip-preset-substitution -r <空目录>` → rc=6 + PRESETS_MISSING + JSON 可解析（06 rc=139 无输出）。
+- **备注（2026-09-29）**：`--skip-preset-substitution` 参数已整体移除；硬门控需求仍然有效。验收命令中的 flag 现被静默忽略（门控行为等价，回归测试 tests/test_c_api.cpp P-09 用例继续覆盖）。
+
 
 ### REQ-10 CLI/C API 边界参数校验
 - **背景**：06 用 atoi 解析数值（`-t abc`→0=静默无超时）、未知 format 静默按默认执行、负 plate_id 照收（三项实测均 rc=0 静默继续）。修复 95a2246。

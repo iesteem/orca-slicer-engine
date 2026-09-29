@@ -21,7 +21,7 @@
 | P-06 | 流量类型透传即终态 | flow-type-passthrough.md | 宪法级决策 |
 | P-07 | toolpath_outside 无头移植三坑 | toolpath-outside-headless.md | 已修复（2026-08-17/18） |
 | P-08 | 擦塔位置 clamp 缺失 | wipe-tower-position-clamp.md | **未修复**（含修复方案） |
-| P-09 | --skip-preset-substitution 崩溃 | skip-substitution-nullderef.md | **未修复** |
+| P-09 | --skip-preset-substitution 崩溃 | skip-substitution-nullderef.md | 已修复（参数已移除，2026-09-29） |
 | P-10 | 5479 ToolOrdering 堆损坏 | toolordering-heap-corruption.md | 搁置（上游 bug，含已证伪修复） |
 | P-11 | auto_brim 云/桌面行为差异 | brim-auto-divergence.md | 已修复（2026-09-18 两阶段：运动对齐 48d6e15 + 回显保真） |
 | P-12 | build-volume / 几何预检行为表 | geometry-preprocess-behavior.md | 行为基线 |

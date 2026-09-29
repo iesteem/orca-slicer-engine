@@ -285,11 +285,9 @@ bool SliceEngine::run()
     // apply_*_official_preset stages below.
     load_system_presets();
 
-    // Hard precondition independent of the substitution policy: later stages
-    // (init_print) dereference m_preset_bundle. --skip-preset-substitution
-    // must only skip the official-preset ENFORCEMENT, not this check —
-    // otherwise the run crashes with SIGSEGV (precedent P-09,
-    // gdb-confirmed 2026-08-06).
+    // Hard precondition: later stages (init_print) dereference m_preset_bundle,
+    // so a failed preset load must abort here — otherwise the run crashes with
+    // SIGSEGV (precedent P-09, gdb-confirmed 2026-08-06).
     if (!m_presets_available || !m_preset_bundle)
     {
         std::string msg = "System presets not available; cannot slice.";
@@ -302,17 +300,14 @@ bool SliceEngine::run()
         return false;
     }
 
-    if (!m_cfg.skip_preset_substitution)
+    if (!apply_preset_substitution())
     {
-        if (!apply_preset_substitution())
-        {
-            build_statistics();
-            return false;
-        }
+        build_statistics();
+        return false;
     }
 
-    // Runs even when substitution was skipped: both fixes guard against
-    // libslic3r SEGVs and are independent of the substitution policy.
+    // Runs after the substitution stages: both fixes guard against libslic3r
+    // SEGVs and are independent of what substitution did.
     normalize_loaded_config();
 
     if (validate_input())
@@ -473,13 +468,10 @@ bool SliceEngine::run_preset_substitution_only()
     // Load vendor presets so apply_*_official_preset can resolve.
     load_system_presets();
 
-    if (!m_cfg.skip_preset_substitution)
+    if (!apply_preset_substitution())
     {
-        if (!apply_preset_substitution())
-        {
-            build_statistics();
-            return false;
-        }
+        build_statistics();
+        return false;
     }
 
     normalize_loaded_config();
@@ -516,13 +508,10 @@ bool SliceEngine::run_geometry_preprocess_only()
     collect_config_warnings();
     load_system_presets();
 
-    if (!m_cfg.skip_preset_substitution)
+    if (!apply_preset_substitution())
     {
-        if (!apply_preset_substitution())
-        {
-            build_statistics();
-            return false;
-        }
+        build_statistics();
+        return false;
     }
 
     normalize_loaded_config();

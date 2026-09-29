@@ -106,7 +106,6 @@ int main(int argc, char* argv[])
     int         timeout_sec = 0;
     int         max_size_mb = 0;
     const char* cancel_file = NULL;
-    int         skip_preset_substitution = 0;
 
     /* Parse CLI arguments */
     for (int i = 1; i < argc; i++)
@@ -127,13 +126,7 @@ int main(int argc, char* argv[])
             printf("  --max-size <mb>       Max input file size in MB (0 = no limit)\n");
             printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
             printf("  -v, --verbose         Verbose output\n");
-            printf("  --skip-preset-substitution\n");
-            printf("                        Skip official preset enforcement\n");
             return 0;
-        }
-        else if (!strcmp(argv[i], "--skip-preset-substitution"))
-        {
-            skip_preset_substitution = 1;
         }
         else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose"))
         {
@@ -285,8 +278,6 @@ int main(int argc, char* argv[])
         pos = appendf(params, pos, sizeof(params), ",\"cancel_file\":");
         if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), cancel_file);
     }
-    if (pos >= 0 && skip_preset_substitution)
-        pos = appendf(params, pos, sizeof(params), ",\"skip_preset_substitution\":true");
     if (pos >= 0) pos = appendf(params, pos, sizeof(params), "}");
     if (pos < 0)
     {

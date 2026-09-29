@@ -185,7 +185,6 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
 
     EngineConfig cfg;
     cfg.input_file = kFixture;
-    cfg.skip_preset_substitution = false;
     cfg.temp_dir = "/tmp";
 
     std::vector<std::string> temp_files;
@@ -201,6 +200,21 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
     REQUIRE(prn->vendor);
     REQUIRE(prn->vendor->name == PresetBundle::SM_BUNDLE);
     check_matches_official(mc, *prn, {}, "printer");
+
+    // Fixture-drift sentinel (replaces the former skip-substitution counter-
+    // test): the official U1 preset JSON itself carries the historical dirty
+    // id "MyToolChanger 0.4 nozzle - Copy" (cloud-review root cause), so the
+    // assertion compares against the preset's OWN value instead of a literal
+    // name. If substitution ever stops running (or kFixture drifts to an
+    // official re-export making wholesale-match vacuous), m_config keeps the
+    // 3MF's original id — "Snapmaker U1 (0.4 nozzle) - 拷贝" — which cannot
+    // equal the preset's dirty value, so this REQUIRE is the check that goes
+    // red.
+    const auto* psi = mc.option<Slic3r::ConfigOptionString>("printer_settings_id");
+    REQUIRE(psi);
+    const auto* off_psi = prn->config.option<Slic3r::ConfigOptionString>("printer_settings_id");
+    REQUIRE(off_psi);
+    REQUIRE(psi->value == off_psi->value);
 
     // --- Filament invariant: per slot, m_config[key][i] == official_preset[key][0]
     // for every key in the slot's resolved official filament preset. The slot's
@@ -313,7 +327,6 @@ TEST_CASE("Truncated per-filament vectors normalized to slot count", "[integrati
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test_truncated.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.temp_dir = "/tmp";
 
     std::vector<std::string> temp_files;
@@ -431,38 +444,12 @@ TEST_CASE("Official preset key sets are mutually exclusive across categories", "
     CHECK(bad.empty());
 }
 
-TEST_CASE("Preset substitution skipped when configured diverges from official", "[integration][preset]")
-{
-    auto bundle = load_official_bundle();
-    Slic3r::set_resources_dir(kResources);
-    Slic3r::set_data_dir(kResources);
-
-    EngineConfig cfg;
-    cfg.input_file = kFixture;
-    cfg.skip_preset_substitution = true;
-    cfg.temp_dir = "/tmp";
-
-    std::vector<std::string> temp_files;
-    SliceEngine engine(cfg, temp_files);
-    REQUIRE(engine.run_preset_substitution_only());
-
-    // With substitution skipped, m_config must NOT wholesale-match the official
-    // printer preset (proves the invariant check above is exercising the
-    // substitution step, not something else). At least one printer key differs.
-    const Preset* prn = bundle->printers.find_preset("Snapmaker U1 (0.4 nozzle)", false);
-    REQUIRE(prn);
-    const DynamicPrintConfig& mc = engine.config();
-    bool any_diff = false;
-    for (auto it = prn->config.cbegin(); it != prn->config.cend() && !any_diff; ++it)
-    {
-        if (!mc.has(it->first)) continue;
-        if (mc.option(it->first)->serialize() != it->second.get()->serialize())
-            any_diff = true;
-    }
-    // The fixture carries a "- 拷贝" clone printer preset, so its config should
-    // diverge from official in at least the settings_id / G-code keys.
-    CHECK(any_diff);
-}
+// (Removed 2026-09-29: "Preset substitution skipped when configured diverges
+// from official" tested the --skip-preset-substitution flag, which was removed
+// with the flag. Its meta-verification role — proving wholesale-match above
+// exercises the substitution step — is carried by the fixture-drift sentinel
+// in the invariant test: kFixture's clone preset id differs from official, so
+// the id equality can only hold if substitution rewrote it.)
 
 
 // --- Mini train city: hollow embedded process preset must not be applied. ---
@@ -487,7 +474,6 @@ TEST_CASE("Hollow embedded process preset rejected, project slices clean (train 
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/hollow_embedded_preset_train_city.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.temp_dir = "/tmp";
     cfg.output_base = "/tmp/orca_test_ps_traincity";
 

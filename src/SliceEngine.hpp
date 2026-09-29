@@ -32,7 +32,6 @@ struct EngineConfig
     std::atomic<bool>* cancel_requested = nullptr; // programmatic cancel flag (set by slic3r_cancel)
     std::string log_path; // log file path (empty = auto-derive from output)
     std::string json_output_path; // -j/--json: path for JSON output file (empty = auto-derive from output)
-    bool skip_preset_substitution = false; // --skip-preset-substitution
 };
 
 // Intermediate result for a single plate during the pipeline
@@ -65,14 +64,12 @@ public:
 
     // Apply official Snapmaker presets: bundle check, strip user content, then
     // printer/filament/process substitution. Returns false on any fatal preset
-    // failure (caller should abort). Skipped entirely when
-    // m_cfg.skip_preset_substitution is set.
+    // failure (caller should abort).
     bool apply_preset_substitution();
 
     // One-shot normalization of m_config, run once per pipeline (in every entry
-    // point) after the preset-substitution stage — including when substitution
-    // was skipped, because both fixes guard against libslic3r SEGVs and are
-    // independent of the substitution policy:
+    // point) after the preset-substitution stage. Both fixes guard against
+    // libslic3r SEGVs and are independent of the substitution stages:
     //  (a) backfill PrintConfig keys the 3MF / preset chain left undefined;
     //  (b) repair flush_volumes_matrix / flush_volumes_vector dimensions
     //      (normalize_flush_volumes_matrix).
