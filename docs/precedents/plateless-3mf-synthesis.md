@@ -1,10 +1,11 @@
-# P-16: 无 plate 元数据 3MF 无法切片（假成功静默失败）
+# P-22: 无 plate 元数据 3MF 无法切片（假成功静默失败）
 
-**状态：** 已修复（21b4ef1，feature-2.1.7-base，2026-09-24；ENGINE_VERSION 02.01.07）
+**状态：** 已修复（21b4ef1，feature-2.1.7-base，2026-09-24；ENGINE_VERSION 02.01.07；
+2026-09-29 合并入 feature-2.2.0 时 P-16→P-22 让号，2.2.0 线 P-16 已被 inherits_group 占用）
 **Fixture：** `tests/fixtures/plateless_single.3mf`（md5 `07633924413a0c1fda3d31a2fd88146b`）、
 `plateless_zbake.3mf`（md5 `bf95d17d97dba5309e3f4a7cfb2b98e7`）、
 `plateless_unprintable.3mf`（派生：item 加 `printable="0"`）、
-`plateless_oob_fail.3mf`（78bed5012，越床分歧锚定）；e2e Case 17-20
+`plateless_oob_fail.3mf`（78bed5012，越床分歧锚定）；e2e Case 20-23
 
 ## 现象
 
@@ -71,7 +72,7 @@
 
 ## 验证证据
 
-- 全量套件绿（含新 Case 17-20，零回归；本分支 16 个既有 fixture 全有盘，
+- 全量套件绿（含新 Case 20-23，零回归；本分支 16 个既有 fixture 全有盘，
   不触发改动路径）
 - 黄金基准（桌面 2.4.0 对同一文件 3ea6302e6648d5b3.3mf 的 gcode）：
   21.28 g **逐位一致**、68 层、max_z 13.65、无擦除塔、首条对象打印移动
@@ -97,7 +98,7 @@
    identify 匹配计数、后者是纯几何计数（`update_print_volume_state`
    不查 printable），loaded_id 机制无恙。
 
-## 遗留 / 已知分歧（有意不修，锚定于 Case 20）
+## 遗留 / 已知分歧（有意不修，锚定于 Case 23）
 
 - **合成盘成员越床仍走 BUILD_VOLUME 硬错误**，桌面为"排除该实例 +
   继续切其余"（GLCanvas3D `contained_min_one` 闸门）。
