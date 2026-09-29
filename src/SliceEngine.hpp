@@ -544,6 +544,12 @@ private:
     // Cannot use unique_ptr due to libslic3r API compatibility (PlateDataPtrs is
     // a shared type across the library boundary).
     Slic3r::PlateDataPtrs m_plate_data;
+    // True when the 3MF carried no plate metadata and read_3mf_model()
+    // synthesized a single plate holding every printable instance — the
+    // desktop Orca semantics for metadata-less files (its GUI keeps the
+    // default plate and assigns instances geometrically). Gates the
+    // zero-printable error in mark_printable_instances().
+    bool m_synthesized_single_plate = false;
     std::vector<Slic3r::Preset*> m_project_presets;
     bool m_is_bbl_3mf = false;
     Slic3r::Semver m_file_version;

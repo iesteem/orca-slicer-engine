@@ -39,6 +39,14 @@ WipeTower.cpp:602）；clamp 公式 `y = plate_max − depth − margin(1+brim)`
 wipe_tower_y=242.5 且无 TOOLPATH_OUTSIDE。升级 libslic3r 无效——核心从不
 做此事。完整调研：`~/Downloads/擦塔越界调研报告-2c242c10f0e4b521.md`。
 
+## 用户侧绕行（2026-09-21 实测）
+
+通过 Orca「**导入**」方式（非打开工程）加载本 fixture 再另存：导入逻辑
+**忽略 3MF 内的 wipe_tower_x/y，自动生成新塔位**（实测 165/244.697 →
+13/214.5），重存文件引擎切片 **exit 0**，1/1 盘成功、零 error、正常产出
+gcode.3mf（38MB）。即 P-08 的用户侧解法 = 导入重存，无需手动摆塔；
+引擎对原文件报 exit 7 的拦截行为本身正确。
+
 ## 注意
 
 引擎曾有临时调试改动（ORCA_KEEP_FAILED_GCODE，SliceEngine.cpp 两处）

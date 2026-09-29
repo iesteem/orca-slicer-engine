@@ -45,6 +45,7 @@
 
 | fixture | 锚定行为 |
 |---|---|
+| 4e59b4a1a391c740.3mf (6.9M) | 对象级速度覆盖回归：support_speed 经 different_settings_to_system 下放 → findMaxSpeed 单参 opt_float null 解引用 SIGSEGV(139)；fork 656353d876 修复后 2 盘全成功 exit 0。md5 `d5907fe62760db57d9389980ca326c02` |
 | missing-keys_backfill_10632.3mf | P-01 defaults backfill（注意：文件名是下划线 missing_keys…，历史上判例曾误写连字符） |
 | thumbnail_short_png.3mf | 缩略图 PNG 仅 3 字节（<8 字节签名）→ 必须被尺寸守卫拒绝，不得进入 magic 比较越界读（geom_above_bed_ok.3mf 改造，2026-09-17） |
 | hollow_embedded_preset_train_city.3mf | P-15 空壳内嵌预设 → exit 6 |
@@ -52,6 +53,16 @@
 | high_flow_whitelist.3mf | P-13 高流量生效 |
 | cylinder_four_plate_mixed.3mf | 多盘混合成功/失败 |
 | wipe_tower_toolpath_outside.3mf | P-08 擦塔越界现象 |
+| wipe_tower_import_regen_ok.3mf | P-08 阳性对照：2c242c10f0e4b521 经 Orca「导入」重存（塔位 165/244.697→13/214.5 自动重生）→ exit 0 全成功。md5 `1fb1246b4f3d2aed4be0d58a70e17d58` |
+
+### 无 plate 元数据组（D1''' 合成盘行为，2026-09-24）
+
+| fixture | 锚定行为 |
+|---|---|
+| plateless_single.3mf (25KB) | 第三方导出（slice_info 仅 header、无 model_settings `<plate>`、Application="Snapmaker Orca" 走 other-vendor 拆分）；合成单盘全 printable 实例 → exit 0、plates:[1]。桌面黄金基准（Orca 2.4.0 同文件 gcode）：1 对象、中心 (71.25,37)、68 层、13.65mm、21.28g、无擦除塔。md5 `07633924413a0c1fda3d31a2fd88146b` |
+| plateless_zbake.3mf (11KB) | 同上 + instance tz=48.613 命中 Z-bake Step-1（世界 z[0,97.23]），验证合成盘与 Z-bake 叠加路径。md5 `bf95d17d97dba5309e3f4a7cfb2b98e7` |
+| plateless_unprintable.3mf (25KB) | plateless_single 派生：item 加 printable="0" → 全文件无可打印实例 → exit 6 + PLATELESS_NO_PRINTABLE_INSTANCES error |
+| plateless_oob_fail.3mf (93KB) | 4 对象无盘文件，obj4 xmin=0 < 床界 0.5 → 合成盘成员 PARTLY_OUTSIDE 走既有 BUILD_VOLUME 硬错误（与桌面"排除续切"的已知分歧，锚定现行为） |
 
 ### temp_mode 组（高低温混用，2026-09-18 补齐 C1 漏检面）
 

@@ -725,3 +725,156 @@ TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visib
     REQUIRE(r->engine->stats().plates.empty());
     REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
 }
+
+// ============================================================================
+// Case 18 — Regression: object-level speed overrides delivered via
+// different_settings_to_system must not crash Model::findMaxSpeed during
+// brim generation. Production model 4e59b4a1a391c740.3mf (BBS project,
+// 2 plates) carries support_speed (coFloats) etc. as object-level config;
+// the unchecked dynamic_cast<ConfigOptionFloat*> in the single-arg
+// opt_float(key) null-deref'd → SIGSEGV (exit 139) at "Generating skirt
+// & brim" on unfixed libslic3r builds. Fixed in the OrcaSlicer fork
+// (Model.cpp findMaxSpeed, commit 656353d876).
+//
+// Regressions locked in:
+//   1. Both plates slice successfully — exit 0, success, no error issue
+//      (no crash, no structured failure either).
+//   2. The packaged gcode.3mf exists and is non-trivially sized.
+// ============================================================================
+TEST_CASE("Object-level speed override via different_settings_to_system: no findMaxSpeed crash, 2 plates ok", "[integration][slice][ok][findmax_speed]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/4e59b4a1a391c740.3mf", "findmax_speed_override");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 2);
+    for (const auto& plate : r->engine->stats().plates)
+        REQUIRE(plate.success);
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 19 — P-08 positive control, paired with Case 9. Same geometry as the
+// P-08 fixture 2c242c10f0e4b521.3mf (wipe tower y=244.697 → tower top 271.21
+// past the 271 printable edge → exit 7), but re-saved through desktop Orca's
+// IMPORT path, which discards the stored wipe_tower_x/y and auto-places a
+// fresh tower (13/214.5). Locks in both halves of the P-08 contract:
+//   1. With an in-bounds tower position the very same model slices clean —
+//      exit 0, no TOOLPATH_OUTSIDE anywhere (the engine only ever rejected
+//      the data, never the geometry).
+//   2. The plate's toolpath_outside flag stays false end-to-end.
+// See docs/precedents/wipe-tower-position-clamp.md (user-side workaround).
+// ============================================================================
+TEST_CASE("P-08 model re-saved via Orca import (regenerated tower) slices clean", "[integration][slice][ok][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_import_regen_ok.3mf", "wipe_tower_regen_ok");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.success);
+    REQUIRE_FALSE(p.toolpath_outside);
+
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 20 — Plate-less 3MF (third-party exporter: no <plate> records, no
+// plate thumbnails) slices as a SYNTHESIZED single plate holding every
+// printable instance — the desktop Orca semantics (its GUI keeps the default
+// plate and assigns instances geometrically). Verifies the D1''' fix:
+//   1. exit 0, exactly one plate, that plate succeeds;
+//   2. a PLATE_DATA_SYNTHESIZED tip marks the synthesis for cloud triage;
+//   3. real output is produced.
+// Golden reference: desktop Orca 2.4.0 sliced this very file to 1 object,
+// 68 layers, 21.28 g — the filament bounds below guard against both an
+// empty slice and a duplicated-instance regression around that value.
+// ============================================================================
+TEST_CASE("Plate-less 3MF slices as synthesized single plate", "[integration][slice][ok][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_single.3mf", "plateless_single");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.success);
+
+    // Desktop golden: 21.28 g single object — bracket it loosely.
+    REQUIRE(p.total_filament_g > 5.0);
+    REQUIRE(p.total_filament_g < 40.0);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_DATA_SYNTHESIZED", IssueLevel::tip));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 21 — Plate-less 3MF whose single instance carries tz=48.613 (mesh
+// locally centered around 0): exercises synthesized-plate + Z-bake Step-1
+// in the same run. The baked model occupies world z[0,97.2] on the bed and
+// must slice clean on the synthesized plate.
+// ============================================================================
+TEST_CASE("Plate-less 3MF with baked instance Z slices clean", "[integration][slice][ok][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_zbake.3mf", "plateless_zbake");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_DATA_SYNTHESIZED", IssueLevel::tip));
+    REQUIRE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 22 — Plate-less 3MF whose only item is printable="0": the whole file
+// has no printable instance. Desktop refuses to slice such a file upfront;
+// the engine must hard-fail (exit 6, PLATELESS_NO_PRINTABLE_INSTANCES error)
+// instead of the pre-fix silent exit-0-with-no-output.
+// ============================================================================
+TEST_CASE("Plate-less 3MF with all objects unprintable fails loudly", "[integration][slice][fail][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_unprintable.3mf", "plateless_unprintable");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATELESS_NO_PRINTABLE_INSTANCES", IssueLevel::error));
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 23 — Plate-less 3MF with an out-of-bed object (obj4 xmin=0 vs bed
+// xmin=0.5): the synthesized plate enrolls every printable instance, so the
+// existing build-volume check classifies it PARTLY_OUTSIDE and fails hard.
+// KNOWN DIVERGENCE (anchored, by design for now): desktop Orca slices the
+// in-bed objects and only excludes the outside one; the engine rejects the
+// whole task. Revisit with the "exclude + warn" follow-up, not silently.
+// ============================================================================
+TEST_CASE("Plate-less 3MF with out-of-bed object fails at build-volume", "[integration][slice][fail][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_oob_fail.3mf", "plateless_oob_fail");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_OUTSIDE_XY", IssueLevel::error));
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}
