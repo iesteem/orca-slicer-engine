@@ -8,7 +8,7 @@
  *   - generate_output_path() — single-plate, custom-base, and all-plates paths
  */
 
-#include <catch2/catch_all.hpp>
+#include <catch_amalgamated.hpp>
 
 #include <cmath>
 #include <limits>

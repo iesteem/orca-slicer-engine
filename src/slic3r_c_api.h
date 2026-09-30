@@ -2,7 +2,7 @@
  * slic3r_c_api.h — Pure C boundary for libslic3r shared library
  *
  * This header contains NO C++ types, NO STL, NO templates.
- * It is the ABI-stable contract between libslic3r.dll and its consumers.
+ * It is the ABI-stable contract between the slic3r engine and its consumers.
  *
  * SPIKE 001: Minimum Viable C API — "Slice This File"
  */
@@ -16,12 +16,11 @@ extern "C"
 {
 #endif
 
+// This project only builds the consumer executable (linking a prebuilt
+// slic3r.dll) or the ORCA_STATIC single binary; it no longer compiles
+// slic3r.dll from source, so the C API symbols are always imported.
 #ifdef _WIN32
-#ifdef SLIC3R_DLL_EXPORTS
-#define SLIC3R_API __declspec(dllexport)
-#else
 #define SLIC3R_API __declspec(dllimport)
-#endif
 #else
 #define SLIC3R_API __attribute__((visibility("default")))
 #endif

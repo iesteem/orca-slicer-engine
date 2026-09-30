@@ -50,8 +50,8 @@ std::string PresetRollback::getFilamentVendor(const DynamicPrintConfig& config, 
 //
 // Nozzle match: via filament's compatible_printers → target printer preset → nozzle_diameter numeric comparison.
 
-// 通过 filament 的 compatible_printers，筛出目标机型的 printer，
-// 读取 printer 的 nozzle_diameter 与目标值做 ε 比较。
+// Use the filament's compatible_printers to filter down to the target printer,
+// read its nozzle_diameter, and compare against the target value (epsilon test).
 static bool filament_supports_nozzle(const PresetBundle& bundle, const Preset& filament, double target_nozzle,
                                      const std::string& printer_model)
 {
@@ -174,6 +174,16 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Pre
     {
         const auto& key = it->first;
         const auto& src_opt = it->second;
+
+        // Flow-variant options use declaration-driven segmented storage
+        // (filament_flow_step_size): slot i's segment starts at
+        // sum(step_size[0..i-1]), not at flat index i. A flat per-extruder
+        // copy via set_at() would corrupt the segment alignment and drop the
+        // high_flow variant (source index 0 = standard). Skip them — same rule
+        // as DynamicPrintConfig::set_num_filaments (PrintConfig.cpp).
+        if (key == "filament_flow_support" || key == "filament_flow_step_size" ||
+            is_filament_flow_variant_option(key))
+            continue;
 
         ConfigOption* dst_opt = target.option(key, true);
         if (!dst_opt)

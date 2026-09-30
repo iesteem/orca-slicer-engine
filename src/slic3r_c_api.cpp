@@ -109,6 +109,11 @@ SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir)
     Slic3r::set_resources_dir(ctx->resources_dir);
     Slic3r::set_data_dir(ctx->resources_dir + "/profiles");
 
+    // 3MF loading lazily creates a per-model backup dir under temporary_dir()
+    // (Model::get_backup_path). Without this the empty default resolves to
+    // "/snapmaker_orca_model" at filesystem root and every load fails.
+    Slic3r::set_temporary_dir(boost::filesystem::temp_directory_path().string());
+
     ctx->initialized = true;
 
     // Console sink so BOOST_LOG_TRIVIAL messages reach stderr even
@@ -157,6 +162,10 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
             set_error(ctx, "Failed to parse params JSON");
             return SLIC3R_ERR_ARGS;
         }
+
+        // Wire the programmatic cancel flag so slic3r_cancel() takes effect
+        // inside the slicing loop (not just the cancel_file watchdog).
+        cfg.cancel_requested = &ctx->cancel_requested;
 
         // Wire up Boost.Log file sink (always enabled, auto-derive if path empty)
         {
