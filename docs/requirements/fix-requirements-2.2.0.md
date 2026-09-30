@@ -17,11 +17,13 @@
 - **背景**：06 空盘静默跳过无任何 issue；单盘 `-p` 指向空盘 rc=0 却零产物；全空 rc=0 但 success=false 自相矛盾。修复 6aa4d6b（P-19）。
 - **需求**：空盘必须产生 EMPTY_PLATE（warning 级）并归因到具体盘号；多盘含空盘时好盘正常产出、整体 rc=0/success=true；请求单空盘或全部为空时必须 rc=6、success=false、零产物；退出码不得晚于更具体错误码（如 slicing=4）被覆盖。
 - **验收**：`slice_empty_plate_skip.3mf` 多盘 rc=0+EMPTY_PLATE(盘2)+好盘产物在；`-p 2` rc=6 零产物；`slice_all_plates_empty_fail.3mf` rc=6+两条 EMPTY_PLATE 各归因。
+- **备注（2026-09-30）**：CLI `-p` 已移除；验收中「`-p 2` rc=6 零产物」的单盘场景现由 C API `plate_id=2` 驱动（引擎语义不变，e2e Case 16 覆盖）。
 
 ### REQ-03 盘号参数 `-p` 必须生效
 - **背景**：06 的 C API 层 single_plate 从不赋值，`-p N` 被静默忽略，实际执行多盘全切（实测 `-p 1` 切了 4 盘）。修复 95a2246（C18）。
 - **需求**：`-p N`（N≥1）必须且仅切片第 N 盘；输出产物与 JSON 统计只包含该盘。
 - **验收**：`cylinder_four_plate_mixed.3mf -p 1` → JSON plates 数=1、产物仅含 plate_1.gcode（06 为 4 盘）。
+- **备注（2026-09-30）**：CLI `-p` 参数已整体移除，CLI 恒切全部盘（传 `-p` 现 rc=1 显式拒绝，test_cli.cpp deprecated 用例固化）；盘选择需求仍有效，由 C API params_json `"plate_id"`（引擎 single_plate）承载，覆盖移至 test_c_api.cpp 与 e2e Case 5/6。
 
 ### REQ-04 官方预设覆写必须整向量落地并归一槽位数
 - **背景**：06 覆写按 min(dst,src) 逐元素拷贝，用户 3MF 向量短于官方槽位数时仅覆写短侧：实测 5 个 per-filament 向量卡 len=2、flush 矩阵 2×2、槽 2/3 悬空用户值（官方+用户混合配置）。修复 e2e2ac9（P-21）。
@@ -61,6 +63,7 @@
 - **背景**：06 用 atoi 解析数值（`-t abc`→0=静默无超时）、未知 format 静默按默认执行、负 plate_id 照收（三项实测均 rc=0 静默继续）。修复 95a2246。
 - **需求**：数值参数（plate_id/timeout/max_size）必须 ≥0 且为合法整数，否则拒绝退出 rc=1；format 必须白名单（gcode | gcode.3mf）；校验在 API 边界与 CLI 双层生效。
 - **验收**：`-f xyz`、`-t abc`、`-p -1` 三项均 rc=1 且带明确错误信息（06 全部 rc=0 静默执行）。
+- **备注（2026-09-30）**：`-p` 已移除，任何 `-p` 传参在 CLI 层即被显式拒绝（rc=1），`-p -1` 验收继续成立（拒绝原因变为"选项已移除"）；C API 侧 `plate_id` 数值校验（≥0）不变。
 
 ### REQ-11 输出路径搬迁可观测
 - **背景**：06 输出路径被占用时静默换写时间戳路径，编排方按原路径取产物会取空。修复 af80f0b。

@@ -99,5 +99,5 @@ print_sequence/ temp_mode/ unsupported/` —— 与同名 test_*.cpp 一一对�
 
 | fixture | 盘构成 | 预期 |
 |---|---|---|
-| slice_empty_plate_skip.3mf | 盘1=立方体，盘2=空 | 多盘：rc=0、success=true、EMPTY_PLATE warning（归因盘2）、好盘正常打包；单盘 -p 2：rc=6、success=false、零产物（Case 15/16） |
+| slice_empty_plate_skip.3mf | 盘1=立方体，盘2=空 | 多盘：rc=0、success=true、EMPTY_PLATE warning（归因盘2）、好盘正常打包；单盘（C API plate_id=2）：rc=6、success=false、零产物（Case 15/16） |
 | slice_all_plates_empty_fail.3mf | 两盘皆空 | rc=6、success=false、两条 EMPTY_PLATE 各归因其盘、零产物（Case 17） |

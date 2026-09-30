@@ -16,7 +16,7 @@
 /* Parse a non-negative decimal integer option value. Returns 0 and stores
  * the value on success; prints an error naming the option and returns -1 on
  * garbage input (empty string, non-digits, trailing junk, negative values,
- * overflow). Replaces raw atoi(), which silently maps "-p abc" to plate 0. */
+ * overflow). Replaces raw atoi(), which silently maps "-t 10x" to 0. */
 static int parse_int_opt(const char* opt, const char* val, int* out)
 {
     char* end = NULL;
@@ -100,7 +100,6 @@ int main(int argc, char* argv[])
     const char* resources   = NULL;
     const char* log_file    = NULL;
     const char* json_output = NULL;
-    int         plate_id    = 0;
     const char* format      = "gcode.3mf";
     int         verbose     = 0;
     int         timeout_sec = 0;
@@ -115,7 +114,6 @@ int main(int argc, char* argv[])
             printf("orca-slice-engine v%s\n", slic3r_version());
             printf("Usage: %s <input.3mf> [options]\n", argv[0]);
             printf("  -o, --output <path>   Output path (without extension)\n");
-            printf("  -p, --plate <id>      Plate ID (0=all, default: 0)\n");
             printf("  -f, --format <fmt>    gcode | gcode.3mf (default: gcode.3mf)\n");
             printf("  -r, --resources <dir> Resources directory\n");
             printf("  --log [file]         Log file path (without .log extension)\n");
@@ -152,8 +150,17 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate"))
         {
-            if (++i < argc && parse_int_opt(argv[i - 1], argv[i], &plate_id) != 0)
-                return 1;
+            /* Removed 2026-09-30: the CLI always slices all plates. Unlike
+             * other unknown options (silently ignored), -p is rejected
+             * explicitly: honoring-by-ignoring would silently widen a
+             * single-plate request to all plates (10x work, different
+             * artifact name and exit code). Plate selection remains
+             * available via the C API params_json "plate_id" key. */
+            fprintf(stderr, "Error: option -p/--plate has been removed; "
+                            "the engine always slices all plates "
+                            "(plate selection remains available via the "
+                            "C API params_json \"plate_id\" key)\n");
+            return 1;
         }
         else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format"))
         {
@@ -264,7 +271,7 @@ int main(int argc, char* argv[])
      * N1) and unescaped Windows-style paths produced unparseable JSON. */
     char params[8192];
     int pos = appendf(params, 0, sizeof(params),
-        "{\"plate_id\":%d,\"format\":\"%s\"", plate_id, format);
+        "{\"format\":\"%s\"", format);
     if (pos >= 0) pos = appendf(params, pos, sizeof(params), ",\"log_path\":");
     if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), log_file);
     if (pos >= 0) pos = appendf(params, pos, sizeof(params), ",\"json_output_path\":");

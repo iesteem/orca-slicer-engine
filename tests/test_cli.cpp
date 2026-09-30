@@ -7,9 +7,12 @@
  *          paths produced invalid/underminated params JSON
  *   - (C)  no JSON string escaping — Windows-style backslash paths
  *          ("\o" etc.) made the params JSON unparseable
- *   - (C)  atoi() accepted garbage silently ("-p abc" == 0) and negatives
+ *   - (C)  atoi() accepted garbage silently ("-t abc" == 0) and negatives
  *   - (C)  "-f bogus" silently mapped to gcode.3mf
- *   - #18  "-p" plate selection was ignored end-to-end (C API wiring)
+ *   - #18  "-p" plate selection was ignored end-to-end (C API wiring);
+ *          the flag itself was removed 2026-09-30 (CLI always slices all
+ *          plates; single-plate coverage lives at C API/engine level, and
+ *          the removed flag must be rejected — see the deprecated test below)
  *
  * The exe path is injected via ORCA_ENGINE_EXE at build time.
  * Tag: [integration][cli].
@@ -114,16 +117,6 @@ TEST_CASE("CLI: overflowing path lengths keep params JSON well-formed", "[integr
 // with a clear message, not silently coerced to 0 / accepted.
 // ============================================================================
 
-TEST_CASE("CLI: non-numeric plate id rejected", "[integration][cli][validation]")
-{
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
-                          + "\" -o /tmp/orca_cli_v -p abc");
-    INFO(r.out);
-    REQUIRE(r.exited);
-    REQUIRE(r.exit_code == 1);
-    REQUIRE(r.out.find("nvalid") != std::string::npos);   // "Invalid ..." message
-}
-
 TEST_CASE("CLI: non-numeric timeout rejected", "[integration][cli][validation]")
 {
     CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
@@ -165,34 +158,30 @@ TEST_CASE("CLI: unknown -f format rejected", "[integration][cli][validation]")
 }
 
 // ============================================================================
-// #18 "-p" end-to-end — the published exe's plate selection must reach the
-// engine: exactly one plate sliced, one .gcode written, no .gcode.3mf.
-// Pre-fix, single_plate was never set by the C API: all 4 plates were sliced
-// into a .gcode.3mf package.
+// Removed -p/--plate flag — removed 2026-09-30. The CLI always slices all
+// plates. Unlike other unknown options (silently ignored, see the deprecated
+// flag test below), -p is REJECTED: honoring-by-ignoring would silently widen
+// a single-plate request to all plates (N x work, different artifact name
+// "-p<N>" suffix gone, different exit-code semantics). This is the one
+// documented exception to ignore-unknown-options. Plate selection lives on
+// via the C API params_json "plate_id" key (test_c_api.cpp) and engine-level
+// single_plate (test_slice_e2e.cpp Cases 5/6/16).
 // ============================================================================
 
-TEST_CASE("CLI: -p 1 -f gcode slices one plate into one .gcode", "[integration][cli][single_plate]")
+TEST_CASE("CLI: removed -p/--plate rejected with exit 1", "[integration][cli][deprecated]")
 {
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf\""
-                          " -r \"" ORCA_TEST_RESOURCES_ROOT "\" -o /tmp/orca_cli_p1 -p 1 -f gcode");
+    rm("/tmp/orca_cli_rm.gcode.3mf");  // pre-clean: stale leftovers must not satisfy assertions
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
+                          + "\" -o /tmp/orca_cli_rm -p 2");
     INFO(r.out);
     REQUIRE(r.exited);
-    REQUIRE(r.exit_code == 0);
+    REQUIRE(r.exit_code == 1);
+    REQUIRE(r.out.find("removed") != std::string::npos);
+    REQUIRE(r.out.find("all plates") != std::string::npos);
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_cli_rm.gcode.3mf"));
 
-    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_p1.gcode"));
-    REQUIRE(boost::filesystem::file_size("/tmp/orca_cli_p1.gcode") > 1000);
-    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_cli_p1.gcode.3mf"));
-
-    // The stats JSON must report exactly the requested plate.
-    std::ifstream f("/tmp/orca_cli_p1.json");
-    REQUIRE(f.good());
-    auto j = nlohmann::json::parse(f);
-    REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["plate_id"].get<int>() == 1);
-
-    rm("/tmp/orca_cli_p1.gcode");
-    rm("/tmp/orca_cli_p1.json");
-    rm("/tmp/orca_cli_p1.log");
+    rm("/tmp/orca_cli_rm.json");
+    rm("/tmp/orca_cli_rm.log");
     rm("/tmp/orca_cli_capture.txt");
 }
 
