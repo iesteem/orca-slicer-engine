@@ -73,12 +73,19 @@ The preset `resources/` directory must be available at runtime (via
 ```
 orca-slice-engine <input.3mf> [options]
 
-  -o, --output <path>   Output path (without extension, default: derived from input)
-  -p, --plate <id>      Plate ID (0 = all plates, default: 0)
-  -f, --format <fmt>    Output format: gcode | gcode.3mf (default: gcode.3mf)
-  -r, --resources <dir> Resources directory (or set ORCA_RESOURCES env var)
-  -v, --verbose         Verbose output
-  -h, --help            Show this help
+  -o, --output <path>      Output path (without extension, default: derived from input)
+  -p, --plate <id>         Plate ID (0 = all plates, default: 0)
+  -f, --format <fmt>       Output format: gcode | gcode.3mf (default: gcode.3mf)
+  -r, --resources <dir>    Resources directory (or set ORCA_RESOURCES env var)
+  --log [file]             Log file path (without .log extension; default: derived from output)
+  -j, --json [file]        JSON statistics output path (without .json extension; default: derived from output)
+  -t, --timeout <sec>      Slicing timeout in seconds (0 = no limit)
+  --max-size <mb>          Max input file size in MB (0 = no limit)
+  --cancel-file <file>     Watchdog file for external cancellation
+  --skip-preset-substitution
+                           Skip official preset enforcement
+  -v, --verbose            Verbose output
+  -h, --help               Show this help
 ```
 
 ## Updating when OrcaSlicer changes
