@@ -51,6 +51,9 @@
 | hollow_embedded_preset_train_city.3mf | P-15 空壳内嵌预设 → exit 6 |
 | u1_preset_test_truncated.3mf | C3 短侧截断：u1_preset_test 派生，6 个 per-filament 向量（filament_type/diameter/colour/nozzle_temperature×2/cool_plate_temp）截 2/4，filament_settings_id 保 4 槽 → 修复后全部归 4、槽位值=官方（u1_preset_test.3mf 解包重打包，仅编辑 project_settings.config，几何逐字节不变） |
 | high_flow_whitelist.3mf | P-13 高流量生效 |
+| geom_above_bed_support_on.3mf | JSON 支撑标记对照：geom_above_bed_ok.3mf 解包重打包，仅 model_settings.config 插入对象级 `enable_support=1`（几何逐字节不变）→ `Print::is_support_used` 对象级覆盖路径 → stats JSON `support_required=true` / `plates[].support_used=true`（2026-10-07） |
+| mixed_filament_used.3mf / mixed_filament_defined_unused.3mf | 混色耗材定义vs使用对照（生产样本入库，2026-10-08）：两者 mixed_filament_definitions 逐字节相同（4 物理+3 enabled 行→虚拟 5/6/7）；仅 used 样本的对象 extruder=5/6/7。used→`mixed_filament_used=true`+gcode 展开 T0-T3；unused→false。注：面片 paint_color 与高度换色通路两样本均无数据，未覆盖 |
+| mixed_filament_modifier_used.3mf / mixed_filament_painted_used.3mf | 混色使用通路补充（生产样本，2026-10-08）：modifier 样本对象+ParameterModifier part 均带 extruder=6（volume 级通路）；涂色样本 extruder 全 0、使用仅在 mesh paint_color 面片流（used_states 通路，实测导入重建正确）。两者 `mixed_filament_used=true` 且多物理槽展开（4/3 槽）。注：高度换色不支持混色耗材（GUI 仅物理耗材，用户确认 2026-10-08），layer_config_ranges 通路已从判定中移除 |
 | cylinder_four_plate_mixed.3mf | 多盘混合成功/失败 |
 | wipe_tower_toolpath_outside.3mf | P-08 擦塔越界现象 |
 | wipe_tower_import_regen_ok.3mf | P-08 阳性对照：2c242c10f0e4b521 经 Orca「导入」重存（塔位 165/244.697→13/214.5 自动重生）→ exit 0 全成功。md5 `1fb1246b4f3d2aed4be0d58a70e17d58` |

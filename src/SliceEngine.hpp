@@ -476,6 +476,13 @@ private:
     // when mixing is detected.
     bool check_filament_temp_mixing(int plate_id);
 
+    // True when any object / part / painted facet in the loaded model
+    // references a virtual mixed-filament slot (extruder id above the
+    // physical filament_colour count). Height-range colour overrides are not
+    // consulted: the GUI supports physical filaments only there. Called once
+    // after read_3mf_model().
+    bool detect_mixed_filament_usage() const;
+
     // Execute the slicing process: call print.process() to generate toolpaths.
     // Reports progress via the status callback and checks for cancellation.
     bool run_slicing(int plate_id, Slic3r::Print& print);

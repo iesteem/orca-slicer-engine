@@ -165,6 +165,11 @@ TEST_CASE("C API: missing presets fails cleanly; deprecated skip_preset_substitu
             found = true;
     REQUIRE(found);
 
+    // No plate was processed → the load-time mixed_filament_used flag must be
+    // absent (a "false" here would let consumers misread "never parsed" as
+    // "no mixed filament in use").
+    REQUIRE_FALSE(j["print_info_total"].contains("mixed_filament_used"));
+
     rm("/tmp/orca_capi_p09.json");
     rm("/tmp/orca_capi_p09.log");
     slic3r_destroy(ctx);
@@ -264,6 +269,196 @@ TEST_CASE("C API: 3-byte plate thumbnail rejected by size guard, slice still suc
     rm("/tmp/orca_capi_thumb.log");
     slic3r_destroy(ctx);
     restore_dirs();
+}
+
+// ============================================================================
+// support_required / support_used JSON contract. The config-level support
+// flag (Print::is_support_used: global enable_support OR any object-level
+// override) is aggregated per plate and globally:
+//   1. success + no support anywhere  -> print_info_total.support_required
+//      == false, plates[].support_used == false
+//   2. success + object-level support -> both true (the deepest of the three
+//      detection layers: per-object config merge, not the process preset)
+//   3. failure                        -> support_required ABSENT: a failed
+//      plate's support state was never determined, so a present-but-false
+//      value would let consumers misread "unknown" as "no support needed"
+// ============================================================================
+
+TEST_CASE("C API: support_required false when no plate enables support", "[integration][capi][support]")
+{
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/geom_above_bed_ok.3mf",
+                          "/tmp/orca_capi_sup_off", R"({"log_path":"/tmp/orca_capi_sup_off.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["print_info_total"].contains("support_required"));
+    REQUIRE(j["print_info_total"]["support_required"].get<bool>() == false);
+    REQUIRE(j["plates"][0]["support_used"].get<bool>() == false);
+
+    rm("/tmp/orca_capi_sup_off.gcode.3mf");
+    rm("/tmp/orca_capi_sup_off.json");
+    rm("/tmp/orca_capi_sup_off.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: object-level support flips support_required true", "[integration][capi][support]")
+{
+    // geom_above_bed_support_on.3mf: identical geometry to the case above but
+    // the object config carries enable_support=1 — guards the object-level
+    // merge path (PrintApply.cpp m_support_used |= object config), which a
+    // process-preset-only check would miss.
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/geom_above_bed_support_on.3mf",
+                          "/tmp/orca_capi_sup_on", R"({"log_path":"/tmp/orca_capi_sup_on.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["print_info_total"]["support_required"].get<bool>() == true);
+    REQUIRE(j["plates"][0]["support_used"].get<bool>() == true);
+
+    rm("/tmp/orca_capi_sup_on.gcode.3mf");
+    rm("/tmp/orca_capi_sup_on.json");
+    rm("/tmp/orca_capi_sup_on.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: support_required absent when slice fails", "[integration][capi][support]")
+{
+    // PRESETS_MISSING fails the run before any plate is sliced; the global
+    // flag must be omitted entirely rather than defaulting to false.
+    const std::string empty_res = "/tmp/orca_capi_empty_res_sup";
+    boost::system::error_code ec;
+    boost::filesystem::create_directories(empty_res, ec);
+
+    slic3r_ctx_t* ctx = slic3r_create(empty_res.c_str());
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_sup_fail", "{}", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_ERR_PREPROCESS);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE_FALSE(j["success"].get<bool>());
+    REQUIRE_FALSE(j["print_info_total"].contains("support_required"));
+
+    rm("/tmp/orca_capi_sup_fail.json");
+    slic3r_destroy(ctx);
+    boost::filesystem::remove_all(empty_res, ec);
+    restore_dirs();
+}
+
+// ============================================================================
+// mixed_filament_used JSON contract. The flag distinguishes DEFINING mixed
+// filaments (mixed_filament_definitions rows in project_settings.config)
+// from USING one (a reference to a virtual slot via object/part extruder or
+// a painted facet state above the physical filament_colour count). Height-
+// range colour overrides are not a usage path: the GUI supports physical
+// filaments only there. It is an input-file property determined at load
+// time, so — unlike support_required — it is emitted whenever at least one
+// plate was processed, including partially failed runs; it is absent only
+// on load-stage failures where the model was never parsed.
+// The two fixtures share byte-identical definitions (3 enabled rows, 4
+// physical filaments → virtual ids 5/6/7); they differ ONLY in usage.
+// ============================================================================
+
+TEST_CASE("C API: mixed_filament_used true when a virtual slot is referenced", "[integration][capi][mixed]")
+{
+    // mixed_filament_used.3mf: objects 4/6/8 carry extruder=5/6/7 (all three
+    // virtual slots); slicing must succeed and expand them to physical slots
+    // (gcode contains only T0..T3 — verified live 2026-10-08).
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/mixed_filament_used.3mf",
+                          "/tmp/orca_capi_mix_used", R"({"log_path":"/tmp/orca_capi_mix_used.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["print_info_total"]["mixed_filament_used"].get<bool>() == true);
+    // The virtual ids expanded to physical components: more than one slot
+    // carries filament (mixed slot 5 = gradient of physical 1/2/4 etc.).
+    REQUIRE(j["plates"][0]["filaments"].size() > 1);
+
+    rm("/tmp/orca_capi_mix_used.gcode.3mf");
+    rm("/tmp/orca_capi_mix_used.json");
+    rm("/tmp/orca_capi_mix_used.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: mixed_filament_used false when defined but never referenced", "[integration][capi][mixed]")
+{
+    // mixed_filament_defined_unused.3mf: same 3 definitions, every object
+    // extruder=0 → definitions are inert; the flag must stay false (defining
+    // a mixed filament is not using it).
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/mixed_filament_defined_unused.3mf",
+                          "/tmp/orca_capi_mix_unused", R"({"log_path":"/tmp/orca_capi_mix_unused.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["print_info_total"]["mixed_filament_used"].get<bool>() == false);
+
+    rm("/tmp/orca_capi_mix_unused.gcode.3mf");
+    rm("/tmp/orca_capi_mix_unused.json");
+    rm("/tmp/orca_capi_mix_unused.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: mixed filament via modifier reference and via painted facets", "[integration][capi][mixed]")
+{
+    // Two more usage paths on the same 4-physical/3-virtual setup:
+    //   modifier fixture — a ParameterModifier part (and its object) carries
+    //     extruder=6; the flag must fire on the volume-level config.
+    //   painted fixture  — extruder stays 0 everywhere; usage lives only in
+    //     the mesh paint_color facet stream (mmu_segmentation used_states,
+    //     virtual ids above 4), exercising the facet path of the detector.
+    struct Case { const char* fixture; const char* tag; };
+    for (const Case& c : {Case{"/mixed_filament_modifier_used.3mf", "mix_mod"},
+                          Case{"/mixed_filament_painted_used.3mf", "mix_paint"}})
+    {
+        INFO("fixture: " << c.fixture);
+        slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+        REQUIRE(ctx != nullptr);
+
+        char stats[32768] = {0};
+        std::string out = std::string("/tmp/orca_capi_") + c.tag;
+        std::string params = std::string(R"({"log_path":")") + out + ".log\"}";
+        int rc = slic3r_slice(ctx, (std::string(ORCA_TEST_FIXTURE_DIR) + c.fixture).c_str(),
+                              out.c_str(), params.c_str(), stats, sizeof(stats));
+        REQUIRE(rc == SLIC3R_OK);
+
+        auto j = nlohmann::json::parse(stats);
+        REQUIRE(j["success"].get<bool>());
+        REQUIRE(j["print_info_total"]["mixed_filament_used"].get<bool>() == true);
+        // The virtual slot expanded into physical components (multiple slots
+        // carry filament after component expansion).
+        REQUIRE(j["plates"][0]["filaments"].size() > 1);
+
+        rm(out + ".gcode.3mf");
+        rm(out + ".json");
+        rm(out + ".log");
+        slic3r_destroy(ctx);
+        restore_dirs();
+    }
 }
 
 // ============================================================================

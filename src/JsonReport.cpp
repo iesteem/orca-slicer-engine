@@ -62,6 +62,10 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     double total_weight = 0;
     double total_length = 0;
     std::vector<ordered_json> total_filaments;
+    // Config-level support flag (Print::is_support_used: global enable_support
+    // OR any object-level override, incl. per-plate config merges). Aggregated
+    // from successful plates only; failed plates keep the false default.
+    bool any_support = false;
     {
         // Deduplicate by (type, color), summing used_g across plates
         struct AggFilament
@@ -79,6 +83,7 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
                 total_print_time += plate.print_time;
                 total_weight += plate.total_filament_g;
                 total_length += plate.total_filament_m;
+                any_support = any_support || plate.support_used;
                 for (const auto& detail : plate.filament_details)
                 {
                     auto it = std::find_if(agg.begin(), agg.end(),
@@ -118,6 +123,18 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     print_info["total_length_mm"] = round2(total_length);
     print_info["plate_count"] = static_cast<int>(stats.plates.size());
     print_info["filaments"] = total_filaments;
+    // Emitted only on overall success (all plates sliced): a failed plate's
+    // support state was never determined, so aggregating it would be a guess.
+    // Consumers must treat a MISSING support_required as "unknown", never as
+    // "no support needed".
+    if (stats.success)
+        print_info["support_required"] = any_support;
+    // Input-file property determined at load time (any virtual mixed-filament
+    // slot reference in any plate), so unlike support_required it survives a
+    // partially failed run. Emitted whenever at least one plate was processed;
+    // absent on load-stage failures where the model was never parsed.
+    if (!stats.plates.empty())
+        print_info["mixed_filament_used"] = stats.mixed_filament_used;
     root["print_info_total"] = std::move(print_info);
 
     // Global issues
@@ -162,6 +179,7 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
             pj["filaments"] = std::move(fils);
             pj["model_thumbnail"] = plate.model_thumbnail;
             pj["long_retraction_when_cut"] = plate.long_retraction_when_cut;
+            pj["support_used"] = plate.support_used;
         }
 
         plates_json.push_back(std::move(pj));

@@ -110,7 +110,10 @@ struct SliceOutputStats
         std::map<int, double> filament_used_g; // Per extruder: grams
 
         // Additional info
-        bool support_used;
+        // Initialised (= false): failed plates return early from
+        // assemble_plate_stats before support_used is assigned, so without a
+        // default the field holds garbage that the JSON aggregation would read.
+        bool support_used = false;
         bool toolpath_outside;
 
         // New fields for enhanced JSON output
@@ -126,6 +129,11 @@ struct SliceOutputStats
     std::string error_message;
     std::vector<PlateStats> plates;
     std::vector<Issue> issues; // Global issues (e.g. load errors)
+    // Input-file property: any object/part/painted facet/height-range in the
+    // 3MF references a virtual mixed-filament slot (extruder id above the
+    // physical filament_colour count). Determined at load time; orthogonal to
+    // slicing success.
+    bool mixed_filament_used = false;
 };
 
 // RAII guard that removes a list of temp files on destruction

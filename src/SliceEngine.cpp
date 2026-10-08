@@ -724,7 +724,53 @@ bool SliceEngine::read_3mf_model()
                                            "The 3MF file contains no plate metadata; slicing it as a single plate "
                                            "containing all printable objects (desktop Orca behaviour)."));
     }
+
+    m_stats.mixed_filament_used = detect_mixed_filament_usage();
     return true;
+}
+
+// Does the project USE a mixed filament (as opposed to merely defining one)?
+// MixedFilamentManager numbers the virtual mixed slots from num_physical+1,
+// so any reference above the PHYSICAL filament count (filament_colour vector
+// length) is a mixed-slot reference. Two reference paths are checked:
+//   1. object / part level "extruder"
+//   2. painted facet states (mmu_segmentation used_states, 1-based extruder)
+// Height-range colour overrides (layer_config_ranges) are deliberately NOT
+// checked: the GUI supports physical filaments only there, so a virtual id
+// in that block is invalid hand-crafted data, not a real mixed-filament use.
+// The 3MF importer already clamps dangling references at load
+// (max_supported_filament_id_from_project_config), so any id that survives
+// loading is backed by an enabled mixed_filament_definitions row — no
+// re-validation against the definitions string is needed here.
+bool SliceEngine::detect_mixed_filament_usage() const
+{
+    const auto* colours = m_config.option<ConfigOptionStrings>("filament_colour");
+    const size_t num_physical = colours ? colours->values.size() : 0;
+    if (num_physical == 0)
+        return false;
+
+    auto extruder_exceeds = [num_physical](const ModelConfig& cfg) {
+        return cfg.has("extruder") && cfg.opt_int("extruder") > static_cast<int>(num_physical);
+    };
+
+    for (const ModelObject* obj : m_model.objects)
+    {
+        if (extruder_exceeds(obj->config))
+            return true;
+        for (const ModelVolume* vol : obj->volumes)
+        {
+            if (extruder_exceeds(vol->config))
+                return true;
+            // Painted facets: used_states[s] marks 1-based extruder state s in
+            // use on this volume's mesh (persisted in the 3MF).
+            const auto& used_states = vol->mmu_segmentation_facets.get_data().used_states;
+            for (size_t s = static_cast<size_t>(EnforcerBlockerType::Extruder1);
+                 s < used_states.size() && s <= static_cast<size_t>(EnforcerBlockerType::ExtruderMax); ++s)
+                if (used_states[s] && s > num_physical)
+                    return true;
+        }
+    }
+    return false;
 }
 
 // ============================================================================
