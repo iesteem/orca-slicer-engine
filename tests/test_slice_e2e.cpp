@@ -878,3 +878,49 @@ TEST_CASE("Plate-less 3MF with out-of-bed object fails at build-volume", "[integ
     REQUIRE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_OUTSIDE_XY", IssueLevel::error));
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 }
+
+// ============================================================================
+// Case 24 — Hand-crafted layer_config_ranges.xml (geom_above_bed_ok.3mf with
+// Metadata/layer_config_ranges.xml injected). The 3MF importer validates
+// nothing in that block, and libslic3r's layer_height_profile_from_ranges
+// (Slicing.cpp) dereferences option("layer_height") without a null check —
+// a range without that key used to kill the engine with SIGSEGV rc 139
+// inside Print::validate (verified live 2026-10-08). The engine-side
+// sanitize_layer_config_ranges() (read_3mf_model) must fix the range by
+// falling back to the global default layer height so the slice completes,
+// with a CONFIG_INVALID_LAYER_RANGE warning attributing the change.
+// ============================================================================
+TEST_CASE("Height range without layer_height no longer crashes; sanitized with warning", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_missing_height.3mf", "lr_missing_height");
+
+    // Pre-fix this was a SIGSEGV (rc 139); the whole regression contract is
+    // reaching these assertions at all.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+}
+
+// ============================================================================
+// Case 25 — Same injection vector, but the range is complete and instead
+// carries wall/sparse_infill_filament=5 (above the 4 physical filaments).
+// Height ranges support physical filaments only, and libslic3r silently
+// clamps the id to extruder 1 (Print.cpp extruder collection) — the slice
+// itself is unaffected, but the engine must surface the remap as a warning.
+// Also locks in that such invalid data does NOT count as mixed-filament
+// usage (the height-range path is deliberately absent from
+// detect_mixed_filament_usage()).
+// ============================================================================
+TEST_CASE("Height range with out-of-range filament id slices with visible warning", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_oob_filament.3mf", "lr_oob_filament");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+    REQUIRE_FALSE(r->engine->stats().mixed_filament_used);
+}

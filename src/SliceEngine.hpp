@@ -483,6 +483,11 @@ private:
     // after read_3mf_model().
     bool detect_mixed_filament_usage() const;
 
+    // Fix height ranges that would crash libslic3r (missing layer_height)
+    // and warn about out-of-range filament ids the slicer silently clamps.
+    // Called once after read_3mf_model().
+    void sanitize_layer_config_ranges();
+
     // Execute the slicing process: call print.process() to generate toolpaths.
     // Reports progress via the status callback and checks for cancellation.
     bool run_slicing(int plate_id, Slic3r::Print& print);

@@ -726,7 +726,70 @@ bool SliceEngine::read_3mf_model()
     }
 
     m_stats.mixed_filament_used = detect_mixed_filament_usage();
+    sanitize_layer_config_ranges();
     return true;
+}
+
+// Sanitize hand-crafted / corrupt height-range data before it reaches
+// libslic3r. The 3MF importer validates nothing inside
+// layer_config_ranges.xml (_extract_layer_config_ranges_from_archive), and a
+// range lacking "layer_height" null-derefs inside
+// layer_height_profile_from_ranges (Slicing.cpp "option(...)->getFloat()"),
+// killing the whole engine with SIGSEGV — verified live with a crafted
+// fixture (rc 139, crash in Print::validate). Such ranges are fixed here by
+// falling back to the global default layer height. Out-of-range filament ids
+// are NOT rewritten: libslic3r already clamps them to extruder 1 at extruder
+// collection (Print.cpp), and re-clamping here would only fork that logic —
+// but the silent remap is surfaced as a warning so the output change stays
+// attributable.
+void SliceEngine::sanitize_layer_config_ranges()
+{
+    const auto* colours = m_config.option<ConfigOptionStrings>("filament_colour");
+    const size_t num_physical = colours ? colours->values.size() : 0;
+    const double default_layer_height = m_config.opt_float("layer_height");
+
+    for (ModelObject* obj : m_model.objects)
+    {
+        if (obj->layer_config_ranges.empty())
+            continue;
+
+        std::vector<std::string> problems;
+        for (auto& [z_range, cfg] : obj->layer_config_ranges)
+        {
+            std::ostringstream where;
+            where << "[" << z_range.first << "-" << z_range.second << "]";
+
+            if (!cfg.has("layer_height"))
+            {
+                cfg.set("layer_height", default_layer_height);
+                problems.push_back(where.str() + " missing layer_height, set to default " +
+                                   std::to_string(default_layer_height));
+            }
+            for (const char* key : {"wall_filament", "sparse_infill_filament", "solid_infill_filament"})
+                if (cfg.has(key))
+                {
+                    const int id = cfg.opt_int(key);
+                    if (id < 0 || id > static_cast<int>(num_physical))
+                        problems.push_back(where.str() + " " + key + "=" + std::to_string(id) +
+                                           " is outside the physical filament range 1.." +
+                                           std::to_string(num_physical) + "; it prints with extruder 1");
+                }
+        }
+
+        if (!problems.empty())
+        {
+            std::string joined;
+            for (size_t i = 0; i < problems.size(); ++i)
+            {
+                if (i > 0)
+                    joined += "; ";
+                joined += problems[i];
+            }
+            m_stats.issues.push_back(make_warning(
+                -1, "CONFIG_INVALID_LAYER_RANGE",
+                "Object \"" + obj->name + "\" height-range settings carry invalid values: " + joined));
+        }
+    }
 }
 
 // Does the project USE a mixed filament (as opposed to merely defining one)?
