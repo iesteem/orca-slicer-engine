@@ -104,4 +104,16 @@ print_sequence/ temp_mode/ unsupported/` —— 与同名 test_*.cpp 一一对�
 | fixture | 盘构成 | 预期 |
 |---|---|---|
 | slice_empty_plate_skip.3mf | 盘1=立方体，盘2=空 | 多盘：rc=0、success=true、EMPTY_PLATE warning（归因盘2）、好盘正常打包；单盘（C API plate_id=2）：rc=6、success=false、零产物（Case 15/16） |
-| slice_all_plates_empty_fail.3mf | 两盘皆空 | rc=6、success=false、两条 EMPTY_PLATE 各归因其盘、零产物（Case 17） |
+| slice_all_plates_empty_fail.3mf | 两盘皆空 | rc=6、success=false、两条 EMPTY_PLATE 各归因其盘、零产物 + NO_PLATES_PRODUCED error（Case 17；P-23 Fix B）；2026-10-08 重生成（md5 `22b628d983847e41fe5aef2e7e602f8d`，build item 改 `printable="0"`）——P-23 几何重建上线后 printable="1" 立方体会被 enroll 进盘 1 翻绿，重生成保持零产物契约 |
+
+### 盘成员缺失组（P-23 几何重建，2026-10-08）
+
+来源：MakerWorld / BambuStudio-02.06 / OrcaSlicer 2.4.2 新格式——盘元数据
+只写盘壳不写 `<model_instance>` 成员；引擎按桌面 `reload_all_objects` 语义
+几何重建归属（SliceEngine::rebuild_plate_membership）。派生配方见
+docs/precedents/makerworld-membership-rebuild.md。
+
+| fixture | 盘构成 | 预期 |
+|---|---|---|
+| 1e9d9919e7955ce4.3mf (3.5MB) | 1 盘无成员记录，生产原件（md5 `70cd1bcba83e12d21477ee074b01b0f0`） | 几何重建 enroll 唯一实例 → rc=0、1 盘成功、PLATE_MEMBERSHIP_REBUILT tip、出产物、重量 5-40g（内嵌黄金 21.04g，U1 预设替换致偏）（Case 26） |
+| slice_membership_rebuilt_2plate.3mf | slice_empty_plate_skip 派生（删唯一 `<model_instance>`，md5 `918f7b5a34631be912685e522545bb57`）：两盘皆无成员 | 立方体几何归盘 1、盘 2 真空 → rc=0、1 盘成功、tip + 盘 2 EMPTY_PLATE warning（Case 27；同时是 Cases 15/16 的混合 map 回归对照） |

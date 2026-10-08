@@ -703,8 +703,11 @@ TEST_CASE("Requesting an empty plate: zero product fails with exit 6", "[integra
 
 // ============================================================================
 // Case 17 — Multi-plate, ALL plates empty (slice_all_plates_empty_fail.3mf:
-// both <plate> blocks lack model_instance references). Same zero-product
-// contract as Case 16, plus per-plate attribution of every skip.
+// both <plate> blocks lack model_instance references AND the build item is
+// printable="0" — regenerated 2026-10-08, see P-23: with the geometric
+// membership rebuild live, a printable="1" cube would be enrolled onto plate
+// 1 and this case would flip to success). Same zero-product contract as
+// Case 16, plus per-plate attribution of every skip.
 // ============================================================================
 TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visible", "[integration][slice][fail][empty_plate]")
 {
@@ -724,6 +727,9 @@ TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visib
     REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
     REQUIRE(r->engine->stats().plates.empty());
     REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
+    // The rebuild ran but enrolled nothing (unprintable instance excluded),
+    // so it must stay silent — no tip.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
 }
 
 // ============================================================================
@@ -923,4 +929,64 @@ TEST_CASE("Height range with out-of-range filament id slices with visible warnin
 
     REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
     REQUIRE_FALSE(r->engine->stats().mixed_filament_used);
+}
+
+// ============================================================================
+// Case 26 — Regression (P-23): MakerWorld / BambuStudio-02.06 / OrcaSlicer
+// 2.4.2 exports author <plate> metadata but record no membership
+// (<model_instance>) anywhere. Production incident 1e9d9919e7955ce4.3mf:
+// every obj_inst_map empty -> "Marked 0 instances printable" -> EMPTY_PLATE
+// warning -> exit 6 "No plates completed successfully" with a warnings-only
+// JSON (invisible to issue-level consumers). Desktop 2.4.0 slices these fine
+// because it ALWAYS rebuilds plate membership geometrically
+// (PartPlateList::reload_all_objects; the obj_inst_map restore is commented
+// out upstream). rebuild_plate_membership() ports that semantic.
+//
+// Regressions locked in:
+//   1. Success path restored: exit 0, one plate, output produced.
+//   2. The fallback is visible as a PLATE_MEMBERSHIP_REBUILT tip.
+//   3. Weight sanity: loose 5-40 g bracket (the file's own embedded
+//      slice_info golden is 21.04 g on the authoring printer; U1 official
+//      preset substitution shifts it — same bracket style as Case 20).
+// ============================================================================
+TEST_CASE("MakerWorld 3MF without membership slices via geometric rebuild", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/1e9d9919e7955ce4.3mf", "mw_membership");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+    REQUIRE(r->engine->stats().plates[0].total_filament_g > 5.0);
+    REQUIRE(r->engine->stats().plates[0].total_filament_g < 40.0);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 27 — Membership rebuild with a benign empty sibling (P-23): same
+// no-membership shape as Case 26 but two-plate, derived from Case 15's
+// fixture by deleting the sole <model_instance> record. The printable cube
+// (129.19, 183.71) sits in plate 1's grid cell, so the rebuild assigns it
+// there; plate 2 legitimately has nothing and must keep the P-19 warning +
+// skip semantics — one empty plate must not sink the rebuilt sibling.
+// ============================================================================
+TEST_CASE("Membership rebuild assigns the cube and skips the genuinely empty sibling", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_membership_rebuilt_2plate.3mf", "membership_2plate");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
 }

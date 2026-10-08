@@ -321,6 +321,14 @@ bool SliceEngine::run()
 
         try
         {
+            // --- Plate membership rebuild (P-23, before per-plate loop) ---
+            // Runs after apply_preset_substitution() above so printable_area
+            // is the official U1 value, and before process_plate — the first
+            // membership consumer (mark_printable_instances). Ordering
+            // against bake_instance_z_into_mesh below is irrelevant: it only
+            // moves Z, and membership is decided by the XY intersection test.
+            rebuild_plate_membership();
+
             // --- Geometry defect detection (once for entire model, before per-plate loop) ---
             {
                 auto geom_issues = run_geometry_checks(m_model);
@@ -2528,6 +2536,109 @@ Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id)
     orca::PlateOrigin o = orca::compute_plate_origin(plate_id, total_plates, plate_width, plate_depth);
 
     return Vec3d(o.x, o.y, 0.0);
+}
+
+void SliceEngine::rebuild_plate_membership()
+{
+    // Degradation guard, same condition as setup_print_origin above: no
+    // printable_area -> no grid geometry -> leave membership untouched. The
+    // plates stay empty and the P-19 EMPTY_PLATE warning path applies.
+    // (In practice unreachable: apply_printer_official_preset hard-fails
+    // earlier when it cannot apply a printable_area.)
+    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.empty())
+        return;
+    BoundingBoxf bed_bbox;
+    for (const Vec2d& pt : pa->values)
+        bed_bbox.merge(pt);
+    const double plate_width  = bed_bbox.size().x();
+    const double plate_depth  = bed_bbox.size().y();
+    const int    total_plates = static_cast<int>(m_plate_data.size());
+    // Desktop parity: PartPlate::get_build_volume inflates the plate box by
+    // BuildVolume::SceneEpsilon before intersect_instance() tests it.
+    const double eps = Slic3r::BuildVolume::SceneEpsilon;
+
+    // Candidate plates = those whose obj_inst_map is empty (the 3MF authored
+    // the plate but recorded no membership). Instances already claimed by ANY
+    // plate's explicit map keep their assignment verbatim — plates with map
+    // entries are never touched, so complete-membership files (every fixture
+    // in-repo) see zero behaviour change.
+    std::vector<PlateData*>            candidates;
+    std::vector<orca::PlateBox2D>      boxes;  // parallel to candidates
+    std::set<int>                      claimed;
+    for (PlateData* pd : m_plate_data)
+    {
+        if (pd->obj_inst_map.empty())
+        {
+            candidates.push_back(pd);
+            boxes.push_back(orca::compute_plate_box(pd->plate_index, total_plates,
+                                                    plate_width, plate_depth, eps));
+        }
+        for (const auto& [key, inst_info] : pd->obj_inst_map)
+            claimed.insert(inst_info.second);
+    }
+    if (candidates.empty())
+        return;
+
+    // Desktop loop (GUI PartPlateList::reload_all_objects): per printable,
+    // unclaimed instance, convex-hull bounding box (world coords), first
+    // intersecting plate wins. Documented divergence: desktop tests ALL
+    // plates' boxes, we test only candidate (empty-map) ones — equivalent on
+    // every reachable real-world file, since a plate with map entries that
+    // omits a geometrically-on-it instance is corrupt input the engine
+    // already mishandles today.
+    // A degenerate bbox (e.g. modifier-only object with empty convex hull)
+    // compares NaN/false everywhere below and is left unenrolled — benign,
+    // no UB (NaN FP comparisons are defined false).
+    int enrolled = 0, excluded = 0, key = 0;
+    for (ModelObject* obj : m_model.objects)
+    {
+        for (size_t j = 0; j < obj->instances.size(); ++j)
+        {
+            ModelInstance* inst = obj->instances[j];
+            if (!inst->printable)
+            {
+                // Desktop puts printable="0" instances on the unprintable
+                // plate; they never join a real plate.
+                ++excluded;
+                continue;
+            }
+            if (claimed.count(static_cast<int>(inst->loaded_id)) > 0)
+                continue;
+            const BoundingBoxf3 inst_bbox = obj->instance_convex_hull_bounding_box(j);
+            for (size_t c = 0; c < candidates.size(); ++c)
+            {
+                const orca::PlateBox2D& b = boxes[c];
+                if (inst_bbox.max.x() >= b.xmin && inst_bbox.min.x() <= b.xmax &&
+                    inst_bbox.max.y() >= b.ymin && inst_bbox.min.y() <= b.ymax)
+                {
+                    // P-22 enrollment pattern: key only needs uniqueness
+                    // (engine consumers read value.second exclusively) and a
+                    // running counter is collision-free on an empty map.
+                    // static_cast size_t->int narrowing is bounded by the
+                    // instance count and id().id is globally unique, > 0.
+                    inst->loaded_id = inst->id().id;
+                    candidates[c]->obj_inst_map.emplace(
+                        ++key, std::make_pair(static_cast<int>(j),
+                                              static_cast<int>(inst->id().id)));
+                    ++enrolled;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (enrolled == 0)
+        return;
+
+    BOOST_LOG_TRIVIAL(info) << "Rebuilt plate membership geometrically: " << enrolled
+                            << " instance(s) assigned, " << excluded
+                            << " excluded as unprintable (plate metadata carried no model_instance records)";
+    m_stats.issues.push_back(make_tip(-1, "PLATE_MEMBERSHIP_REBUILT",
+        "The 3MF file's plate metadata does not record instance membership; "
+        "instances were assigned to plates geometrically (desktop Orca behaviour): " +
+        std::to_string(enrolled) + " assigned, " + std::to_string(excluded) +
+        " excluded as unprintable."));
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)

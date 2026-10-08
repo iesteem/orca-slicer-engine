@@ -67,4 +67,31 @@ inline PlateOrigin compute_plate_origin(int plate_id, int total_plates,
     };
 }
 
+// Plate footprint rectangle in global XY space: the plate-local bed extent
+// [0,W]x[0,D] translated by the grid origin, inflated by eps on every side.
+// Desktop parity: PartPlate::get_build_volume (GUI/PartPlate.hpp) inflates the
+// plate box by BuildVolume::SceneEpsilon before intersect_instance() tests
+// it against an instance bounding box. Z is deliberately excluded — every
+// engine plate shares the same z-range, so XY alone discriminates membership.
+struct PlateBox2D
+{
+    double xmin;
+    double ymin;
+    double xmax;
+    double ymax;
+};
+
+// Pure companion of compute_plate_origin for P-23 geometric membership
+// rebuild (see SliceEngine::rebuild_plate_membership). The Y span is
+// [origin.y, origin.y + D]: the grid origin is the plate's upper edge and
+// rows grow downward (negative Y), consistent with setup_print_origin's
+// global-to-local translation by plain subtraction.
+inline PlateBox2D compute_plate_box(int plate_id, int total_plates,
+                                    double plate_width, double plate_depth,
+                                    double eps)
+{
+    PlateOrigin o = compute_plate_origin(plate_id, total_plates, plate_width, plate_depth);
+    return { o.x - eps, o.y - eps, o.x + plate_width + eps, o.y + plate_depth + eps };
+}
+
 } // namespace orca

@@ -339,6 +339,19 @@ private:
      */
     void decode_plate_thumbnails();
 
+    // Desktop-parity fallback (P-23): a plate whose obj_inst_map is empty gets
+    // its membership rebuilt geometrically. Port of the GUI's
+    // PartPlateList::reload_all_objects (GUI/PartPlate.cpp): each printable
+    // instance not claimed by any plate's existing map is assigned to the
+    // first empty-map plate (in plate order) whose grid cell intersects the
+    // instance's convex-hull bounding box. Plates WITH map entries are never
+    // touched. Enrolls via the P-22 pattern (loaded_id = id().id, running
+    // counter key) so every loaded_id/obj_inst_map matching site works
+    // unmodified. Emits a PLATE_MEMBERSHIP_REBUILT tip iff at least one
+    // instance was assigned. Run-once from run(), after the preset stages
+    // (printable_area final) and before the per-plate loop.
+    void rebuild_plate_membership();
+
     // Run the full slicing pipeline for a single plate: filter instances, check
     // build volume, slice, export G-code, and post-process. Results are stored
     // in m_plate_results[plate_id].
