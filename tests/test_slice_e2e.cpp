@@ -727,6 +727,9 @@ TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visib
     REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
     REQUIRE(r->engine->stats().plates.empty());
     REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
+    // Zero-product observability (P-23 Fix B): the failure must be visible
+    // at error level in the issue list, not only via error_message/exit code.
+    REQUIRE(has_global_issue(r->engine->stats(), "NO_PLATES_PRODUCED", IssueLevel::error));
     // The rebuild ran but enrolled nothing (unprintable instance excluded),
     // so it must stay silent — no tip.
     REQUIRE_FALSE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));

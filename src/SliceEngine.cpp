@@ -4472,6 +4472,41 @@ void SliceEngine::finalise_statistics()
     if (m_stats.plates.empty())
     {
         m_stats.error_message = "No plates completed successfully";
+        // Zero-product observability (P-23, production 1e9d9919...): JSON-only
+        // consumers read issue level, not error_message — before this, the
+        // empty-plates branch was the only error_message setter that pushed no
+        // issue, so exit 6 shipped with a warnings-only issue list.
+        //
+        // Context gate — m_any_error is set by run()'s zero-product guard
+        // right before build_statistics() at run() end, so here it
+        // distinguishes "a slicing run produced nothing" from the non-run()
+        // contexts (run_geometry_preprocess_only / run_preset_substitution_
+        // only) where an empty plates list is BY DESIGN and must not
+        // fabricate a failure issue. Flags are NOT set here: that is run()'s
+        // guard's job (its ordering relative to the packaging gate is
+        // deliberate, see the guard's comment).
+        //
+        // Suppressed when a more specific error issue already attributes the
+        // failure (e.g. PLATELESS_NO_PRINTABLE_INSTANCES): the generic code
+        // would add no information. Global plate_id=-1 keeps
+        // patch_orphan_plate_issues from fabricating a placeholder plate.
+        if (m_any_error)
+        {
+            bool has_error_issue = false;
+            for (const auto& issue : m_stats.issues)
+            {
+                if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
+                {
+                    has_error_issue = true;
+                    break;
+                }
+            }
+            if (!has_error_issue)
+            {
+                m_stats.issues.push_back(make_error(-1, "NO_PLATES_PRODUCED", m_stats.error_message));
+                std::stable_sort(m_stats.issues.begin(), m_stats.issues.end(), by_severity);
+            }
+        }
         return;
     }
     int failed_count = 0;
