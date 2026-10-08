@@ -80,6 +80,13 @@ void run_preprocess_on(SliceEngine*& out_engine, const char* fixture_path,
     out_engine = engine_storage.get();
     REQUIRE(out_engine->run_geometry_preprocess_only());
     REQUIRE(!out_engine->any_error());
+    // P-23 Fix B context gate: an empty plates list is BY DESIGN in this
+    // non-run() context (no slicing happened), so the zero-product
+    // observability code must not fabricate a NO_PLATES_PRODUCED failure
+    // issue here. Checked in the shared helper so every preprocess case
+    // locks the gate.
+    for (const auto& issue : out_engine->stats().issues)
+        REQUIRE(issue.code != "NO_PLATES_PRODUCED");
 }
 } // namespace
 

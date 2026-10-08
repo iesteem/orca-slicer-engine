@@ -28,7 +28,14 @@ namespace {
 // RAII: remove a path on scope exit. Cleans the gcode.3mf that run() produces.
 struct PathCleanup {
     std::string path;
-    explicit PathCleanup(std::string p) : path(std::move(p)) {}
+    explicit PathCleanup(std::string p) : path(std::move(p))
+    {
+        // Pre-clean: a leftover artifact from a killed previous run (SIGTERM
+        // mid-case never reaches the destructor) must not satisfy a later
+        // run's exists()/file_size() assertions — stale-artifact false green.
+        boost::system::error_code ec;
+        boost::filesystem::remove(path, ec);
+    }
     ~PathCleanup() {
         boost::system::error_code ec;
         boost::filesystem::remove(path, ec);
@@ -865,6 +872,10 @@ TEST_CASE("Plate-less 3MF with all objects unprintable fails loudly", "[integrat
     REQUIRE(r->engine->exit_code() == 6);
 
     REQUIRE(has_global_issue(r->engine->stats(), "PLATELESS_NO_PRINTABLE_INSTANCES", IssueLevel::error));
+    // Fix B suppression gate (P-23): the failure is already attributed by the
+    // specific PLATELESS_NO_PRINTABLE_INSTANCES error, so the generic
+    // NO_PLATES_PRODUCED must stay silent — single attribution.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "NO_PLATES_PRODUCED", IssueLevel::error));
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 }
 
