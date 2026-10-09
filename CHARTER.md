@@ -13,7 +13,7 @@ OrcaSlicer **行为一致**的结果，而不是重新发明一个切片器。
 
 - **桌面版 OrcaSlicer 是行为准绳。** 当引擎与桌面版行为不一致时，除非有
   明确记录的偏离决策，否则一律视为引擎的 bug，以对齐桌面版为修复方向。
-  对齐基准版本在 CHANGELOG 中记录（当前锚定 2.3.5-base 的行为判例）。
+  对齐基准版本随行为判例记录（docs/precedents/，当前锚定 2.3.5-base）。
 - 上游 libslic3r / OrcaSlicer 的 bug 属于外部沉疴：记录于判例库，不盲目
   在引擎侧"修补"，除非有绕过方案且记录了根因。
 
@@ -42,5 +42,5 @@ OrcaSlicer **行为一致**的结果，而不是重新发明一个切片器。
 2. `METHODOLOGY.md` —— 方法论原则
 3. `docs/requirements/` —— 分模块需求/用例
 4. `docs/precedents/` —— 行为判例库（轮回的"不死判官"）
-5. `CHANGELOG.md` —— 更新日志
+5. `docs/requirements/fix-requirements-*.md` —— 版本变更需求与验收记录
 6. 数据与 fixture —— 完全被继承

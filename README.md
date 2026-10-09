@@ -6,7 +6,7 @@ Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engi
 
 - [CHARTER.md](CHARTER.md) — 为何存在、边界、宪法级设计决策
 - [METHODOLOGY.md](METHODOLOGY.md) — 工作方法论原则
-- [CHANGELOG.md](CHANGELOG.md) — 更新日志（版本以 `ENGINE_VERSION` 为准）
+- [docs/requirements/](docs/requirements/) — 需求与验收（版本变更见 fix-requirements-*.md，版本以 `ENGINE_VERSION` 为准）
 - [docs/precedents/](docs/precedents/) — 行为判例库（已实测确认的行为契约与根因）
 
 **Architecture:**
