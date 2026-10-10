@@ -1,10 +1,10 @@
 # 云切片引擎 v2.2.0 技术方案（评审稿）
 
 - **评审日期**：2026-10-10
-- **版本**：feature-2.2.0 @ b26feca（`ENGINE_VERSION = 2.2.0`，CMakeLists.txt:23）
+- **版本**：feature-2.2.0 @ f67f630（`ENGINE_VERSION = 2.2.0`，CMakeLists.txt:23）
 - **基线**：package-02.01.06（v02.01.06，2026-09-14 构建）；差分实测报告 `REVIEW-DIFF-020106-VS-220-2026-09-28.md`
-- **来源**：2026-09-16《云切片引擎审查报告》13 REQ + 生产事故驱动（P-22/P-23）+ 对抗审查（2026-09-18/20 两轮）
-- **支撑材料**：`docs/requirements/fix-requirements-2.2.0.md`、`docs/precedents/`（P-01..P-23 判例库）、`REVIEW-C4-C5-2026-09-20.md`
+- **来源**：2026-09-16《云切片引擎审查报告》13 REQ + 生产事故驱动（P-22/P-23/P-24）+ 对抗审查（2026-09-18/20 两轮）+ 发布前回归审查（2026-10-10，六域 22 变更项）
+- **支撑材料**：`docs/requirements/fix-requirements-2.2.0.md`、`docs/precedents/`（P-01..P-24 判例库）、`REVIEW-C4-C5-2026-09-20.md`、`BREAKING-CHANGES-2.2.0-CALLER-MIGRATION.md`（调用方通报，§2.6）
 
 > 本文每节按统一结构：**问题 → 根因 → 候选方案对比（含被否决方案及其否决证据）→ 选型
 > → 验证**。被否决方案不是凑数——全部来自判例库"已证伪/否决"条目，是真实走过或对抗
@@ -17,7 +17,7 @@
 | # | 原则 | 出处 |
 |---|---|---|
 | D1 | **桌面 parity 准绳**：引擎与桌面行为不一致时，除有记录的偏离决策，一律视为引擎 bug | CHARTER.md |
-| D2 | **数据层修复优于消费点分支**：载入后一次性补齐数据（入册/归一），让全部下游消费点自动接通，而不是在每个消费点加 if | P-22 D1'''、P-23 Fix A |
+| D2 | **数据层修复优于消费点分支**：载入后一次性补齐数据（入册/归一/重建），让全部下游消费点自动接通，而不是在每个消费点加 if | P-22 D1'''、P-23 Fix A、P-24 |
 | D3 | **观测不翻语义**：补 issue 只用于可观测性，不得改变 success/rc/产物三方语义 | P-19 约束 3 |
 | D4 | **退出码具体性**：更具体的错误码（如 slicing=4）不被通用码（preprocess=6）覆盖 | P-19 约束 2 |
 | D5 | **all-or-nothing 打包门是宪法级约束**：任何修复不得把"部分盘失败"扩大成"整单无产物"（m_any_error 的设置点必须审慎） | P-05、P-19 约束 1 |
@@ -85,6 +85,12 @@ D3 引擎无长度规整。**附带上游发现**：fork 的 `set_num_filaments(
 
 **验证**：红→绿 21 断言（6 键 len 2→4、flush 2×2→4×4、槽 2/3 官方值）；
 差分实测产物 `project_settings.config` 全向量 len=4 且值=官方。
+**shrink 侧补锚**（2026-10-10 回归审查盲区①——grow 断言全有、shrink 是
+normalize 唯一无锚定路径）：`u1_preset_test_oversized.3mf`（5 个 pass-1 core 键
+拉伸至 6、`filament_settings_id` 保 4）断言裁回 4 + flush 36→16，防第三方导出器
+"裁 id 不裁向量"形状流入下游槽位索引器（蘑菇 ToolOrdering 崩溃家族）；
+pass-2（`Preset::filament_options`）grow-only 不裁长向量是桌面 parity 设计，
+不对 flow-variant 键断 shrink。
 
 ---
 
@@ -193,12 +199,13 @@ error 级：gcode 打不开 / 复制 I/O 失败 / 锚定缺失 / rename 失败 /
 | Fix A. 几何重建 `rebuild_plate_membership()`：仅 obj_inst_map 为空的盘为候选；逐 printable 实例凸包包围盒与盘格子矩形相交测试，首个命中入册（沿用 P-22 enroll 模式） | 桌面语义移植；有成员记录的盘行为原样（全部既有 fixture 零变化）；顺带绕开上游单键 map 多实例丢实例缺陷 | 与桌面已知分歧：实例跨候选/非候选盘格子时命中序可能不同（真实可达文件上等价——见判例论证） | **采用**（784c9ca） |
 | 消费端"空 map = 全选"兜底 | 改动小 | **证伪**：P-22 文档已证伪的 D3 同族 | 否决 |
 | 升级 fork 导入器解析 `<assemble>` | 治本 | 桌面自己也不靠该节判归属（assemble 处理器只回填 transform）；超出修复半径 | 否决 |
-| 桌面式全量几何重建（每次载入重建所有盘） | 完全 parity | 改变全部既有盘归属来源（记录 vs 几何），回归面不可控 | 收敛为"仅空 map 盘候选"（**2026-10-10 修订：生产反例 2d986d79 证伪该收敛，经人类批准扩为 always-rebuild，见 P-24**） |
+| 桌面式全量几何重建（每次载入重建所有盘） | 完全 parity | 改变全部既有盘归属来源（记录 vs 几何），回归面不可控 | ~~收敛为"仅空 map 盘候选"~~（**2026-10-10 修订：生产反例 2d986d79 证伪该收敛，经人类批准扩为 always-rebuild——完整决策链见 §2.1.8 / 判例 P-24**） |
 | Fix B 无条件 push NO_PLATES_PRODUCED | 可观测性最强 | 与 PLATELESS_NO_PRINTABLE_INSTANCES 双错误并列，破坏单一归因 | 加"已有 error 级 issue 则抑制"守卫（122c236） |
 
 **验证**：事故件修复前 rc=6/全 warning → 修复后 rc=0、`PLATE_MEMBERSHIP_REBUILT`
 tip、产物 3.67MB、重量 31.74g（内嵌黄金 21.04g，官方预设替换致偏，Case 26 以
-5-40g 宽区间锚定）；e2e Case 26/27 + Case 17 更新；全量 780 用例绿（2026-10-08）。
+5-40g 宽区间锚定）；e2e Case 26/27 + Case 17 更新。*（本节为 P-23 初版记录；
+"仅空 map 盘候选"收敛已被 P-24 推翻，现行行为以 §2.1.8 为准。）*
 
 ---
 
@@ -218,7 +225,66 @@ fixture 复现；桌面同缺陷，fork `Slicing.cpp:184` 至今未修）。
 | C. 只修 fork `Slicing.cpp:184` 补 null 检查 | 治本 | 跨仓库；桌面同修周期不可控 | 列入上游上报清单（4.5） |
 
 **验证**：两注入 fixture（missing_height 修复前 SIGSEGV / oob_filament）rc=0 +
-告警断言；`[layerheight]` 8 用例证明正常高度范围数据不受扰。
+告警断言。**正常数据不误伤补锚**（2026-10-10 回归审查盲区②——原
+"[layerheight] 8 用例"的 fixture 根本不携带 ranges.xml，反告警侧零断言）：
+Case 31 `layer_range_valid_boundary.3mf` 把全部合法边界停进一个 range——
+wall=1 首槽 / sparse_infill=4==num_physical 末槽（`<`/`<=` off-by-one 磁铁：
+`>=` 笔误会在最后一个物理槽误告警，教会 issue 消费方忽略该码）/ solid_infill=0
+合法默认 / layer_height 在 → 断言 rc=0 + 零 `CONFIG_INVALID_LAYER_RANGE`，**且
+wall 槽与末槽有实测用量**（ranges 真生效非空过，防"sanitize 丢弃数据"式空过）；
+`[filcount]` multicolor 用例同步补内部 id 反告警断言。
+
+---
+
+#### 2.1.8 P-24：membership 元数据与几何错位 → always-rebuild（推翻 P-23 收敛决策）
+
+**问题**：生产件 `2d986d79661ffb62.3mf`（8 盘，第三方导出器产出——自定义工艺
+预设名 "Litos"、260mm 热床网格排版为证）：membership 元数据非空但与几何格位
+**错位一格**（对象全部精确落在 7 盘布局格心，`model_settings.config` 的
+plater_id 被第三方工具重排过、对象未随之移动）。引擎按当前 U1 打印机重算盘原点
+后，盘 3/5/8 误判 `BUILD_VOLUME_FULLY_OUTSIDE` → rc=6；all-or-nothing 打包（D5）
+连带 4 个成功盘零产物。**桌面 Orca 2.4.0 对同一文件全部 8 盘成功**，且桌面输出
+的盘归属与文件元数据不一致（top.stl 元数据记盘 3、桌面判盘 2）——桌面从不信任
+membership。
+
+**根因**：P-23 Fix A 的"仅空 map 盘候选、非空 map 逐字信任"收敛，其自我论证
+是"有成员却漏记自己盘上实例的文件本就是损坏输入（真实不可达）"——本文件正是
+该"损坏输入"的真实可达反例。桌面 `load_from_3mf_structure` 已把 obj_inst_map
+恢复代码注释废弃（"we will rebuild later"），`reload_all_objects()` 每次载入
+全量几何重建归属。
+
+**桌面禁切语义（实证，决定告警级别）**：GLCanvas3D.cpp:3973 切片按钮 enable 条件
+= `contained_min_one && !partlyOut`——**完全出界不阻断**（实例落 unprintable
+plate，其余盘照切），仅部分越界禁切（引擎已有 BUILD_VOLUME_OUTSIDE_* 阻断）。
+
+**候选方案**：
+
+| 方案 | 优点 | 缺点 | 结论 |
+|---|---|---|---|
+| A. always-rebuild：`rebuild_plate_membership()` 对齐桌面 `reload_all_objects` 全量语义——清空所有盘 map 后全盘盒几何重算（凸包 bbox × eps 膨胀盘盒，盘序首个命中胜） | 桌面 parity（D1）；membership 损坏/错位/单键 map 丢实例（U2）一族问题全部消失 | 改变全部盘归属来源（记录 → 几何），回归面大——靠"归属变化才发 tip"静默锁 + 全量套件兜底 | **采用**（49431b1，2026-10-10 经人类批准推翻 P-23 收敛） |
+| 维持"仅空 map 盘候选" | 零新回归面 | **已证伪**：2d986d79 即反例 | 否决（P-24 推翻） |
+| 消费端兜底（越界对象按几何重新归属） | 改动局部 | 在错误数据上打补丁，重造 rebuild 逻辑且只修症状 | 否决 |
+
+**选型要点**（对齐 D2 数据层修复）：①**P-22 守卫**——`m_synthesized_single_plate`
+时直接返回，合成单盘的"盘 1=全部 printable 实例"是位置无关判例语义，几何重建会
+把床外实例剔出（静默丢件）；②**before 快照按实例身份**（`loaded_id → (obj_idx,
+inst_idx)` 索引）而非 identify_id 值——重建后 `loaded_id = id().id` 与文件值必然
+不同；③**不落任何盘的 printable 实例** → warning 级 `INSTANCE_NOT_ON_ANY_PLATE`
+（非阻断，对齐桌面"完全出界不阻断"实证——警告不得硬化为阻断，否则重造 P-24
+移除的反向 parity 缺陷）；④**tip 条件重设计**：从"enrolled>0"改为"任一 printable
+实例归属变化（before vs after 集合差异）"——桌面-authored 文件 geometry ≡
+membership，重建为 no-op 且**静默**。
+
+**已知局限**：同一实例被多盘 map 重复声明（损坏输入）时，"具体从哪盘搬到哪盘"
+的计数可能不精确——仅损 tip 文案精度，不损归属正确性。
+
+**验证**：Case 28 事故件 8 盘全绿 + tip + rc=0；Case 15 补 tip **静默**锁（桌面
+authored no-op 不得发 tip）；Case 17（双空盘）保持静默；Case 26/27（无记录→有
+归属）保持发 tip；Cases 29/30 补 P-24 出厂时缺失的**正契**——Case 29 兄弟盘
+（网格外实例 + 健康盘并存）rc=0、好盘出产物、warning+EMPTY_PLATE+tip 三者并存
+（警告不拖垮好盘）；Case 30 唯一实例在网格外 → rc=6 **源自 NO_PLATES_PRODUCED
+零产物守卫而非警告本身**（钉死失败分类，防警告静默硬化）；全量 869 用例绿
+（2026-10-10）。
 
 ---
 
@@ -368,15 +434,28 @@ e2e Case 15/16/17 共 23 断言；exit-codes.md 契约同步。
 
 ---
 
-#### 2.4.2 JSON 统计增强（23d7e0c）
+#### 2.4.2 JSON 统计增强（23d7e0c + c7d0428 + f67f630）
 
 | 字段 | 语义 | 设计要点 |
 |---|---|---|
+| `resources_version`（顶层，c7d0428） | `-r/--resources` 资源目录 `profiles/Snapmaker.json` 的 `version` **原样字符串**回显（如 `02.03.03.03`） | **不走 Semver**——`to_string()` 丢补零（`02.02.50.02`），且 vendor bundle 仅预设替换路径才装载；在 `build_statistics()` 唯一漏斗发射——**失败出口也带**（rc=6 排障时价值最高处）；文件缺失/无 version 键/解析失败 → 一条 WARN + 字段缺席（缺席=未知，非空串） |
 | `support_free` | **gcode 实际层**（2026-10-10 二次换源，方案 C 落地）：`GCodeProcessorResult.print_statistics.support_volumes_per_extruder` 求和 >0（erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖），发射时取反（true=零支撑挤出）；两级 `print_info_total`/`plates[]` 同极性；成功时才发。配置开但自支撑几何 → true | **缺席 = 未知，坍缩在保守侧"有支撑"**；输出 gcode.3mf 内嵌盘元数据 `support_used` 保持配置层（桌面 PartPlate.cpp:5476 parity）。演进：同日先由 `support_required` 改名翻转（极性），再判定源配置层→gcode 实际层，均未发布前原地修订；顺带修 `PlateStats::support_used`（现 `support_generated`）失败盘早退留 garbage 值的初始化缺陷 |
 | `mixed_filament_used` | 对象/part extruder 或面片选中虚拟混色槽（id 超过物理 `filament_colour` 数） | 载入时一次判定（`detect_mixed_filament_usage()`）——输入文件属性，部分失败运行仍有效；高度换色**刻意不查**（GUI 该处只支持物理耗材，用户确认） |
 
-**验证**：`[capi][support]`×3 + `[capi][mixed]`×3；4 个 mixed fixture 覆盖
-对象/modifier/面片三通路 + defined-but-unused 负对照。
+**验证**：`[capi][support]`×4 / 20 断言（新增 `geom_overhang_support_generated.3mf`
+T 形悬垂 fixture——真生成支撑侧必须 false；悬空实例 Z 变体不可制备：ensure-on-bed
+把单零件对象贴床）；产物 gcode 双侧核对 `;TYPE:Support` 在/缺；`[capi][mixed]`×3；
+4 个 mixed fixture 覆盖对象/modifier/面片三通路 + defined-but-unused 负对照；
+`[capi][resources_version]`（快速 printer-reject 路径，期望值测试时从同一资源文件
+读出，防资源升级即红）——package-02.01.04 资源→`02.02.50.02`、仓库资源→
+`02.03.03.03`、空 profiles 目录→字段缺席+WARN 且 rc 不变。
+
+**契约同步**（28ae3c3）：`json-output.md` 记录全部可选新字段（缺席=未知）+
+2.2.0 历史行（[anchor] 防漂移要求）；`exit-codes.md` 新增"盘选择与归属"组
+（`NO_PLATES_PRODUCED`/`PLATE_MEMBERSHIP_REBUILT`/`INSTANCE_NOT_ON_ANY_PLATE`，
+全表 68→71），`PLATE_NOT_FOUND` 从"输入/装载（exit 3）"组移入该组记 exit 6
+（发射点本就设 `EXIT_PREPROCESS_ERROR`，文档分组修正、行为不变），失效的
+CHANGELOG.md 引用换 in-file 历史表。
 
 ---
 
@@ -395,6 +474,38 @@ e2e Case 15/16/17 共 23 断言；exit-codes.md 契约同步。
 删 instantiated 预设父级 → rc=1（4 悬空+4 缺 vendor）；坏 JSON → rc=1；空目录
 → rc=1。注意：删无 instantiated 继承者的文件（如 `fdm_filament_common`）不会红
 ——构造红测须删 instantiated 预设的直接父级。
+
+---
+
+### 2.6 调用方 Breaking Changes 通报与生产 argv 审计（7c3c86d）
+
+**问题**：发布前回归审查（2026-10-10，六域并行审 22 变更项）识别出 **4 项调用方
+可观察行为变更**（rc/产物/JSON）。本仓库内部零调用方（tests/scripts/tools/
+package/CI 全扫），但外部调用方无感知升级时：B1/B2 首次调用即整单 rc=1，B3
+产物内容全变，B4 静默漏检空盘——都需要**升级前**逐项核对。
+
+**交付物**（独立成文，可直接转发调用方）：
+
+| 项 | 变更 | 06 行为 | 2.2.0 行为 | 迁移 |
+|---|---|---|---|---|
+| B1 | CLI `-p/--plate` 移除（b739c20） | 静默忽略、实际全切 | 传参即 rc=1 + stderr 指引 C API `plate_id` | 删参数；单盘走 C API |
+| B2 | 数值/format 严格校验（95a2246） | `-t abc`→静默无超时等 | rc=1 全串校验、format 小写白名单、双层生效 | 编排侧生成参数处自查 |
+| B3 | C API `plate_id` 语义激活（95a2246 步骤 1） | 从不赋值→恒全切 | 真单盘切片；越界/空盘 → rc=6 新失败分支 | 盘点生产 params_json 是否已有 `plate_id>0`（06 下每单都在做 N 倍无效功） |
+| B4 | 空盘不再翻 `success=false`（6aa4d6b） | success=false 但 rc=0 + 产物照打包（三方矛盾） | warning 良性跳过，仅零产物 rc=6 | 改读 `issues[]`（EMPTY_PLATE/NO_PRINTABLE_OBJECTS/NO_PLATES_PRODUCED） |
+
+另记录 3 项**静默行为变更**（skip-preset-substitution 忽略、PRESETS_MISSING
+硬门控、P-21 覆写语义——rc 不变但产物内容不同）与**非 breaking JSON 新增**
+（§2.4.2 全部字段 + 严格 schema 需放行），及上线后监控表（rc=1/rc=6 占比、
+`FILAMENT_TEMP_MIXING` 翻红率、`brim echo restore` 零容忍、
+`OUTPUT_PATH_RELOCATED` 命中即清理）。
+
+**配套审计工具** `tools/audit_caller_args.py`：对**生产调用日志**（非本仓库）
+升级前必跑——`--cli-log`（每行一条完整命令行）/`--json-log`（每行一条
+params_json）/`--scan`（扫调用方脚本仓库）三模式；规则 CR1-CR9 与通报 §一/§二/
+§三 1:1 映射（防文档-工具漂移）；退出码 0=干净、1=存在 breaking 命中，
+`--strict` 把语义/静默变更也计入。红绿自测：9 规则在陷阱样本上全部触发、干净行
+（`-t 0`/`+10`/`plate_id 0`/带引号 cancel-file 等）零误报；仓库自审 CLEAN
+（唯一调用点 `scripts/package_linux.sh:43` 的 `--help`）。
 
 ---
 
@@ -472,7 +583,7 @@ back-pointer（改动确认进二进制，崩溃不变）。
 | # | 缺陷 | 引擎侧现状 | 上报动作 |
 |---|---|---|---|
 | U1 | `PrintConfigDef` 构造缺 `init_filament_option_keys()` → 全 fork `set_num_filaments` no-op（桌面靠 GUI 同名函数掩盖） | 自建 23 键表绕开（P-21）；上游修复后引擎 helper 幂等可收敛 | 待报 fork |
-| U2 | BBS 真盘同对象多实例被 obj_inst_map 单键 map 静默丢条目（bbs_3mf.cpp:4473，crafted_dup 实验双实例只切 1 个） | P-23 enroll 递增 key 顺带绕开（仅无成员记录盘） | 待报 fork |
+| U2 | BBS 真盘同对象多实例被 obj_inst_map 单键 map 静默丢条目（bbs_3mf.cpp:4473，crafted_dup 实验双实例只切 1 个） | P-24 always-rebuild 后**全面绕开**（不再存在"信任非空 map"的路径依赖它），属顺带 parity 改善 | 待报 fork |
 | U3 | `Slicing.cpp:184` layer_config_ranges 缺 layer_height 无 null 检查解引用 | 引擎侧 sanitize（2.1.7） | 待报 fork |
 
 ### 3.6 小项遗留
@@ -504,10 +615,12 @@ log sink 修复是代码级保证，**未做同进程多任务运行时验证**�
 |---|---|---|
 | 红先行 | 全部修复先写红测（36e8daa / 7053443 / 8bfbda9），修复后转绿 | 已执行 |
 | 双引擎差分 | 06 包 vs 2.2.0 同 fixture 双 CLI 对比 rc + JSON issues + 产物解包（17 主场景 + 7 二级项） | 12/13 REQ 红绿实证（唯一例外 REQ-12 代码级） |
-| 全量套件 | `python3 tests/run_tests.py build-static`，JUnit 落盘 | 2026-10-08：integration **780 用例/0 失败/0 跳过**、unit 211/0 |
+| 全量套件 | `python3 tests/run_tests.py build-static`，JUnit 落盘 | 2026-10-10 17:45：integration **869 用例/0 失败/0 跳过**、unit 211/0（同日 11:34 快照） |
 | 黄金基准 | 桌面版产物逐位对比（P-22：21.28g/首移动逐字节一致） | 关键 parity 修复必配 |
 | 出厂门 | 打包脚本 bundle 自检红绿矩阵 | 上线（e33d9f4） |
-| 判例库 | P-01..P-23，含已证伪方案防重走弯路 | 24 篇持续维护 |
+| 调用方通报 | `BREAKING-CHANGES-2.2.0-CALLER-MIGRATION.md`（B1-B4 + 静默变更 + 监控表）+ `tools/audit_caller_args.py` 生产 argv 审计（CR1-CR9 红绿自测） | 上线（7c3c86d）；**生产调用日志跑审计为上线前必做** |
+| 回归审查盲区关闭 | 发布前六域审查的 3 个验证盲区：①P-21 shrink 侧 ②正常 ranges 不误伤 ③brim 失败路径 | ①②已补锚（2026-10-10，`u1_preset_test_oversized` / Case 31 / filcount 反告警，随 869 全量绿）；③编译 + `[brim]` 复绿（bad_alloc 无 fixture 可触发，见 2.1.3 Stage 3） |
+| 判例库 | P-01..P-24，含已证伪方案防重走弯路 | 24 篇持续维护 |
 | 产物预清理 | 输出路径预清洁 + `OUTPUT_PATH_RELOCATED` 告警锁（093c015） | 防 P-18 毒化链复发 |
 
 **运维约束**（P-14）：编译必须 `-j 2`；切 Orca 分支必须重建 libslic3r.a（旧归档
@@ -526,7 +639,8 @@ log sink 修复是代码级保证，**未做同进程多任务运行时验证**�
 | 5 | 上游上报 U1/U2/U3 排期与跟进 owner | 建议指定 owner |
 | 6 | zip-slip/S1 安全遗留（会话记忆级） | 会上补证 → 补判例 → 评估解压校验 |
 | 7 | REQ-12 DLL 长驻验证 | 随长驻场景联调补 |
-| 8 | 2.2.0 发布基线确认（MR !3，含全部 13 REQ + P-22/P-23 + 780 用例绿） | 建议合并发布 |
+| 8 | 2.2.0 发布基线确认（MR !3，含全部 13 REQ + P-22/P-23/P-24 + 869 用例绿 + 回归审查 22 项无 P0 代码回归） | 建议合并发布 |
+| 9 | 生产 argv 审计排期（`tools/audit_caller_args.py` 对生产调用日志三模式跑） | **升级前必做**——任何一处 sloppy 参数首次调用即整单 rc=1（§2.6） |
 
 ---
 
@@ -535,5 +649,6 @@ log sink 修复是代码级保证，**未做同进程多任务运行时验证**�
 - 需求与验收：`docs/requirements/fix-requirements-2.2.0.md`、`exit-codes.md`、`json-output.md`
 - 差分实测：`REVIEW-DIFF-020106-VS-220-2026-09-28.md`（仓库根）
 - 对抗审查：`REVIEW-C4-C5-2026-09-20.md`（仓库根）
-- 判例库：`docs/precedents/`（README.md 为索引）
+- 调用方通报：`BREAKING-CHANGES-2.2.0-CALLER-MIGRATION.md`（仓库根，可直接转发调用方）；配套审计 `tools/audit_caller_args.py`
+- 判例库：`docs/precedents/`（README.md 为索引，P-01..P-24）
 - 宪章与方法论：`CHARTER.md`、`METHODOLOGY.md`
