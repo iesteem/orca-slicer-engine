@@ -11,6 +11,7 @@
 #include <catch_amalgamated.hpp>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -948,6 +949,38 @@ TEST_CASE("Height range with out-of-range filament id slices with visible warnin
 
     REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
     REQUIRE_FALSE(r->engine->stats().mixed_filament_used);
+}
+
+// ============================================================================
+// Case 31 — The positive side of the Case 24/25 sanitizer contract (release-
+// review blind spot 2026-10-10: "normal ranges not falsely warned" had zero
+// assertions — [layerheight]8's fixture carries no ranges.xml, and the
+// filcount multicolor fixture only exercises interior ids). The check is
+// `id < 0 || id > num_physical` (sanitize_layer_config_ranges), so id ==
+// num_physical is the off-by-one magnet: a `>=` typo would false-warn on the
+// LAST physical slot and teach issue consumers to ignore the code. Fixture
+// parks every legal boundary: wall=1 (first slot), sparse_infill=4 (==
+// num_physical), solid_infill=0 (legal "default"), layer_height present.
+// ============================================================================
+TEST_CASE("Complete height ranges on the filament-id boundary stay warning-free", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_valid_boundary.3mf", "lr_valid_boundary");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+
+    // The ranges must also take EFFECT — a sanitizer that dropped them would
+    // pass the warning check vacuously. wall comes from slot 1 (engine id 0),
+    // sparse infill from slot 4 (engine id 3): both must carry real usage.
+    REQUIRE(!r->engine->stats().plates.empty());
+    std::set<int> used;
+    for (const auto& kv : r->engine->stats().plates[0].filament_used_g)
+        used.insert(kv.first);
+    REQUIRE(used.count(0) == 1);
+    REQUIRE(used.count(3) == 1);
 }
 
 // ============================================================================

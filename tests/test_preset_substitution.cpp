@@ -373,6 +373,48 @@ TEST_CASE("Truncated per-filament vectors normalized to slot count", "[integrati
     }
 }
 
+// Shrink-side mirror of the C3 case above (release-review blind spot
+// 2026-10-10: the only un-anchored path of
+// normalize_filament_vectors_to_slot_count). The fixture declares 4 slots but
+// stretches five pass-1 core per-filament vectors to 6 entries — the shape a
+// third-party exporter produces when it trims filament_settings_id without
+// resizing the rest. Pass-1 exact-resizes core keys to the slot count (grow
+// AND shrink); a vector left at 6 would flow mismatched dimensions into every
+// downstream slot indexer (the mushroom ToolOrdering crash family).
+TEST_CASE("Oversized per-filament vectors shrunk to slot count", "[integration][preset]")
+{
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test_oversized.3mf";
+    cfg.temp_dir = "/tmp";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    REQUIRE(engine.run_preset_substitution_only());
+
+    const DynamicPrintConfig& mc = engine.config();
+
+    // The slot authority drives n and is never edited by normalization.
+    const auto* fsi = mc.option<ConfigOptionStrings>("filament_settings_id");
+    REQUIRE(fsi);
+    REQUIRE(fsi->values.size() == 4);
+
+    // The five stretched pass-1 core keys must be cut BACK to 4 (not left 6).
+    for (const char* key : {"retraction_length", "z_hop", "wipe",
+                            "filament_diameter", "filament_colour"})
+    {
+        INFO("key " << key);
+        CHECK(vector_opt_length(mc, key) == 4);
+    }
+
+    // Flush matrix re-derived from the restored 4-slot count (same contract
+    // as the C3 case; the fixture ships it 6x6 = 36 entries).
+    if (const auto* m = mc.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix"))
+        CHECK(m->values.size() == 16);
+}
+
 TEST_CASE("Official preset key sets are mutually exclusive across categories", "[integration][preset][diag]")
 {
     // The three substitution stages run in order printer -> filament -> process

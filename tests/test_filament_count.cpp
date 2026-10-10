@@ -64,6 +64,18 @@ std::string fixture(const char* name)
 {
     return std::string(ORCA_TEST_FIXTURE_DIR) + "/filement_count/" + name;
 }
+
+// Does the issues list carry a given code at any level? Used as an
+// anti-false-positive guard: complete, legal height ranges must NOT produce
+// CONFIG_INVALID_LAYER_RANGE (sanitize_layer_config_ranges only warns on
+// missing layer_height or out-of-range filament ids).
+bool has_issue_code(const SliceOutputStats& s, const std::string& code)
+{
+    for (const auto& iss : s.issues)
+        if (iss.code == code)
+            return true;
+    return false;
+}
 } // namespace
 
 // --- Layer 1: extruder-set correctness (historical bug guards). ------------
@@ -90,6 +102,13 @@ TEST_CASE("Layer-range multicolor: single plate uses two extruders", "[integrati
     REQUIRE(e->stats().success);
     REQUIRE(e->stats().plates.size() == 1);
     REQUIRE(used_extruders(e->stats().plates[0]) == std::set<int>{0, 2});
+
+    // Anti-false-positive guard (release-review blind spot 2026-10-10): this
+    // fixture's ranges are complete and in-range (layer_height present, ids
+    // inside 1..4) — sanitize_layer_config_ranges must stay silent on them.
+    // Interior ids only; the boundary id == num_physical lives in
+    // layer_range_valid_boundary.3mf (test_slice_e2e Case 31).
+    REQUIRE_FALSE(has_issue_code(e->stats(), "CONFIG_INVALID_LAYER_RANGE"));
 }
 
 TEST_CASE("Seven filaments / five plates: plate 0 uses three extruders", "[integration][filcount]")
