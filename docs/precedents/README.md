@@ -36,4 +36,5 @@
 | P-21 | 预设替换向量短侧截断（含上游 set_num_filaments no-op 发现） | vector-short-side-truncation.md | 已修复（2026-09-20，C3；上游 init_filament_option_keys 零调用待上报） |
 | P-22 | 无 plate 元数据 3MF 假成功静默失败 | plateless-3mf-synthesis.md | 已修复（21b4ef1，含黄金基准与已证伪方案；2.1.7 侧原编 P-16，合并入 2.2.0 线时让号） |
 | P-23 | 盘元数据无成员关系 → 假空盘零产物（MakerWorld/Orca 2.4.2 新格式） | makerworld-membership-rebuild.md | 已修复（2026-10-08，几何重建桌面语义 + NO_PLATES_PRODUCED 可观测性） |
+| P-24 | 非空 membership 与几何错位 → 3 盘误判越界零产物（always-rebuild，人类批准推翻 P-23 收敛） | always-rebuild-plate-membership.md | 已修复（2026-10-10，always-rebuild + INSTANCE_NOT_ON_ANY_PLATE warning + tip 静默路径） |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |

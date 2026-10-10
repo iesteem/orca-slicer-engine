@@ -1,6 +1,11 @@
 # P-23: 盘元数据无成员关系 → 假空盘零产物失败（JSON 无 error 级可见）
 
 **状态：** 已修复（feature-2.2.0，2026-10-08）
+> **2026-10-10 修订（P-24）：** Fix A 的"仅空 map 盘候选"收敛已被生产反例
+> （membership 非空但与几何错位一格，桌面全切引擎误判 3 盘）证伪，经人类批准
+> 扩为 always-rebuild（见 always-rebuild-plate-membership.md）。本判例的重建
+> 机制、P-22 enroll 模式、Fix B 与全部 fixture 继续有效；"已证伪/否决的方案"
+> 一节中否决"桌面全量几何重建"的决策同时作废。
 **Fixture：** `tests/fixtures/1e9d9919e7955ce4.3mf`（md5
 `70cd1bcba83e12d21477ee074b01b0f0`，生产原件入库）、
 `slice_membership_rebuilt_2plate.3mf`（派生，md5
