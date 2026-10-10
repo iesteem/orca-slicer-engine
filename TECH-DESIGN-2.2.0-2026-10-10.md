@@ -372,7 +372,7 @@ e2e Case 15/16/17 共 23 断言；exit-codes.md 契约同步。
 
 | 字段 | 语义 | 设计要点 |
 |---|---|---|
-| `support_required` | 配置层支撑检测（全局/盘级/对象级 enable_support 聚合，`Print::is_support_used()`）；成功时才发 | **缺席 = 未知，绝非 no-support**（契约防误读）；顺带修 `PlateStats::support_used` 失败盘早退留 garbage 值的初始化缺陷 |
+| `support_free` | **gcode 实际层**（2026-10-10 二次换源，方案 C 落地）：`GCodeProcessorResult.print_statistics.support_volumes_per_extruder` 求和 >0（erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖），发射时取反（true=零支撑挤出）；两级 `print_info_total`/`plates[]` 同极性；成功时才发。配置开但自支撑几何 → true | **缺席 = 未知，坍缩在保守侧"有支撑"**；输出 gcode.3mf 内嵌盘元数据 `support_used` 保持配置层（桌面 PartPlate.cpp:5476 parity）。演进：同日先由 `support_required` 改名翻转（极性），再判定源配置层→gcode 实际层，均未发布前原地修订；顺带修 `PlateStats::support_used`（现 `support_generated`）失败盘早退留 garbage 值的初始化缺陷 |
 | `mixed_filament_used` | 对象/part extruder 或面片选中虚拟混色槽（id 超过物理 `filament_colour` 数） | 载入时一次判定（`detect_mixed_filament_usage()`）——输入文件属性，部分失败运行仍有效；高度换色**刻意不查**（GUI 该处只支持物理耗材，用户确认） |
 
 **验证**：`[capi][support]`×3 + `[capi][mixed]`×3；4 个 mixed fixture 覆盖

@@ -51,10 +51,12 @@
   "filaments": [                      // 跨盘按 (type, color) 去重，克重累加
     { "type": "PLA", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
   ],
-  "support_required": true,           // 可选；仅整体 success=true 时输出——失败盘
-                                      // 的支撑状态未判定，聚合即猜测。配置层
-                                      // is_support_used 聚合（开了支撑但模型自支撑
-                                      // 仍为 true 是契约）。缺席 = 未知，绝非 false
+  "support_free": true,               // 可选；仅整体 success=true 时输出——失败盘
+                                      // 的支撑状态未判定，聚合即猜测。gcode 实际层：
+                                      // true=所有盘 gcode 均零支撑挤出（配置开了但
+                                      // 模型自支撑也归 true）；false=任一盘实际挤出
+                                      // 了支撑结构（含筏，普通/树支撑均计）。缺席 =
+                                      // 未知，绝非 true（缺席坍缩在保守侧）
   "mixed_filament_used": false        // 可选；plates[] 非空即输出——载入时一次判定
                                       // 的输入文件属性（对象/part extruder 或面片
                                       // 引用虚拟混色槽），部分失败运行仍有效。
@@ -93,7 +95,8 @@
   ],
   "model_thumbnail": "<base64 PNG>",  // 可为空串
   "long_retraction_when_cut": false,
-  "support_used": true                // 配置层该盘是否启用支撑（is_support_used）
+  "support_free": true                // gcode 实际层：该盘支撑挤出体积为 0（含配置
+                                      // 开启但自支撑的场景；普通/树/筏支撑均计）
 }
 ```
 
@@ -101,7 +104,7 @@
 
 | 版本 | 变更 |
 |---|---|
-| 2.2.0 (2026-10-10) | 顶层新增可选 `resources_version`（vendor profile 版本原样回显，缺席=未知）；`print_info_total` 新增可选 `support_required`（仅整体 success 时输出）与 `mixed_filament_used`（plates[] 非空即输出，输入文件属性）；`plates[]` success 组新增 `support_used`。三者缺席一律=未知，非 false。同版 issue 码新增见 exit-codes.md（NO_PLATES_PRODUCED、PLATE_MEMBERSHIP_REBUILT、INSTANCE_NOT_ON_ANY_PLATE） |
+| 2.2.0 (2026-10-10) | 顶层新增可选 `resources_version`（vendor profile 版本原样回显，缺席=未知）；`print_info_total` 新增可选 `support_free`（gcode 实际层：true=零支撑挤出，仅整体 success 时输出）与 `mixed_filament_used`（plates[] 非空即输出，输入文件属性）；`plates[]` success 组新增 `support_free`（同 gcode 实际层语义）。三者缺席一律=未知，非 false/空串；support_free 缺席坍缩在保守侧（"有支撑"）。同版 issue 码新增见 exit-codes.md（NO_PLATES_PRODUCED、PLATE_MEMBERSHIP_REBUILT、INSTANCE_NOT_ON_ANY_PLATE） |
 | v02.01.07 (2026-09-24) | 无 plate 元数据 3MF 合成单盘：`issues[]` 新增 tip 级 `PLATE_DATA_SYNTHESIZED`；此类文件 plates[] 首次可含成功盘（plate_id=1、无 model_thumbnail） |
 | v02.01.10 (2026-06-11) | `plates[].filaments[].filament_id` → `id`。libslic3r 内部 `FilamentInfo::filament_id` 不变 |
 
@@ -118,6 +121,14 @@
   printable 实例，并发 tip 级 `PLATE_DATA_SYNTHESIZED`（云端可用其区分
   "真单盘文件"与"无盘文件被合成"）；合成盘无缩略图源，
   `model_thumbnail` 为空。
-- `support_required` / `mixed_filament_used` / `resources_version` 均为
+- `support_free` / `mixed_filament_used` / `resources_version` 均为
   **可选字段，缺席 = 未知**（各自输出条件见上文结构定义），下游禁止按
-  "缺省即 false / 空串"读取。
+  "缺省即 false / 空串"读取。`support_free` 取反极性（2026-10-10 由
+  `support_required` 改名翻转，未发布前原地修订）：有利状态（true=无需
+  支撑）只能由显式 true 到达，缺席/误读缺省全部坍缩到保守侧"有支撑"。
+- `support_free` 判定源是 **gcode 实际层**（同日二次修订）：per-plate
+  支撑挤出体积（`GCodeProcessor support_volumes_per_extruder`，
+  erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖）>0
+  取反——配置层 `enable_support` 开启但模型自支撑时为 **true**。注意：输出
+  gcode.3mf 内嵌盘元数据 `support_used` 仍为配置层（桌面 parity），与
+  本 JSON 字段语义不同源，勿混用。

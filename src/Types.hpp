@@ -111,9 +111,12 @@ struct SliceOutputStats
 
         // Additional info
         // Initialised (= false): failed plates return early from
-        // assemble_plate_stats before support_used is assigned, so without a
-        // default the field holds garbage that the JSON aggregation would read.
-        bool support_used = false;
+        // assemble_plate_stats before support_generated is assigned, so
+        // without a default the field holds garbage that the JSON aggregation
+        // would read.
+        // G-code actual layer: support extrusion volume > 0 (source
+        // GCodeProcessor support_volumes_per_extruder), not the config flag.
+        bool support_generated = false;
         bool toolpath_outside;
 
         // New fields for enhanced JSON output

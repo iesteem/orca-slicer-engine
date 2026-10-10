@@ -40,7 +40,15 @@ struct PlateSliceResult
     std::string gcode_path;
     Slic3r::GCodeProcessorResult gcode_result;
     double total_weight = 0.0;
+    // Config-layer flag (Print::is_support_used: enable_support anywhere in
+    // the merged config). Only consumer: the output gcode.3mf plate metadata
+    // relay (pd->is_support_used), mirroring desktop PartPlate.cpp parity.
     bool support_used = false;
+    // G-code actual layer: support extrusion volume
+    // (print_statistics.support_volumes_per_extruder, roles
+    // erSupportMaterial/Interface/Transition) is non-zero. Drives the JSON
+    // support_free flag — config-on but self-supporting geometry stays true.
+    bool support_generated = false;
     bool has_postprocess_warning = false;
     double total_used_filament = 0.0;
     double total_cost = 0.0;

@@ -3476,7 +3476,17 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
 
         const PrintStatistics& ps = print.print_statistics();
         result.total_weight = ps.total_weight;
+        // Config layer — feeds only the output gcode.3mf plate metadata relay
+        // (pd->is_support_used, desktop PartPlate.cpp:5476 parity).
         result.support_used = print.is_support_used();
+        // G-code actual layer: any support extrusion volume (roles
+        // erSupportMaterial/Interface/Transition, incl. raft) means support
+        // structures were really generated. Drives the JSON support_free flag.
+        double support_volume = 0.0;
+        for (const auto& [extruder, vol] :
+             result.gcode_result.print_statistics.support_volumes_per_extruder)
+            support_volume += vol;
+        result.support_generated = support_volume > 0.0;
         result.total_used_filament = ps.total_used_filament;
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
@@ -4195,6 +4205,9 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
 
         pd->toolpath_outside = result.gcode_result.toolpath_outside;
         pd->timelapse_warning_code = result.gcode_result.timelapse_warning_code;
+        // Desktop parity: the packaged 3MF plate metadata keeps the
+        // config-layer flag (desktop writes print->is_support_used() here,
+        // PartPlate.cpp:5476), NOT the gcode-actual layer.
         pd->is_support_used = result.support_used;
         pd->is_label_object_enabled = result.gcode_result.label_object_enabled;
 
@@ -4384,7 +4397,7 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.total_filament_m = result.total_used_filament;
     plate_stats.total_filament_g = result.total_weight;
     plate_stats.total_cost = result.total_cost;
-    plate_stats.support_used = result.support_used;
+    plate_stats.support_generated = result.support_generated;
 
     // Prefer the diameters/densities captured at slice time (result.filament_*), which
     // mirror the post-apply print.config() the slicer applied. gcode_result mirrors the

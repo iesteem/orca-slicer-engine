@@ -310,20 +310,28 @@ TEST_CASE("C API: 3-byte plate thumbnail rejected by size guard, slice still suc
 }
 
 // ============================================================================
-// support_required / support_used JSON contract. The config-level support
-// flag (Print::is_support_used: global enable_support OR any object-level
-// override) is aggregated per plate and globally:
-//   1. success + no support anywhere  -> print_info_total.support_required
-//      == false, plates[].support_used == false
-//   2. success + object-level support -> both true (the deepest of the three
-//      detection layers: per-object config merge, not the process preset)
-//   3. failure                        -> support_required ABSENT: a failed
-//      plate's support state was never determined, so a present-but-false
-//      value would let consumers misread "unknown" as "no support needed"
+// support_free JSON contract. The flag is G-CODE ACTUAL: per-plate support
+// extrusion volume (GCodeProcessor support_volumes_per_extruder, roles
+// erSupportMaterial/Interface/Transition — normal, tree and raft support)
+// == 0, inverted at the emission boundary. It is NOT the config-level
+// enable_support flag (that one only feeds the packaged 3MF plate metadata,
+// desktop parity): support enabled on self-supporting geometry extrudes
+// zero support and stays "free".
+//   1. success + no support extruded anywhere -> print_info_total.support_free
+//      == true, plates[].support_free == true
+//   2. success + enable_support but self-supporting geometry -> still true
+//      (config on, zero generation — the config/generation layer boundary)
+//   3. success + overhang geometry that really generates support -> both
+//      false
+//   4. failure -> support_free ABSENT: a failed plate's support state was
+//      never determined, so a present-but-true value would let consumers
+//      misread "unknown" as "support-free"
 // ============================================================================
 
-TEST_CASE("C API: support_required false when no plate enables support", "[integration][capi][support]")
+TEST_CASE("C API: support_free true when no support is extruded", "[integration][capi][support]")
 {
+    // geom_above_bed_ok.3mf: cube resting on the bed, support not enabled —
+    // trivially zero support extrusion.
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
@@ -334,9 +342,9 @@ TEST_CASE("C API: support_required false when no plate enables support", "[integ
 
     auto j = nlohmann::json::parse(stats);
     REQUIRE(j["success"].get<bool>());
-    REQUIRE(j["print_info_total"].contains("support_required"));
-    REQUIRE(j["print_info_total"]["support_required"].get<bool>() == false);
-    REQUIRE(j["plates"][0]["support_used"].get<bool>() == false);
+    REQUIRE(j["print_info_total"].contains("support_free"));
+    REQUIRE(j["print_info_total"]["support_free"].get<bool>() == true);
+    REQUIRE(j["plates"][0]["support_free"].get<bool>() == true);
 
     rm("/tmp/orca_capi_sup_off.gcode.3mf");
     rm("/tmp/orca_capi_sup_off.json");
@@ -345,12 +353,14 @@ TEST_CASE("C API: support_required false when no plate enables support", "[integ
     restore_dirs();
 }
 
-TEST_CASE("C API: object-level support flips support_required true", "[integration][capi][support]")
+TEST_CASE("C API: enable_support on self-supporting cube leaves support_free true", "[integration][capi][support]")
 {
     // geom_above_bed_support_on.3mf: identical geometry to the case above but
-    // the object config carries enable_support=1 — guards the object-level
-    // merge path (PrintApply.cpp m_support_used |= object config), which a
-    // process-preset-only check would miss.
+    // the object config carries enable_support=1 (object-level merge path,
+    // PrintApply.cpp m_support_used |= object config). The cube is
+    // self-supporting: zero support is generated, so the gcode-actual flag
+    // stays true — the JSON no longer reflects the config flag (the packaged
+    // 3MF metadata still does, desktop parity).
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
@@ -361,8 +371,8 @@ TEST_CASE("C API: object-level support flips support_required true", "[integrati
 
     auto j = nlohmann::json::parse(stats);
     REQUIRE(j["success"].get<bool>());
-    REQUIRE(j["print_info_total"]["support_required"].get<bool>() == true);
-    REQUIRE(j["plates"][0]["support_used"].get<bool>() == true);
+    REQUIRE(j["print_info_total"]["support_free"].get<bool>() == true);
+    REQUIRE(j["plates"][0]["support_free"].get<bool>() == true);
 
     rm("/tmp/orca_capi_sup_on.gcode.3mf");
     rm("/tmp/orca_capi_sup_on.json");
@@ -371,10 +381,38 @@ TEST_CASE("C API: object-level support flips support_required true", "[integrati
     restore_dirs();
 }
 
-TEST_CASE("C API: support_required absent when slice fails", "[integration][capi][support]")
+TEST_CASE("C API: overhang geometry that generates support flips support_free false", "[integration][capi][support]")
+{
+    // geom_overhang_support_generated.3mf: T-shape (13.5mm column + 27mm cap,
+    // 1mm overlap) with object-level enable_support=1 — the cap underside
+    // ring at z=13.5 is a flat overhang below the 30° threshold, so support
+    // columns are really extruded and the gcode-actual flag must be false.
+    // A floating instance-Z variant is impossible: ensure-on-bed drops
+    // single-part objects to the bed (SliceEngine.cpp z_shift = -min_z).
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/geom_overhang_support_generated.3mf",
+                          "/tmp/orca_capi_sup_gen", R"({"log_path":"/tmp/orca_capi_sup_gen.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["print_info_total"]["support_free"].get<bool>() == false);
+    REQUIRE(j["plates"][0]["support_free"].get<bool>() == false);
+
+    rm("/tmp/orca_capi_sup_gen.gcode.3mf");
+    rm("/tmp/orca_capi_sup_gen.json");
+    rm("/tmp/orca_capi_sup_gen.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: support_free absent when slice fails", "[integration][capi][support]")
 {
     // PRESETS_MISSING fails the run before any plate is sliced; the global
-    // flag must be omitted entirely rather than defaulting to false.
+    // flag must be omitted entirely rather than defaulting to a value.
     const std::string empty_res = "/tmp/orca_capi_empty_res_sup";
     boost::system::error_code ec;
     boost::filesystem::create_directories(empty_res, ec);
@@ -388,7 +426,7 @@ TEST_CASE("C API: support_required absent when slice fails", "[integration][capi
 
     auto j = nlohmann::json::parse(stats);
     REQUIRE_FALSE(j["success"].get<bool>());
-    REQUIRE_FALSE(j["print_info_total"].contains("support_required"));
+    REQUIRE_FALSE(j["print_info_total"].contains("support_free"));
 
     rm("/tmp/orca_capi_sup_fail.json");
     slic3r_destroy(ctx);
@@ -403,7 +441,7 @@ TEST_CASE("C API: support_required absent when slice fails", "[integration][capi
 // a painted facet state above the physical filament_colour count). Height-
 // range colour overrides are not a usage path: the GUI supports physical
 // filaments only there. It is an input-file property determined at load
-// time, so — unlike support_required — it is emitted whenever at least one
+// time, so — unlike support_free — it is emitted whenever at least one
 // plate was processed, including partially failed runs; it is absent only
 // on load-stage failures where the model was never parsed.
 // The two fixtures share byte-identical definitions (3 enabled rows, 4

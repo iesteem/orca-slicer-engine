@@ -62,10 +62,15 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     double total_weight = 0;
     double total_length = 0;
     std::vector<ordered_json> total_filaments;
-    // Config-level support flag (Print::is_support_used: global enable_support
-    // OR any object-level override, incl. per-plate config merges). Aggregated
-    // from successful plates only; failed plates keep the false default.
-    bool any_support = false;
+    // G-code actual support flag: per-plate support extrusion volume
+    // (GCodeProcessor support_volumes_per_extruder, roles
+    // erSupportMaterial/Interface/Transition — normal, tree and raft support)
+    // is non-zero. NOT the config-level enable_support flag: a self-supporting
+    // model with support enabled extrudes zero support and stays "free".
+    // Aggregated from successful plates only; failed plates keep the false
+    // default. Internal polarity mirrors the source (true = support extruded);
+    // it is inverted to support_free only at the JSON emission sites below.
+    bool any_support_generated = false;
     {
         // Deduplicate by (type, color), summing used_g across plates
         struct AggFilament
@@ -83,7 +88,7 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
                 total_print_time += plate.print_time;
                 total_weight += plate.total_filament_g;
                 total_length += plate.total_filament_m;
-                any_support = any_support || plate.support_used;
+                any_support_generated = any_support_generated || plate.support_generated;
                 for (const auto& detail : plate.filament_details)
                 {
                     auto it = std::find_if(agg.begin(), agg.end(),
@@ -129,14 +134,17 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     print_info["total_length_mm"] = round2(total_length);
     print_info["plate_count"] = static_cast<int>(stats.plates.size());
     print_info["filaments"] = total_filaments;
-    // Emitted only on overall success (all plates sliced): a failed plate's
-    // support state was never determined, so aggregating it would be a guess.
-    // Consumers must treat a MISSING support_required as "unknown", never as
-    // "no support needed".
+    // support_free = !any_support_generated (gcode actual layer). Emitted only
+    // on overall success (all plates sliced): a failed plate's support state
+    // was never determined, so aggregating it would be a guess. Consumers must
+    // treat a MISSING support_free as "unknown", never as "support-free".
+    // true = no support extrusion in any plate's gcode (config-enabled but
+    // self-supporting geometry counts as free); false = support structures
+    // (incl. raft) were actually extruded on some plate.
     if (stats.success)
-        print_info["support_required"] = any_support;
+        print_info["support_free"] = !any_support_generated;
     // Input-file property determined at load time (any virtual mixed-filament
-    // slot reference in any plate), so unlike support_required it survives a
+    // slot reference in any plate), so unlike support_free it survives a
     // partially failed run. Emitted whenever at least one plate was processed;
     // absent on load-stage failures where the model was never parsed.
     if (!stats.plates.empty())
@@ -185,7 +193,10 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
             pj["filaments"] = std::move(fils);
             pj["model_thumbnail"] = plate.model_thumbnail;
             pj["long_retraction_when_cut"] = plate.long_retraction_when_cut;
-            pj["support_used"] = plate.support_used;
+            // G-code actual layer, inverted at emission: source field is the
+            // per-plate support extrusion volume > 0 (GCodeProcessor
+            // support_volumes_per_extruder), not the config enable flag.
+            pj["support_free"] = !plate.support_generated;
         }
 
         plates_json.push_back(std::move(pj));
