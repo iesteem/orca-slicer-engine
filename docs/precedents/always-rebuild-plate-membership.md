@@ -90,7 +90,13 @@ enable 条件 = `contained_min_one && !partlyOut`——**完全出界不阻断**
 - e2e：Case 28（事故件 8 盘全绿 + tip + 无 INSTANCE_NOT_ON_ANY_PLATE +
   无 BUILD_VOLUME_FULLY_OUTSIDE）；Case 15 加 tip 静默锁（显式 map 与
   几何一致的文件不得产生重建噪音）
-- 定向 [membership] 3 用例绿；全量套件见提交时 junit 记录
+- 网格外实例正负两向锁（2026-10-10 补，构造件由用户桌面制备）：
+  Case 29（slice_offgrid_sibling_ok.3mf：网格外实例 + 格内好盘 →
+  rc=0、好盘出产物、INSTANCE_NOT_ON_ANY_PLATE warning + EMPTY_PLATE +
+  tip 三者并存，非阻断契约）；Case 30（slice_offgrid_sole_fail.3mf：
+  唯一实例网格外 → rc=6 源自 NO_PLATES_PRODUCED 零产物守卫而非警告，
+  失败归因钉死，警告不得悄悄硬化为阻断）
+- 定向 [membership] 5 用例绿；全量套件见提交时 junit 记录
   （`python3 tests/run_tests.py build-static`）
 
 ## 已证伪 / 否决的方案

@@ -1052,3 +1052,64 @@ TEST_CASE("Production 8-plate misaligned membership slices via always-rebuild", 
     REQUIRE(boost::filesystem::exists(r->output_file));
     REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
 }
+
+// ============================================================================
+// Case 29 — Off-grid instance with a healthy sibling plate (P-24
+// non-blocking contract). slice_offgrid_sibling_ok.3mf has two
+// membership-less plates: one cube instance dragged off every plate cell
+// (world bbox X[-66.5,-39.5], entirely negative) and a second instance on
+// plate 2's cell centre. The desktop puts the off-grid cube on its
+// unprintable plate and slices the rest (fully-outside does not disable
+// slicing — GLCanvas3D.cpp:3973); the engine equivalent is an
+// INSTANCE_NOT_ON_ANY_PLATE warning that must NOT sink the good plate.
+// The tip must also fire: plate 2's map went memberless -> populated, a
+// real assignment change under the before/after diff.
+// ============================================================================
+TEST_CASE("Off-grid instance warns but sibling plate still slices", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_offgrid_sibling_ok.3mf", "offgrid_sibling_ok");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    // Only the sibling produced; the off-grid instance belongs to no plate,
+    // and plate 1's cell is empty -> benign skip, not a failure.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].plate_id == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+    REQUIRE(r->engine->stats().plates[0].total_filament_g > 0.0);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_NOT_ON_ANY_PLATE", IssueLevel::warning));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 30 — Sole instance off-grid (P-24 attribution contract).
+// slice_offgrid_sole_fail.3mf: single plate, no member records, the only
+// cube instance is off every plate cell. The drop itself is a warning —
+// the exit-6 comes from the zero-product guard (NO_PLATES_PRODUCED,
+// P-23 Fix B), NOT from the off-grid instance. This pins the failure
+// classification so the warning can never silently harden into a blocker
+// (that would re-create the reverse-parity defect P-24 removed).
+// ============================================================================
+TEST_CASE("Sole off-grid instance: warning plus zero-product exit 6", "[integration][slice][fail][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_offgrid_sole_fail.3mf", "offgrid_sole_fail");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE(r->engine->stats().plates.empty());
+
+    REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_NOT_ON_ANY_PLATE", IssueLevel::warning));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(has_global_issue(r->engine->stats(), "NO_PLATES_PRODUCED", IssueLevel::error));
+
+    // Nothing may be packaged for a zero-product run.
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}

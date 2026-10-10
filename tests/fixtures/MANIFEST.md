@@ -142,3 +142,12 @@ docs/precedents/always-rebuild-plate-membership.md。
 | fixture | 盘构成 | 预期 |
 |---|---|---|
 | 2d986d79661ffb62.3mf (286K) | 8 盘生产原件（md5 `0794e9323efb3fe073c603c6b493c951`），盘 2 元数据空但几何上 top.stl 落其格位 | always-rebuild 几何重排 → rc=0、8 盘全部 success、PLATE_MEMBERSHIP_REBUILT tip、出产物、逐盘耗材/时间非零（Case 28；桌面对照输出 plate_1..8 对象序列 black/top/side/marcoLamparaAjustado/orangeQuestion/marcoLampara/marcoLamparaInferior/marcoLamparaSuperior） |
+| slice_offgrid_sole_fail.3mf | 桌面 U1 制备（md5 `4fa980de7db6edf17d20e51acee3b08d`）：单盘无成员记录，立方体实例在 (-53,155)，网格 bbox X[-66.5,-39.5] 全负、不交任何盘格 | 唯一实例被几何重建 drop → INSTANCE_NOT_ON_ANY_PLATE warning + EMPTY_PLATE(盘1) + NO_PLATES_PRODUCED error、rc=6、零产物；rc=6 源自零产物守卫而非警告本身（Case 30） |
+| slice_offgrid_sibling_ok.3mf | 上件派生（md5 `cbc034407470455a71146d12d8278bd8`）：build 追加第二实例于盘 2 格心 (459,135)（2 盘网格 cols=2）+ model_settings 追加无成员盘 2 块，其余 entry 逐字节保留；配方详见下方 | 非阻断契约：网格外实例 warning 不拖垮好盘 → rc=0、盘 2 成功出产物、INSTANCE_NOT_ON_ANY_PLATE warning + 盘 1 EMPTY_PLATE warning + tip 三者并存（Case 29） |
+
+slice_offgrid_sibling_ok.3mf 派生配方（Python zipfile 读改写，无现成脚本）：
+① `3D/3dmodel.model` 的 `<build>` 内追加
+   `<item objectid="2" p:UUID="00000002-b1ec-4553-aec9-835e5b724bb5" transform="1 0 0 0 1 0 0 0 1 459 135 13.5" printable="1"/>`
+   （UUID 末位 +1 保证唯一；459/135 = 2 盘网格 cols=2 时盘 2 cell [324,594]×[0,270] 的中心）
+② `Metadata/model_settings.config` 在盘 1 `</plate>` 后追加无成员、无缩略图引用的盘 2 块（plater_id=2 + locked/filament_maps）
+③ 其余 entry（含乱码本地文件名的 `3D/Objects/立方体_1.model`）逐字节保留——重打包会修复 zip 文件名编码，改变 fixture 特征
