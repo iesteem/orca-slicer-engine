@@ -28,6 +28,10 @@
 {
   "success": true,                    // bool；全部请求的盘成功才为 true
   "engine_version": "2.2.0",          // = ENGINE_VERSION（CMake 唯一来源）
+  "resources_version": "02.03.03.03", // 可选；<resources>/profiles/Snapmaker.json 的
+                                      // "version" 原样回显（不走 Semver，保留补零）。
+                                      // 报告时读取，成功与失败出口均在场；
+                                      // 缺席 = 版本未知，绝非特定版本
   "print_info_total": { ... },        // 跨成功盘聚合
   "issues": [ ... ],                  // 全局级 issue 数组
   "plates": [ ... ]                   // 逐盘
@@ -46,7 +50,15 @@
   "plate_count": 3,                   // stats.plates.size()，含失败盘
   "filaments": [                      // 跨盘按 (type, color) 去重，克重累加
     { "type": "PLA", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
-  ]
+  ],
+  "support_required": true,           // 可选；仅整体 success=true 时输出——失败盘
+                                      // 的支撑状态未判定，聚合即猜测。配置层
+                                      // is_support_used 聚合（开了支撑但模型自支撑
+                                      // 仍为 true 是契约）。缺席 = 未知，绝非 false
+  "mixed_filament_used": false        // 可选；plates[] 非空即输出——载入时一次判定
+                                      // 的输入文件属性（对象/part extruder 或面片
+                                      // 引用虚拟混色槽），部分失败运行仍有效。
+                                      // 缺席（载入阶段失败，模型未解析）= 未知
 }
 ```
 
@@ -80,7 +92,8 @@
     { "id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
   ],
   "model_thumbnail": "<base64 PNG>",  // 可为空串
-  "long_retraction_when_cut": false
+  "long_retraction_when_cut": false,
+  "support_used": true                // 配置层该盘是否启用支撑（is_support_used）
 }
 ```
 
@@ -88,6 +101,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.0 (2026-10-10) | 顶层新增可选 `resources_version`（vendor profile 版本原样回显，缺席=未知）；`print_info_total` 新增可选 `support_required`（仅整体 success 时输出）与 `mixed_filament_used`（plates[] 非空即输出，输入文件属性）；`plates[]` success 组新增 `support_used`。三者缺席一律=未知，非 false。同版 issue 码新增见 exit-codes.md（NO_PLATES_PRODUCED、PLATE_MEMBERSHIP_REBUILT、INSTANCE_NOT_ON_ANY_PLATE） |
 | v02.01.07 (2026-09-24) | 无 plate 元数据 3MF 合成单盘：`issues[]` 新增 tip 级 `PLATE_DATA_SYNTHESIZED`；此类文件 plates[] 首次可含成功盘（plate_id=1、无 model_thumbnail） |
 | v02.01.10 (2026-06-11) | `plates[].filaments[].filament_id` → `id`。libslic3r 内部 `FilamentInfo::filament_id` 不变 |
 
@@ -104,3 +118,6 @@
   printable 实例，并发 tip 级 `PLATE_DATA_SYNTHESIZED`（云端可用其区分
   "真单盘文件"与"无盘文件被合成"）；合成盘无缩略图源，
   `model_thumbnail` 为空。
+- `support_required` / `mixed_filament_used` / `resources_version` 均为
+  **可选字段，缺席 = 未知**（各自输出条件见上文结构定义），下游禁止按
+  "缺省即 false / 空串"读取。

@@ -14,7 +14,7 @@
 | 3 | EXIT_LOAD_ERROR | 3MF 加载/格式失败 | FORMAT_REJECTED、LOAD_3MF_ERROR 类 |
 | 4 | EXIT_SLICING_ERROR | 切片阶段失败（某盘或整体） | SLICING_* 类 |
 | 5 | EXIT_EXPORT_ERROR | G-code 导出失败 | GCODE_EXPORT_ERROR |
-| 6 | EXIT_PREPROCESS_ERROR | 切片前校验失败（config/输入/预设）；**零产物守卫**（所有请求盘被跳过/失败，无任何产物时兜底非零，P-19；不遮蔽已记录的更具体码） | 预设替换、几何校验、print_sequence 阻断、零产物 |
+| 6 | EXIT_PREPROCESS_ERROR | 切片前校验失败（config/输入/预设/盘选择）；**零产物守卫**（所有请求盘被跳过/失败，无任何产物时兜底非零，P-19；不遮蔽已记录的更具体码） | 预设替换、几何校验、print_sequence 阻断、盘选择校验、零产物 |
 | 7 | EXIT_POSTPROCESS_ERROR | 切片成功但产物不可用 | TOOLPATH_OUTSIDE、空层 |
 
 139 = SIGSEGV，**不是合法退出码**，出现即引擎缺陷（见判例 P-01/P-02/P-09/P-10）。
@@ -25,7 +25,7 @@
 注意：几何缺陷检查（GEOM_*）历史上**全为 warning 不阻断**，
 `has_geom_error` 阻断分支是死代码（判例 P-12）。
 
-## Issue Code 全表（68 个，按域分组）
+## Issue Code 全表（71 个，按域分组）
 
 ### 输入/加载（→ exit 3）
 
@@ -35,12 +35,20 @@
 | LOAD_3MF_ERROR* | error | read_from_file 抛异常 / empty 检测（注意：no_model_objects 实测归此类而非 MODEL_EMPTY） |
 | FILE_SIZE_EXCEEDED | error | 超 max_size_mb |
 | MODEL_EMPTY | error | 模型无对象 |
-| PLATE_NOT_FOUND | error | 指定盘不存在 |
 | NO_PRINTABLE_OBJECTS | warning | 盘上无可打印对象（apply 后归零）——良性跳过不阻断（P-19；本行级别曾误标 error，2026-09-20 对齐代码实测 make_warning） |
 | EMPTY_PLATE | warning | 盘无任何可打印实例，良性跳过（P-19）；零产物场景由 run() 零产物守卫兜底 exit 6 |
 | PLATE_DATA_MISSING | error | 载入后无任何盘数据（内部不变量，按构造不可达的防御性报错） |
 | PLATELESS_NO_PRINTABLE_INSTANCES | error | 无 plate 元数据且全文件无可打印实例（printable="0"）→ exit 6（真实空盘仍走 warning+skip，P-19 选项 A） |
 | PLATE_DATA_SYNTHESIZED | tip | 3MF 无 plate 元数据，已按桌面语义合成单盘（可切片，信息级） |
+
+### 盘选择与归属（P-19/P-23/P-24）
+
+| Code | Level | 说明 |
+|---|---|---|
+| PLATE_NOT_FOUND | error | 指定盘不存在（validate_input 盘选择校验，plate_id=-1）→ **exit 6**。2026-10-10 修正：本行曾误归"输入/加载（→ exit 3）"组，实测发射点设 EXIT_PREPROCESS_ERROR（SliceEngine.cpp:1953，e2e Case 6 锚定） |
+| NO_PLATES_PRODUCED | error | 零产物兜底观测：所有请求盘被跳过/失败且无任何产物时发（run() 末尾，plate_id=-1）→ exit 6；已有 error/serious_warning 级 issue 时**抑制**（保持单一归因，P-23 Fix B） |
+| PLATE_MEMBERSHIP_REBUILT | tip | 3MF 盘元数据与几何不符，实例归属已按桌面语义几何重排（P-24 always-rebuild，plate_id=-1，message 含 reassigned/dropped 计数）；仅在归属实际变化时发，一致文件零噪音 |
+| INSTANCE_NOT_ON_ANY_PLATE | warning | 实例不与任何盘相交，被丢弃不打印（plate_id=-1，带 object_name 与 suggestion）。桌面 parity：完全出界不阻断切片其余盘（GLCanvas3D 仅 partly-outside 走 build-volume 阻断；P-24） |
 
 ### 预设/配置（→ exit 6，部分 warning）
 
@@ -89,9 +97,18 @@ INTERNAL_FATAL（引擎内部缺陷，出现即 bug）。
 
 ## 契约规则
 
-1. 新增 code 需同步本表 + CHANGELOG；renamed code 视同 breaking change。
+1. 新增 code 需同步本表 + 历史变更记录；renamed code 视同 breaking
+   change。（独立 CHANGELOG.md 已删除，变更记录职责移入各契约文档自身，
+   见 json-output.md 同款机制。）
 2. code → exit 映射由发射点所在阶段决定（上表为实测归纳），断言以实测
    为准（fixture 文件名编码预期，见 tests/fixtures/）。
 3. `plate_id` 全局级 issue 为 -1，盘级 1-based（json-output.md）。
 
 *LOAD_3MF_ERROR 为本文归纳名，实现处为动态 code（SliceEngine.cpp:447）。
+
+## 历史变更记录（防漂移）
+
+| 版本 | 变更 |
+|---|---|
+| 2.2.0 (2026-10-10) | 新增 `NO_PLATES_PRODUCED`（error）、`PLATE_MEMBERSHIP_REBUILT`（tip）、`INSTANCE_NOT_ON_ANY_PLATE`（warning），新设"盘选择与归属"分组（P-19/P-23/P-24），全表 68→71；`PLATE_NOT_FOUND` 自"输入/加载（exit 3）"组移入该组并修正为 exit 6（文档分组修正，发射点行为未变）。本周期同含 P-19 语义：`NO_PRINTABLE_OBJECTS` 定级 warning 良性跳过、新增 `EMPTY_PLATE`、零产物兜底 exit 6 |
+| v02.01.07 (2026-09-24) | 新增 `PLATE_DATA_SYNTHESIZED`（tip）、`PLATELESS_NO_PRINTABLE_INSTANCES`（error）（P-22，版本号后 bump 为 2.2.0，随 2.2.0 发布） |
