@@ -3548,16 +3548,18 @@ void SliceEngine::restore_brim_width_echo(const std::string& gcode_path)
     if (!bw || bw->value == 0)
         return;  // 0 is what the zeroed slicing copy echoes: nothing to restore
 
-    std::ostringstream value_ss;
-    value_ss << bw->value;  // integral values print without decimals ("5")
-    const std::string expected = "; brim_width = " + value_ss.str();
-
     // Best-effort cosmetics, never escalate: export_gcode's catch would flag
     // GCODE_EXPORT_ERROR and the all-or-nothing packaging would drop the
     // whole job's output over a comment line. Every failure below degrades
-    // to a log line and leaves the original gcode untouched.
+    // to a log line and leaves the original gcode untouched — including the
+    // expected-string construction, which allocates and must stay inside
+    // the try so a bad_alloc lands in the catch instead of escaping.
     try
     {
+        std::ostringstream value_ss;
+        value_ss << bw->value;  // integral values print without decimals ("5")
+        const std::string expected = "; brim_width = " + value_ss.str();
+
         const std::string tmp_path = gcode_path + ".brimecho.tmp";
         std::ifstream in(gcode_path, std::ios::binary);
         if (!in.is_open())

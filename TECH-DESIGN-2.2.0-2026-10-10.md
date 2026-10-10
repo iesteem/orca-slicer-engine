@@ -109,6 +109,17 @@ D3 引擎无长度规整。**附带上游发现**：fork 的 `set_num_filaments(
 泄漏进输出目录）；CONFIG_BLOCK 区间锚定 + 旧值校验为 "0"（防不受信 3MF 透传
 machine gcode 劫持首行匹配）。
 
+**Stage 3 补漏**（2026-10-10 发布前回归审查，唯一 N 级 FAIL）：`expected` 字符串
+拼接原在 try 块外，bad_alloc 逃逸仍会放大为整单 GCODE_EXPORT_ERROR，违背
+never-escalate 承诺——三行挪入 try（纯代码移动，正常路径逐位不变；bad_alloc 路径
+无 fixture 可触发，验证=编译 + `[brim]` 用例 10 断言复绿，2026-10-10 实测通过）。
+
+**发布后监控**：日志关键字 `brim echo restore`。该串只在降级路径出现（warning/
+error 级：gcode 打不开 / 复制 I/O 失败 / 锚定缺失 / rename 失败 / 异常捕获共 6 处），
+成功路径日志前缀为 `brim_type=auto_brim:` 不含该串——**任何命中即回显说谎已发生**
+（gcode 头留 `; brim_width = 0`，内嵌 config 与运动不变），需人工核对产物 gcode 头
+并定位 I/O 层根因（磁盘满 / 权限 / 并发占用）。
+
 **验证**：`high_flow_whitelist.3mf` 产物 gcode 头 `; brim_width = 5`（06 为 0），
 运动行与 06 逐行一致；输出 3mf 内嵌 config JSON 断言 `"brim_width": "5"`。
 
