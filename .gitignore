@@ -16,3 +16,6 @@ docs/*
 *.gcode_*.3mf
 *.gcode
 
+# Python bytecode cache (tools/ scripts)
+__pycache__/
+
