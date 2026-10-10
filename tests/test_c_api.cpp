@@ -34,6 +34,8 @@
 
 #include "slic3r_c_api.h"
 
+#include "Types.hpp" // EXIT_PREPROCESS_ERROR
+
 static const char* kResources = ORCA_TEST_RESOURCES;
 // slic3r_create() expects the resources ROOT (it appends "/profiles"
 // itself); kResources is already the profiles dir, so keep the two distinct.
@@ -76,6 +78,42 @@ uintmax_t file_size_or_zero(const std::string& p)
 // .gcode.3mf. distinct_per_plate.3mf has 4 plates, so plate 1 genuinely
 // differs from all-plates mode.
 // ============================================================================
+
+// ============================================================================
+// resources_version — verbatim "version" from <resources>/profiles/Snapmaker.json
+// echoed into the stats JSON. Must survive failure exits (that is when the
+// resources version matters most for triage), so this drives the cheap
+// printer-reject path rather than a full slice. Expected value is read from
+// the same file at test time, so the assertion survives resources bumps.
+// ============================================================================
+
+TEST_CASE("C API: resources_version echoes vendor profile version on failure exits", "[integration][capi][resources_version]")
+{
+    // Expected version straight from the test resources' vendor root.
+    auto vj = nlohmann::json::parse(read_file(std::string(kResources) + "/Snapmaker.json"));
+    const std::string expected = vj.at("version").get<std::string>();
+    REQUIRE_FALSE(expected.empty());
+
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    // Printer-reject fixture: run() fails fast at validate_printer_model —
+    // no slicing — but still serializes stats.
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/printer_reject/bambu_p1s.3mf",
+                          "/tmp/orca_capi_resver", R"({"log_path":"/tmp/orca_capi_resver.log"})",
+                          stats, sizeof(stats));
+    REQUIRE(rc == EXIT_PREPROCESS_ERROR);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j.contains("resources_version"));
+    REQUIRE(j["resources_version"].get<std::string>() == expected);
+
+    rm("/tmp/orca_capi_resver.json");
+    rm("/tmp/orca_capi_resver.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
 
 TEST_CASE("C API: plate_id=1 + format=gcode slices one plate into a .gcode file", "[integration][capi][single_plate]")
 {

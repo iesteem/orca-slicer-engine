@@ -15,6 +15,7 @@
 #include <typeinfo>
 
 #include <boost/log/trivial.hpp>
+#include <nlohmann/json.hpp>
 
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -4195,8 +4196,58 @@ int SliceEngine::exit_code() const
 // Stage 6: Build statistics for JSON output
 // ============================================================================
 
+// Verbatim vendor-profile version from <data_dir>/Snapmaker.json (data_dir is
+// <resources>/profiles, set by slic3r_create; e.g. "02.03.03.03"). Read as a
+// raw string — NOT via the preset path's Semver, whose to_string() drops the
+// zero-padding. Non-critical metadata: any failure leaves the field empty
+// (the JSON report then omits resources_version) and logs one warning.
+static std::string read_resources_vendor_version()
+{
+    const std::string data_dir = Slic3r::data_dir();
+    if (data_dir.empty())
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: data_dir not set; version unavailable";
+        return "";
+    }
+    const boost::filesystem::path vendor_json = boost::filesystem::path(data_dir) / "Snapmaker.json";
+    boost::system::error_code ec;
+    if (!boost::filesystem::exists(vendor_json, ec) || ec)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: vendor profile not found: " << vendor_json.string();
+        return "";
+    }
+    std::ifstream in(vendor_json.string(), std::ios::binary);
+    if (!in)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: cannot open " << vendor_json.string();
+        return "";
+    }
+    try
+    {
+        nlohmann::json j;
+        in >> j;
+        const auto it = j.find("version");
+        if (it == j.end() || !it->is_string())
+        {
+            BOOST_LOG_TRIVIAL(warning) << "resources_version: no string \"version\" key in " << vendor_json.string();
+            return "";
+        }
+        return it->get<std::string>();
+    }
+    catch (const std::exception& e)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: failed to parse " << vendor_json.string() << ": " << e.what();
+        return "";
+    }
+}
+
 void SliceEngine::build_statistics()
 {
+    // Report-time metadata read (not a slice input), so it is available on
+    // every exit path — including early failures, where knowing the resources
+    // version matters most for triage.
+    m_stats.resources_version = read_resources_vendor_version();
+
     for (const auto& [plate_id, result] : m_plate_results)
     {
         SliceOutputStats::PlateStats plate_stats;

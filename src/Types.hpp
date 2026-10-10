@@ -134,6 +134,12 @@ struct SliceOutputStats
     // physical filament_colour count). Determined at load time; orthogonal to
     // slicing success.
     bool mixed_filament_used = false;
+    // Verbatim "version" string from the vendor root JSON
+    // (<resources>/profiles/Snapmaker.json), read at report time — no Semver
+    // normalisation, so "02.03.03.03" stays zero-padded. Orthogonal to slicing
+    // success: populated on failure exits too. Empty when the file could not
+    // be read; the JSON report then omits resources_version.
+    std::string resources_version;
 };
 
 // RAII guard that removes a list of temp files on destruction

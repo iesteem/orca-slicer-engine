@@ -114,6 +114,12 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
 
     root["success"] = stats.success;
     root["engine_version"] = ENGINE_VERSION;
+    // Resources (vendor profile) version read verbatim from
+    // <resources>/profiles/Snapmaker.json at report time — no Semver
+    // normalisation. Absent when the file could not be read; consumers must
+    // treat MISSING as "unknown", never as a specific version.
+    if (!stats.resources_version.empty())
+        root["resources_version"] = stats.resources_version;
 
     ordered_json print_info;
     print_info["output_file"] = stats.success ? output_file_path : "";
