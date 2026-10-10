@@ -322,7 +322,7 @@ bool SliceEngine::run()
 
         try
         {
-            // --- Plate membership rebuild (P-23, before per-plate loop) ---
+            // --- Plate membership rebuild (P-24 always-rebuild, before per-plate loop) ---
             // Runs after apply_preset_substitution() above so printable_area
             // is the official U1 value, and before process_plate — the first
             // membership consumer (mark_printable_instances). Ordering
@@ -2541,6 +2541,14 @@ Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id)
 
 void SliceEngine::rebuild_plate_membership()
 {
+    // P-22 guard: the synthesized single plate IS the membership ("plate 1 =
+    // every printable instance", position-independent — see read_3mf_model).
+    // A geometric rebuild would drop off-bed instances from its map, silently
+    // skipping objects the desktop slices, and an all-off-bed file would
+    // wrongly hit the PLATELESS_NO_PRINTABLE_INSTANCES hard-fail.
+    if (m_synthesized_single_plate)
+        return;
+
     // Degradation guard, same condition as setup_print_origin above: no
     // printable_area -> no grid geometry -> leave membership untouched. The
     // plates stay empty and the P-19 EMPTY_PLATE warning path applies.
@@ -2559,41 +2567,62 @@ void SliceEngine::rebuild_plate_membership()
     // BuildVolume::SceneEpsilon before intersect_instance() tests it.
     const double eps = Slic3r::BuildVolume::SceneEpsilon;
 
-    // Candidate plates = those whose obj_inst_map is empty (the 3MF authored
-    // the plate but recorded no membership). Instances already claimed by ANY
-    // plate's explicit map keep their assignment verbatim — plates with map
-    // entries are never touched, so complete-membership files (every fixture
-    // in-repo) see zero behaviour change.
-    std::vector<PlateData*>            candidates;
-    std::vector<orca::PlateBox2D>      boxes;  // parallel to candidates
-    std::set<int>                      claimed;
+    // P-24 always-rebuild: the desktop GUI never restores plate membership
+    // from the file — load_from_3mf_structure keeps the records-commented-out
+    // ("we will rebuild later") and ends with reload_all_objects(), a full
+    // geometric reassignment for every instance. Production file
+    // 2d986d79661ffb62.3mf (third-party exporter, metadata shifted one grid
+    // cell from geometry) proved trusting non-empty maps diverges from the
+    // desktop, which slices all 8 plates while P-23 Fix A failed 3 of them.
+    //
+    // Snapshot BEFORE clearing so the tip can report an actual reassignment
+    // (desktop-authored files keep geometry == metadata and stay silent).
+    // Instance identity is (object index, instance index), NOT the identify_id
+    // value: rebuilt loaded_ids use id().id, which never equals the file's
+    // identify_ids, so a value-wise diff would always report a change.
+    std::map<int, std::pair<int, int>> loaded_to_inst;  // loaded_id -> (obj idx, inst idx)
+    for (size_t o = 0; o < m_model.objects.size(); ++o)
+        for (size_t j = 0; j < m_model.objects[o]->instances.size(); ++j)
+        {
+            const int lid = static_cast<int>(m_model.objects[o]->instances[j]->loaded_id);
+            if (lid > 0)
+                loaded_to_inst.emplace(lid, std::make_pair(static_cast<int>(o),
+                                                           static_cast<int>(j)));
+        }
+    // per plate_index -> printable instance identities resolved from the file's maps;
+    // stale records (identify_id matching no instance) are ignored.
+    std::map<int, std::set<std::pair<int, int>>> before;
     for (PlateData* pd : m_plate_data)
     {
-        if (pd->obj_inst_map.empty())
-        {
-            candidates.push_back(pd);
-            boxes.push_back(orca::compute_plate_box(pd->plate_index, total_plates,
-                                                    plate_width, plate_depth, eps));
-        }
+        auto& ids = before[pd->plate_index];
         for (const auto& [key, inst_info] : pd->obj_inst_map)
-            claimed.insert(inst_info.second);
+        {
+            const auto it = loaded_to_inst.find(inst_info.second);
+            if (it != loaded_to_inst.end() &&
+                m_model.objects[it->second.first]->instances[it->second.second]->printable)
+                ids.insert(it->second);
+        }
+        pd->obj_inst_map.clear();
     }
-    if (candidates.empty())
-        return;
 
-    // Desktop loop (GUI PartPlateList::reload_all_objects): per printable,
-    // unclaimed instance, convex-hull bounding box (world coords), first
-    // intersecting plate wins. Documented divergence: desktop tests ALL
-    // plates' boxes, we test only candidate (empty-map) ones — equivalent on
-    // every reachable real-world file, since a plate with map entries that
-    // omits a geometrically-on-it instance is corrupt input the engine
-    // already mishandles today.
+    // Desktop loop (GUI PartPlateList::reload_all_objects): per printable
+    // instance, convex-hull bounding box (world coords), first intersecting
+    // plate in plate order wins; an instance hitting no plate lands on the
+    // desktop's unprintable plate (here: dropped, with a warning).
     // A degenerate bbox (e.g. modifier-only object with empty convex hull)
     // compares NaN/false everywhere below and is left unenrolled — benign,
     // no UB (NaN FP comparisons are defined false).
-    int enrolled = 0, excluded = 0, key = 0;
-    for (ModelObject* obj : m_model.objects)
+    std::vector<orca::PlateBox2D> boxes;  // parallel to m_plate_data
+    for (const PlateData* pd : m_plate_data)
+        boxes.push_back(orca::compute_plate_box(pd->plate_index, total_plates,
+                                                plate_width, plate_depth, eps));
+    std::map<int, std::set<std::pair<int, int>>> after;   // plate_index -> identities
+    std::map<std::pair<int, int>, int>          after_plate;  // identity -> plate_index
+    std::vector<std::pair<std::pair<int, int>, std::string>> dropped;  // identity + object name
+    int excluded = 0, key = 0;
+    for (size_t o = 0; o < m_model.objects.size(); ++o)
     {
+        ModelObject* obj = m_model.objects[o];
         for (size_t j = 0; j < obj->instances.size(); ++j)
         {
             ModelInstance* inst = obj->instances[j];
@@ -2604,10 +2633,9 @@ void SliceEngine::rebuild_plate_membership()
                 ++excluded;
                 continue;
             }
-            if (claimed.count(static_cast<int>(inst->loaded_id)) > 0)
-                continue;
             const BoundingBoxf3 inst_bbox = obj->instance_convex_hull_bounding_box(j);
-            for (size_t c = 0; c < candidates.size(); ++c)
+            bool assigned = false;
+            for (size_t c = 0; c < m_plate_data.size(); ++c)
             {
                 const orca::PlateBox2D& b = boxes[c];
                 if (inst_bbox.max.x() >= b.xmin && inst_bbox.min.x() <= b.xmax &&
@@ -2615,31 +2643,74 @@ void SliceEngine::rebuild_plate_membership()
                 {
                     // P-22 enrollment pattern: key only needs uniqueness
                     // (engine consumers read value.second exclusively) and a
-                    // running counter is collision-free on an empty map.
+                    // running counter is collision-free on a cleared map.
                     // static_cast size_t->int narrowing is bounded by the
                     // instance count and id().id is globally unique, > 0.
                     inst->loaded_id = inst->id().id;
-                    candidates[c]->obj_inst_map.emplace(
+                    m_plate_data[c]->obj_inst_map.emplace(
                         ++key, std::make_pair(static_cast<int>(j),
                                               static_cast<int>(inst->id().id)));
-                    ++enrolled;
+                    const std::pair<int, int> identity(static_cast<int>(o),
+                                                       static_cast<int>(j));
+                    after[m_plate_data[c]->plate_index].insert(identity);
+                    after_plate[identity] = m_plate_data[c]->plate_index;
+                    assigned = true;
                     break;
                 }
             }
+            if (!assigned)
+                dropped.emplace_back(std::make_pair(static_cast<int>(o),
+                                                     static_cast<int>(j)), obj->name);
         }
     }
 
-    if (enrolled == 0)
+    // Off-all-plates printable instances: warning, non-blocking. Desktop
+    // parity: GLCanvas3D gates the slice button on contained_min_one &&
+    // !partlyOut — a fully-outside instance goes to the unprintable plate and
+    // does NOT block slicing the remaining plates (only partly-outside does,
+    // handled by run_build_volume_check's blocking errors).
+    for (const auto& [identity, name] : dropped)
+        m_stats.issues.push_back(make_warning(
+            -1, "INSTANCE_NOT_ON_ANY_PLATE",
+            "Object \"" + name + "\" (instance " +
+                std::to_string(identity.second) +
+                ") does not intersect any build plate and will not be printed",
+            name, "Move the object onto a build plate before slicing."));
+
+    // Reassigned = any printable instance whose plate changed (moved, gained,
+    // or lost). Identical membership (every desktop-authored file) stays
+    // silent; Case-style regression locks rely on this quiet path.
+    int moved = 0;
+    {
+        std::set<std::pair<int, int>> all;
+        for (const auto& [pi, ids] : before) all.insert(ids.begin(), ids.end());
+        for (const auto& [pi, ids] : after) all.insert(ids.begin(), ids.end());
+        for (const auto& identity : all)
+        {
+            const int pb = [&]() {
+                for (const auto& [pi, ids] : before)
+                    if (ids.count(identity)) return pi;
+                return -1;
+            }();
+            const int pa2 = after_plate.count(identity) ? after_plate[identity] : -1;
+            if (pb != pa2)
+                ++moved;
+        }
+    }
+    if (moved == 0 && dropped.empty())
         return;
 
-    BOOST_LOG_TRIVIAL(info) << "Rebuilt plate membership geometrically: " << enrolled
-                            << " instance(s) assigned, " << excluded
-                            << " excluded as unprintable (plate metadata carried no model_instance records)";
-    m_stats.issues.push_back(make_tip(-1, "PLATE_MEMBERSHIP_REBUILT",
-        "The 3MF file's plate metadata does not record instance membership; "
-        "instances were assigned to plates geometrically (desktop Orca behaviour): " +
-        std::to_string(enrolled) + " assigned, " + std::to_string(excluded) +
-        " excluded as unprintable."));
+    BOOST_LOG_TRIVIAL(info) << "Rebuilt plate membership geometrically: " << moved
+                            << " instance(s) reassigned, " << dropped.size()
+                            << " dropped (not on any plate), " << excluded
+                            << " excluded as unprintable";
+    if (moved > 0)
+        m_stats.issues.push_back(make_tip(-1, "PLATE_MEMBERSHIP_REBUILT",
+            "The 3MF file's plate metadata disagrees with plate geometry; "
+            "instance membership was reassigned geometrically (desktop Orca "
+            "behaviour): " + std::to_string(moved) + " reassigned, " +
+            std::to_string(dropped.size()) + " dropped, " +
+            std::to_string(excluded) + " excluded as unprintable."));
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)

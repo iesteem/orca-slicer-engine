@@ -127,3 +127,18 @@ docs/precedents/makerworld-membership-rebuild.md。
 |---|---|---|
 | 1e9d9919e7955ce4.3mf (3.5MB) | 1 盘无成员记录，生产原件（md5 `70cd1bcba83e12d21477ee074b01b0f0`） | 几何重建 enroll 唯一实例 → rc=0、1 盘成功、PLATE_MEMBERSHIP_REBUILT tip、出产物、重量 5-40g（内嵌黄金 21.04g，U1 预设替换致偏）（Case 26） |
 | slice_membership_rebuilt_2plate.3mf | slice_empty_plate_skip 派生（删唯一 `<model_instance>`，md5 `918f7b5a34631be912685e522545bb57`）：两盘皆无成员 | 立方体几何归盘 1、盘 2 真空 → rc=0、1 盘成功、tip + 盘 2 EMPTY_PLATE warning（Case 27；同时是 Cases 15/16 的混合 map 回归对照） |
+
+### membership 错位组（P-24 always-rebuild，2026-10-10）
+
+来源：生产原件（第三方导出器产出，260mm 热床网格排版 + 自定义工艺预设
+"Litos"）——model_settings.config 的 plate membership 与几何格位错位一格
+（top.stl 记盘 3 但落在盘 2 格位、side.stl 记盘 5 落盘 3 格位、
+orangeQuestion.stl 记盘 8 落盘 5 格位；对象按 260 床×1.2=312mm 网格排版，
+当前 U1 打印机为 270 床）。P-23 Fix A 逐字信任非空 map 误判 3 盘
+BUILD_VOLUME_FULLY_OUTSIDE（rc=6 零产物）；桌面 Orca 2.4.0 按
+reload_all_objects 几何重建全 8 盘切片成功。判例：
+docs/precedents/always-rebuild-plate-membership.md。
+
+| fixture | 盘构成 | 预期 |
+|---|---|---|
+| 2d986d79661ffb62.3mf (286K) | 8 盘生产原件（md5 `0794e9323efb3fe073c603c6b493c951`），盘 2 元数据空但几何上 top.stl 落其格位 | always-rebuild 几何重排 → rc=0、8 盘全部 success、PLATE_MEMBERSHIP_REBUILT tip、出产物、逐盘耗材/时间非零（Case 28；桌面对照输出 plate_1..8 对象序列 black/top/side/marcoLamparaAjustado/orangeQuestion/marcoLampara/marcoLamparaInferior/marcoLamparaSuperior） |

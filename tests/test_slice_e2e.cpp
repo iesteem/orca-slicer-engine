@@ -671,6 +671,11 @@ TEST_CASE("Multi-plate with one empty plate: benign skip, partial success", "[in
     REQUIRE(r->engine->stats().plates.size() == 1);
     REQUIRE(r->engine->stats().plates.front().plate_id == 0);
     REQUIRE(r->engine->stats().plates.front().success);
+
+    // P-24 quiet path: this fixture's explicit map agrees with geometry, so
+    // the always-rebuild reassignment must be a no-op and stay SILENT —
+    // desktop-authored files never see a PLATE_MEMBERSHIP_REBUILT tip.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
 }
 
 // ============================================================================
@@ -1003,4 +1008,47 @@ TEST_CASE("Membership rebuild assigns the cube and skips the genuinely empty sib
     REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
 
     REQUIRE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 28 — Production misaligned-membership 8-plate file (P-24
+// always-rebuild): 2d986d79661ffb62.3mf carries NON-EMPTY plate maps that
+// disagree with geometry by one grid cell (third-party exporter authored on
+// a 260 mm bed grid; every object sits exactly on a cell centre, but the
+// metadata claims neighbouring plates). P-23 Fix A trusted the maps and
+// failed plates 3/5/8 with BUILD_VOLUME_FULLY_OUTSIDE (exit 6, no product —
+// all-or-nothing), while desktop Orca 2.4.0 sliced all 8 plates: the desktop
+// loader never restores membership from the file and always reassigns
+// geometrically (reload_all_objects). rebuild_plate_membership() now ports
+// that semantic wholesale (P-24), so this file must go fully green.
+// Desktop cross-check: its gcode.3mf output orders the plates
+// black/top/side/marcoLamparaAjustado/orangeQuestion/marcoLampara/
+// marcoLamparaInferior/marcoLamparaSuperior — 8 plates, one object each.
+// ============================================================================
+TEST_CASE("Production 8-plate misaligned membership slices via always-rebuild", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/2d986d79661ffb62.3mf", "p24_misaligned8");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 8);
+    for (int i = 0; i < 8; ++i)
+    {
+        const auto& plate = r->engine->stats().plates[i];
+        REQUIRE(plate.plate_id == i);
+        REQUIRE(plate.success);
+        REQUIRE(plate.total_filament_g > 0.0);
+        REQUIRE(plate.print_time > 0.0f);
+    }
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+    // Every object lands on some plate cell under the geometric assignment —
+    // nothing may be dropped, and the old false positive must be gone.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "INSTANCE_NOT_ON_ANY_PLATE", IssueLevel::warning));
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_FULLY_OUTSIDE", IssueLevel::error));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
 }
