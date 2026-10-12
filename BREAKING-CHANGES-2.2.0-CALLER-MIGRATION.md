@@ -106,10 +106,16 @@ CLI 与 C API 双层生效。06 容忍、2.2.0 拒绝（`rc=1`）的完整输入
 - **新增 JSON 字段**（全部可选、缺席=未知，见 json-output.md）：
   - 顶层 `resources_version`：vendor profile 版本原样回显（如 `02.03.03.03`），
     失败出口也在场——排障时优先读它确认资源版本。
-  - `print_info_total.support_free`：true=所有盘均未开启支撑（配置层判定，
-    发射时取反；缺席坍缩保守侧"有支撑"）。**注意极性**：true 是"无需支撑"。
+  - `print_info_total.support_free`：true=所有盘 gcode 均零支撑挤出（**gcode
+    实际层**判定，f67f630/P-25：`support_volumes_per_extruder` 求和>0 取反，
+    非 enable_support 配置层——配置开但自支撑几何仍为 true；缺席坍缩保守侧
+    "有支撑"）。**注意极性**：true 是"无需支撑"。
   - `print_info_total.mixed_filament_used`：输入文件是否引用虚拟混色槽。
   - `plates[].support_free`：同上，盘级。
+  - 输出 gcode.3mf 盘元数据 `support_used`（`Metadata/slice_info.config`）：
+    P-25 起同源 gcode 实际层（与 `support_free` 互补），不再与桌面产物一致
+    （桌面写配置层；混合 case——配置开+自支撑——桌面 true/本引擎 false）。
+    解析该键的下游按"实际是否挤出支撑"理解即为正确语义。
   - 下游若有 `additionalProperties:false` 类严格 schema 校验需放行这些键。
 - **新增 issue 码**：`NO_PLATES_PRODUCED`/`PLATE_MEMBERSHIP_REBUILT`/
   `INSTANCE_NOT_ON_ANY_PLATE`（exit-codes.md"盘选择与归属"组）。

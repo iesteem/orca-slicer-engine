@@ -439,12 +439,14 @@ e2e Case 15/16/17 共 23 断言；exit-codes.md 契约同步。
 | 字段 | 语义 | 设计要点 |
 |---|---|---|
 | `resources_version`（顶层，c7d0428） | `-r/--resources` 资源目录 `profiles/Snapmaker.json` 的 `version` **原样字符串**回显（如 `02.03.03.03`） | **不走 Semver**——`to_string()` 丢补零（`02.02.50.02`），且 vendor bundle 仅预设替换路径才装载；在 `build_statistics()` 唯一漏斗发射——**失败出口也带**（rc=6 排障时价值最高处）；文件缺失/无 version 键/解析失败 → 一条 WARN + 字段缺席（缺席=未知，非空串） |
-| `support_free` | **gcode 实际层**（2026-10-10 二次换源，方案 C 落地）：`GCodeProcessorResult.print_statistics.support_volumes_per_extruder` 求和 >0（erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖），发射时取反（true=零支撑挤出）；两级 `print_info_total`/`plates[]` 同极性；成功时才发。配置开但自支撑几何 → true | **缺席 = 未知，坍缩在保守侧"有支撑"**；输出 gcode.3mf 内嵌盘元数据 `support_used` 保持配置层（桌面 PartPlate.cpp:5476 parity）。演进：同日先由 `support_required` 改名翻转（极性），再判定源配置层→gcode 实际层，均未发布前原地修订；顺带修 `PlateStats::support_used`（现 `support_generated`）失败盘早退留 garbage 值的初始化缺陷 |
+| `support_free` | **gcode 实际层**（2026-10-10 二次换源，方案 C 落地）：`GCodeProcessorResult.print_statistics.support_volumes_per_extruder` 求和 >0（erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖），发射时取反（true=零支撑挤出）；两级 `print_info_total`/`plates[]` 同极性；成功时才发。配置开但自支撑几何 → true | **缺席 = 未知，坍缩在保守侧"有支撑"**；输出 gcode.3mf 内嵌盘元数据 `support_used` 同源 gcode 实际层（**P-25**，2026-10-10 三次修订：原 parity 决策配置层被推翻——该字段全 fork 树零真实消费方，纯写→读→写回 roundtrip，且云消费方需要实际层；桌面 PartPlate.cpp:5476 仍写配置层，混合 case 桌面 true/云 false，已确认无比对流程）。演进：同日先由 `support_required` 改名翻转（极性），再判定源配置层→gcode 实际层，三次 3MF 元数据换源，均未发布前原地修订；顺带修 `PlateStats::support_used`（现 `support_generated`）失败盘早退留 garbage 值的初始化缺陷 |
 | `mixed_filament_used` | 对象/part extruder 或面片选中虚拟混色槽（id 超过物理 `filament_colour` 数） | 载入时一次判定（`detect_mixed_filament_usage()`）——输入文件属性，部分失败运行仍有效；高度换色**刻意不查**（GUI 该处只支持物理耗材，用户确认） |
 
-**验证**：`[capi][support]`×4 / 20 断言（新增 `geom_overhang_support_generated.3mf`
+**验证**：`[capi][support]`×4 / 22 断言（新增 `geom_overhang_support_generated.3mf`
 T 形悬垂 fixture——真生成支撑侧必须 false；悬空实例 Z 变体不可制备：ensure-on-bed
-把单零件对象贴床）；产物 gcode 双侧核对 `;TYPE:Support` 在/缺；`[capi][mixed]`×3；
+把单零件对象贴床）；P-25 起两用例各锚一条输出 3MF `Metadata/slice_info.config`
+`support_used` 元数据断言（配置开自支撑=false / 真生成=true），防 relay 回退配置层；
+产物 gcode 双侧核对 `;TYPE:Support` 在/缺；`[capi][mixed]`×3；
 4 个 mixed fixture 覆盖对象/modifier/面片三通路 + defined-but-unused 负对照；
 `[capi][resources_version]`（快速 printer-reject 路径，期望值测试时从同一资源文件
 读出，防资源升级即红）——package-02.01.04 资源→`02.02.50.02`、仓库资源→

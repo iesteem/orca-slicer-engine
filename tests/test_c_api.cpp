@@ -69,6 +69,26 @@ uintmax_t file_size_or_zero(const std::string& p)
     return ec ? 0 : sz;
 }
 
+// Read one text entry (e.g. "Metadata/slice_info.config") from the packaged
+// .gcode.3mf. libzip is not linked into the test binary; shell out to python3
+// (available on every host that builds the engine) — or fail the test loudly
+// if either step breaks. Same pattern as test_high_flow.cpp.
+std::string extract_3mf_text(const std::string& gcode_3mf_path, const std::string& entry)
+{
+    const std::string tmp = "/tmp/orca_test_capi_extract_entry.txt";
+    boost::filesystem::remove(tmp);
+    const std::string cmd =
+        "python3 -c \"import zipfile,sys;"
+        "z=zipfile.ZipFile('" + gcode_3mf_path + "');"
+        "sys.exit(1) if '" + entry + "' not in z.namelist() else "
+        "open('" + tmp + "','wb').write(z.read('" + entry + "'))\"";
+    const int rc = std::system(cmd.c_str());
+    REQUIRE(rc == 0);
+    std::ifstream f(tmp, std::ios::binary);
+    REQUIRE(f.good());
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
 } // namespace
 
 // ============================================================================
@@ -314,15 +334,19 @@ TEST_CASE("C API: 3-byte plate thumbnail rejected by size guard, slice still suc
 // extrusion volume (GCodeProcessor support_volumes_per_extruder, roles
 // erSupportMaterial/Interface/Transition — normal, tree and raft support)
 // == 0, inverted at the emission boundary. It is NOT the config-level
-// enable_support flag (that one only feeds the packaged 3MF plate metadata,
-// desktop parity): support enabled on self-supporting geometry extrudes
-// zero support and stays "free".
+// enable_support flag: support enabled on self-supporting geometry extrudes
+// zero support and stays "free". Since P-25 (2026-10-10) the packaged 3MF
+// plate metadata (Metadata/slice_info.config, key "support_used") carries
+// the SAME gcode-actual source — desktop writes the config layer there, but
+// that field has zero readers in the fork tree and cloud consumers need the
+// actual layer (asserted in cases 2 and 3 below).
 //   1. success + no support extruded anywhere -> print_info_total.support_free
 //      == true, plates[].support_free == true
 //   2. success + enable_support but self-supporting geometry -> still true
-//      (config on, zero generation — the config/generation layer boundary)
+//      (config on, zero generation — the config/generation layer boundary;
+//      3MF metadata support_used == false here, vs true on desktop)
 //   3. success + overhang geometry that really generates support -> both
-//      false
+//      false (and 3MF metadata support_used == true)
 //   4. failure -> support_free ABSENT: a failed plate's support state was
 //      never determined, so a present-but-true value would let consumers
 //      misread "unknown" as "support-free"
@@ -359,11 +383,13 @@ TEST_CASE("C API: enable_support on self-supporting cube leaves support_free tru
     // the object config carries enable_support=1 (object-level merge path,
     // PrintApply.cpp m_support_used |= object config). The cube is
     // self-supporting: zero support is generated, so the gcode-actual flag
-    // stays true — the JSON no longer reflects the config flag (the packaged
-    // 3MF metadata still does, desktop parity).
+    // stays true — the JSON no longer reflects the config flag. P-25: the
+    // packaged 3MF metadata shares this source, so support_used=false here
+    // (desktop would write true — config layer; asserted to pin the flip).
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
+    rm("/tmp/orca_capi_sup_on.gcode.3mf"); // artifact assertion below: pre-clean (stale-path trap)
     char stats[32768] = {0};
     int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/geom_above_bed_support_on.3mf",
                           "/tmp/orca_capi_sup_on", R"({"log_path":"/tmp/orca_capi_sup_on.log"})", stats, sizeof(stats));
@@ -373,6 +399,12 @@ TEST_CASE("C API: enable_support on self-supporting cube leaves support_free tru
     REQUIRE(j["success"].get<bool>());
     REQUIRE(j["print_info_total"]["support_free"].get<bool>() == true);
     REQUIRE(j["plates"][0]["support_free"].get<bool>() == true);
+
+    // P-25 anchor: 3MF plate metadata is gcode-actual, not the config layer.
+    // Fails if the relay ever reverts to result.support_used (config).
+    const std::string slice_info =
+        extract_3mf_text("/tmp/orca_capi_sup_on.gcode.3mf", "Metadata/slice_info.config");
+    REQUIRE(slice_info.find("key=\"support_used\" value=\"false\"") != std::string::npos);
 
     rm("/tmp/orca_capi_sup_on.gcode.3mf");
     rm("/tmp/orca_capi_sup_on.json");
@@ -392,6 +424,7 @@ TEST_CASE("C API: overhang geometry that generates support flips support_free fa
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
+    rm("/tmp/orca_capi_sup_gen.gcode.3mf"); // artifact assertion below: pre-clean (stale-path trap)
     char stats[32768] = {0};
     int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/geom_overhang_support_generated.3mf",
                           "/tmp/orca_capi_sup_gen", R"({"log_path":"/tmp/orca_capi_sup_gen.log"})", stats, sizeof(stats));
@@ -401,6 +434,11 @@ TEST_CASE("C API: overhang geometry that generates support flips support_free fa
     REQUIRE(j["success"].get<bool>());
     REQUIRE(j["print_info_total"]["support_free"].get<bool>() == false);
     REQUIRE(j["plates"][0]["support_free"].get<bool>() == false);
+
+    // P-25 anchor: real generation must also relay into the 3MF metadata.
+    const std::string slice_info =
+        extract_3mf_text("/tmp/orca_capi_sup_gen.gcode.3mf", "Metadata/slice_info.config");
+    REQUIRE(slice_info.find("key=\"support_used\" value=\"true\"") != std::string::npos);
 
     rm("/tmp/orca_capi_sup_gen.gcode.3mf");
     rm("/tmp/orca_capi_sup_gen.json");

@@ -3476,12 +3476,10 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
 
         const PrintStatistics& ps = print.print_statistics();
         result.total_weight = ps.total_weight;
-        // Config layer — feeds only the output gcode.3mf plate metadata relay
-        // (pd->is_support_used, desktop PartPlate.cpp:5476 parity).
-        result.support_used = print.is_support_used();
         // G-code actual layer: any support extrusion volume (roles
         // erSupportMaterial/Interface/Transition, incl. raft) means support
-        // structures were really generated. Drives the JSON support_free flag.
+        // structures were really generated. Drives the JSON support_free flag
+        // and (P-25) the packaged 3MF plate metadata support_used relay.
         double support_volume = 0.0;
         for (const auto& [extruder, vol] :
              result.gcode_result.print_statistics.support_volumes_per_extruder)
@@ -4205,10 +4203,13 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
 
         pd->toolpath_outside = result.gcode_result.toolpath_outside;
         pd->timelapse_warning_code = result.gcode_result.timelapse_warning_code;
-        // Desktop parity: the packaged 3MF plate metadata keeps the
-        // config-layer flag (desktop writes print->is_support_used() here,
-        // PartPlate.cpp:5476), NOT the gcode-actual layer.
-        pd->is_support_used = result.support_used;
+        // P-25 (2026-10-10): the packaged 3MF plate metadata carries the
+        // G-CODE ACTUAL layer, same source as the JSON support_free flag.
+        // Desktop writes the config layer here (PartPlate.cpp:5476), but that
+        // field has zero readers in the entire fork tree (pure write->parse->
+        // rewrite roundtrip) and cloud consumers need "did support actually
+        // extrude" — config-on but self-supporting geometry must report false.
+        pd->is_support_used = result.support_generated;
         pd->is_label_object_enabled = result.gcode_result.label_object_enabled;
 
         pd->parse_filament_info(&result.gcode_result);
