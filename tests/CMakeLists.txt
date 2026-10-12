@@ -107,7 +107,8 @@ if(ORCA_STATIC)
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
         ${CMAKE_SOURCE_DIR}/src/GeometryCheck.cpp
         ${CMAKE_SOURCE_DIR}/src/Utils.cpp
-        ${CMAKE_SOURCE_DIR}/src/nanosvg.cpp
+        # src/nanosvg.cpp removed — same duplicate-symbol reason as the main
+        # engine target (libslic3r/Format/svg.cpp now embeds nanosvg).
     )
 
     # Reuse the exact include dirs / defines / flags / link list of the static

@@ -52,8 +52,10 @@ if(ORCA_STATIC)
         src/JsonReport.cpp
         src/GeometryCheck.cpp
         src/Utils.cpp
-        src/nanosvg.cpp
         src/PresetRollback.cpp
+        # src/nanosvg.cpp removed: Orca base 2.4.1 embeds NANOSVG_IMPLEMENTATION
+        # in libslic3r/Format/svg.cpp, so the headless shim now duplicate-defines
+        # nsvg* symbols at static link (multiple definition of nsvg__colors).
     )
 
     # Drop include dirs that no longer exist (e.g. build-time symlinks src/eigen)
