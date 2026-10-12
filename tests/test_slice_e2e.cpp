@@ -363,34 +363,39 @@ TEST_CASE("Failed plate suppresses gcode.3mf packaging (all-or-nothing)", "[inte
 // single-plate case and the 2-plate mixed-outcome case, both in-repo.)
 
 // ============================================================================
-// Case 9 — wipe-tower-induced TOOLPATH_OUTSIDE. Small single-plate fixture
-// (擦除塔gcode路径超限.3mf, renamed wipe_tower_toolpath_outside.3mf): the
-// object itself sits inside the build volume, but its wipe tower + brim
-// extrude past the bed edge. Guards the compute_toolpath_outside port on the
-// minimal single-plate, plate-origin-at-zero shape (the Case 8 fixture covers
-// the multi-plate grid-offset variant). Verified live: exit 7, TOOLPATH_OUTSIDE
-// error on plate 1, package suppressed.
+// Case 9 — wipe-tower fixture, post-2.4.1-base reality (2026-10-12).
+// Small single-plate fixture (擦除塔gcode路径超限.3mf, renamed
+// wipe_tower_toolpath_outside.3mf). Historically the object sat inside the
+// build volume while its wipe tower + brim extruded past the bed edge
+// (exit 7, TOOLPATH_OUTSIDE, package suppressed). Upstream b626b4be62
+// ("Feature sync gitlab to github main #937", merged 2026-10-10) reworked
+// the wipe-tower partition algorithm and GCode transition generation; the
+// tower footprint for this geometry now stays inside the bed, so the
+// out-of-bed condition is no longer reproducible with this in-repo fixture
+// (verified live: exit 0, clean plate, package written). The case now pins
+// that clean outcome — a regression that REINTRODUCES out-of-bed toolpaths
+// for this fixture would flip it red. The TOOLPATH_OUTSIDE detection port
+// itself stays covered by Case 11 (toolpath_outside_mixed_7855).
 // ============================================================================
-TEST_CASE("Wipe tower toolpath outside bed detected post-slice (single plate)", "[integration][slice][fail][toolpath]")
+TEST_CASE("Wipe tower fixture stays in-bed on 2.4.1 base (Case 9 fixture drift)", "[integration][slice][ok][wipe]")
 {
-    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_toolpath_outside.3mf", "wipe_tower_outside");
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_toolpath_outside.3mf", "wipe_tower_inbed");
 
-    REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->any_error());
-    REQUIRE(r->engine->exit_code() == 7);
-    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
 
-    // Single plate: it must carry the flag, the error issue, and fail.
+    // Single plate: clean success, no out-of-bed flag anywhere.
     REQUIRE(r->engine->stats().plates.size() == 1);
     const auto& p = r->engine->stats().plates[0];
-    REQUIRE(p.toolpath_outside);
-    REQUIRE_FALSE(p.success);
+    REQUIRE(p.success);
+    REQUIRE_FALSE(p.toolpath_outside);
     bool has_issue = false;
     for (const auto& iss : p.issues)
         if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
             has_issue = true;
-    REQUIRE(has_issue);
-    REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+    REQUIRE_FALSE(has_issue);
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
 }
 
 // (Case 10 removed 2026-08-25: the 5479 ToolOrdering heap-corruption
@@ -450,24 +455,32 @@ TEST_CASE("Model with missing config keys slices via backfill (historical 44ae S
 }
 
 // ============================================================================
-// Case 12.5 — four-plate three-outcome mix (圆柱体). 64KB in-repo fixture:
+// Case 12.5 — four-plate mix (圆柱体), post-2.4.1-base reality (2026-10-12).
+// 64KB in-repo fixture. Historically the densest per-plate outcome mix:
 //   plate 1 TOOLPATH_OUTSIDE + BED_FILAMENT_MISMATCH, plate 3 build-volume XY,
-//   plates 2 & 4 clean. The densest per-plate outcome mix in the pool — three
-// distinct detection stages (postprocess / preprocess / clean) interleaved on
-// one project, each plate judged independently.
+//   plates 2 & 4 clean — three detection stages interleaved, exit 7.
+// Upstream b626b4be62 (merged 2026-10-10) reworked wipe-tower partitioning /
+// GCode transition generation, so plate 1's out-of-bed toolpath condition no
+// longer reproduces (verified live: plate 1 now clean). Remaining mix:
+//   plate 3 build-volume XY (preprocess) fails, plates 1/2/4 clean, exit 6
+// (EXIT_PREPROCESS_ERROR — no postprocess failure class remains). Still
+// guards: per-plate independent sentencing, clean-sibling isolation, and
+// exit-code class aggregation. The postprocess-in-mix coverage moved to
+// Case 11 (toolpath_outside_mixed_7855).
 // ============================================================================
-TEST_CASE("Four-plate project: three distinct failure modes, clean plates unaffected", "[integration][slice][fail][mixed]")
+TEST_CASE("Four-plate project: build-volume failure on one plate, clean siblings unaffected (Case 12.5 drift)", "[integration][slice][fail][mixed]")
 {
     auto r = run_full(ORCA_TEST_FIXTURE_DIR "/cylinder_four_plate_mixed.3mf", "cyl_mixed");
 
     REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE(r->engine->exit_code() == 6);
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 
     REQUIRE(r->engine->stats().plates.size() == 4);
-    // Plate 1: toolpath outside (postprocessing).
-    REQUIRE_FALSE(r->engine->stats().plates[0].success);
-    REQUIRE(r->engine->stats().plates[0].toolpath_outside);
+    // Plate 1: was TOOLPATH_OUTSIDE + BED_FILAMENT_MISMATCH pre-2.4.1; now a
+    // clean plate (fixture-drift pin — flip red if out-of-bed ever returns).
+    REQUIRE(r->engine->stats().plates[0].success);
+    REQUIRE_FALSE(r->engine->stats().plates[0].toolpath_outside);
     // Plate 2: clean sibling must succeed despite neighbours failing.
     REQUIRE(r->engine->stats().plates[1].success);
     // Plate 3: build-volume XY rejection (preprocessing).
