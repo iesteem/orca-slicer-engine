@@ -630,6 +630,43 @@ TEST_CASE("C API: mixed filament via modifier reference and via painted facets",
     }
 }
 
+TEST_CASE("C API: mixed_filament_used is OR-aggregated across plates", "[integration][capi][mixed]")
+{
+    // mixed_filament_two_plate.3mf: mixed_filament_used.3mf derived to a
+    // second plate — plate 1 keeps the virtual-slot reference (expands to all
+    // 4 physical slots), plate 2 is pure physical (a single slot). The flag is
+    // a FILE-level OR over plates: any plate referencing a virtual slot sets it
+    // true, and a pure-physical plate does not drag it back down (no AND
+    // semantics — plate 2 being physical-only must not clear it).
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/mixed_filament_two_plate.3mf",
+                          "/tmp/orca_capi_mix_twoplate", R"({"log_path":"/tmp/orca_capi_mix_twoplate.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["plates"].size() == 2);
+    // File-level OR aggregation: plate 1 references virtual slots → true.
+    REQUIRE(j["print_info_total"]["mixed_filament_used"].get<bool>() == true);
+
+    // Both plates sliced successfully.
+    REQUIRE(j["plates"][0]["success"].get<bool>());
+    REQUIRE(j["plates"][1]["success"].get<bool>());
+    // Plate 1: virtual slots expanded to all 4 physical slots.
+    REQUIRE(j["plates"][0]["filaments"].size() == 4);
+    // Plate 2: pure physical — a single slot.
+    REQUIRE(j["plates"][1]["filaments"].size() == 1);
+
+    rm("/tmp/orca_capi_mix_twoplate.gcode.3mf");
+    rm("/tmp/orca_capi_mix_twoplate.json");
+    rm("/tmp/orca_capi_mix_twoplate.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
 // ============================================================================
 // (C) add_log_file_sink leak — every slic3r_slice call used to add ANOTHER
 // file sink to the global boost::log core. After slicing twice, the first
