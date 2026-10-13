@@ -249,7 +249,13 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
         const auto& stats = engine.stats();
         std::string json_str = build_statistics_json(stats, engine.output_path());
 
-        // Write JSON statistics to file (always enabled)
+        // Write JSON statistics to file. Skipped when the run never determined
+        // an output path (e.g. preprocess failure): the auto-derivation below
+        // turns an empty path into the literal ".json" in the CWD — a hidden
+        // litter file that ctest's build-dir CWD masked until a repo-root run
+        // (2026-10-13). The JSON itself always returns via stats_out, so
+        // nothing observable is lost on the failure path.
+        if (!engine.output_path().empty())
         {
             std::string json_path = cfg.json_output_path;
             if (json_path.empty())
