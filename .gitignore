@@ -8,6 +8,14 @@ package-*.zip
 docs/*
 !docs/precedents/
 !docs/requirements/
+# Process docs (base-bump checklist etc.) and tech-design review docs are
+# long-lived maintained documents — version them (2026-10-12, TECH-DESIGN
+# TEST-SYSTEM §5.1/§5.2 M0).
+!docs/process/
+!docs/TECH-DESIGN-*.md
+
+# Nightly full-suite JUnit archive (scripts/nightly_tests.sh output)
+test-archives/
 
 # Test byproducts: slicing emits gcode.3mf / gcode next to fixtures or in /tmp.
 # Generated output, not test inputs — never check in. The .gcode_<hash>.3mf
