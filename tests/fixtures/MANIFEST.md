@@ -105,7 +105,8 @@ pla_abs_tower_conflict_fail.3mf 的 diff 集记录）。
 
 `accuracy/ boundary/ build_volume/ build_volume_dir/ filament/ filement_count/
 file_validation/ gcode_security/ layer_height/ path_conflict/ printer_reject/
-print_sequence/ temp_mode/ unsupported/` —— 与同名 test_*.cpp 一一对应，
+print_sequence/ support/ temp_mode/ unsupported/` —— 与同名 test_*.cpp 一一对应
+（support/ 例外：用例在 test_c_api.cpp 的 [support] 家族），
 各文件头部注释记录实测行为（断言忠于实测，非想当然）。
 
 ### 空盘行为组（C2 修复，2026-09-20）
@@ -154,3 +155,17 @@ slice_offgrid_sibling_ok.3mf 派生配方（Python zipfile 读改写，无现成
    （UUID 末位 +1 保证唯一；459/135 = 2 盘网格 cols=2 时盘 2 cell [324,594]×[0,270] 的中心）
 ② `Metadata/model_settings.config` 在盘 1 `</plate>` 后追加无成员、无缩略图引用的盘 2 块（plater_id=2 + locked/filament_maps）
 ③ 其余 entry（含乱码本地文件名的 `3D/Objects/立方体_1.model`）逐字节保留——重打包会修复 zip 文件名编码，改变 fixture 特征
+
+### 支撑语义组（P-25 gcode-actual 判定，2026-10-13）
+
+来源：生产原件语义化改名入库（同一小船模型桌面双保存，支撑开关为唯一
+变量 + 立方体开支撑对照），构成"真实几何 × 配置正交"三件套。与根级
+geom_above_bed_support_on.3mf / geom_overhang_support_generated.3mf
+（自制简化几何）互补：这组走真实桌面保存的支撑配置链 + 2.5M 真实网格
+曲面悬垂。用例：test_c_api.cpp "real-world boat pair + cube"。
+
+| fixture | md5 | 锚定行为 |
+|---|---|---|
+| support/boat_support_off.3mf (2.5M) | `c0c62d74927c85f4edb11fe86c90ead2` | 支撑关 → gcode 零支撑挤出 → JSON support_free=true（双层）+ 3MF support_used=false |
+| support/boat_support_on.3mf (2.5M) | `fa95509eede8ae2c326a274481762375` | 同一船、支撑开 → 真实生成支撑（采集时 ~1550 段 TYPE:Support，耗材 11.1g→19.1g）→ support_free=false + 3MF support_used=true |
+| support/cube_support_on.3mf (24K) | `3faae135b7689a45f14fe8ba7dc7b109` | 立方体开支撑但自支撑几何 → 零支撑体积 → support_free=true + support_used=false——钉死**配置层不参与判定**（P-25 判定源 = gcode 实际层） |

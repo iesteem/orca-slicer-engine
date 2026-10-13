@@ -472,6 +472,61 @@ TEST_CASE("C API: support_free absent when slice fails", "[integration][capi][su
     restore_dirs();
 }
 
+TEST_CASE("C API: real-world boat pair + cube pin gcode-actual support verdict", "[integration][capi][support]")
+{
+    // Production-exported trio (2026-10-13, tests/fixtures/support/): the SAME
+    // real-mesh boat saved twice, support off vs on — a controlled pair where
+    // only the support setting differs — plus a cube saved with support on.
+    // Complements the handcrafted fixtures above: these carry desktop-saved
+    // support config through the full load/substitution chain, and the 2.5MB
+    // boat mesh exercises real support generation on curved overhangs
+    // (~1550 TYPE:Support segments at capture time on the "on" save).
+    //   boat_support_off -> free=true,  3MF support_used=false
+    //   boat_support_on  -> free=false, 3MF support_used=true
+    //   cube_support_on  -> free=true,  3MF support_used=false (config layer
+    //                       never participates in the verdict)
+    struct Case { const char* fixture; bool expect_free; const char* expect_used; };
+    const Case cases[] = {
+        {"support/boat_support_off.3mf", true, "false"},
+        {"support/boat_support_on.3mf", false, "true"},
+        {"support/cube_support_on.3mf", true, "false"},
+    };
+    for (const auto& c : cases) {
+        slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+        REQUIRE(ctx != nullptr);
+
+        std::string name = std::strrchr(c.fixture, '/') + 1; // "boat_support_off.3mf"
+        name.resize(name.find('.'));                          // "boat_support_off"
+        const std::string stem = "/tmp/orca_capi_sup_real_" + name;
+        for (const char* ext : {".gcode.3mf", ".json", ".log"})
+            rm(stem + ext); // pre-clean: artifact assertions below (stale-path trap)
+        const std::string opts = "{\"log_path\":\"" + stem + ".log\"}";
+
+        char stats[32768] = {0};
+        int rc = slic3r_slice(ctx, (std::string(ORCA_TEST_FIXTURE_DIR) + "/" + c.fixture).c_str(),
+                              stem.c_str(), opts.c_str(), stats, sizeof(stats));
+        REQUIRE(rc == SLIC3R_OK);
+
+        auto j = nlohmann::json::parse(stats);
+        REQUIRE(j["success"].get<bool>());
+        REQUIRE(j["print_info_total"]["support_free"].get<bool>() == c.expect_free);
+        REQUIRE(j["plates"][0]["support_free"].get<bool>() == c.expect_free);
+
+        // P-25 dual-source anchor: the packaged 3MF metadata carries the SAME
+        // gcode-actual verdict as the JSON flag.
+        const std::string slice_info =
+            extract_3mf_text(stem + ".gcode.3mf", "Metadata/slice_info.config");
+        REQUIRE(slice_info.find(std::string("key=\"support_used\" value=\"") + c.expect_used + "\"")
+                != std::string::npos);
+
+        rm(stem + ".gcode.3mf");
+        rm(stem + ".json");
+        rm(stem + ".log");
+        slic3r_destroy(ctx);
+        restore_dirs();
+    }
+}
+
 // ============================================================================
 // mixed_filament_used JSON contract. The flag distinguishes DEFINING mixed
 // filaments (mixed_filament_definitions rows in project_settings.config)
