@@ -357,68 +357,11 @@ bool SliceEngine::run()
 
             decode_plate_thumbnails();
 
-            // generate_output_path appends a timestamp suffix when the
-            // requested path is already occupied (multi-process collision
-            // protection). The artifact then lands elsewhere while rc stays
-            // 0 — surface the relocation so callers reading the requested
-            // path know to check stats().output_path() (JSON:
-            // print_info_total.output_file) instead of serving the stale
-            // leftover. The relocation itself is intentional and unchanged.
-            bool output_relocated = false;
-            m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
-                                                 m_cfg.single_plate, &output_relocated);
-            if (output_relocated)
-                m_stats.issues.push_back(make_warning(-1, "OUTPUT_PATH_RELOCATED",
-                                                      "Output path already exists; artifact written to \"" + m_output_path + "\""));
+            resolve_output_path();
 
-            // Collect plates to process (internal plate_index is 0-based)
-            std::vector<int> plates_to_process;
-            if (m_cfg.single_plate)
-            {
-                plates_to_process.push_back(m_cfg.plate_id - 1); // CLI 1-based → internal 0-based
-            }
-            else
-            {
-                for (const auto& pd : m_plate_data)
-                    plates_to_process.push_back(pd->plate_index);
-            }
+            process_requested_plates();
 
-            // Process each plate
-            for (int plate_id : plates_to_process)
-            {
-                process_plate(plate_id);
-            }
-
-            // Package output — only if no errors occurred
-            bool has_output = !m_plate_results.empty();
-            if (has_output && !m_any_error && (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
-                package_output();
-
-            // For single-plate GCODE mode, the file is written directly to m_output_path
-            // during export_gcode. Remove it if errors occurred.
-            if (m_any_error && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
-            {
-                boost::filesystem::remove(m_output_path);
-            }
-
-            // Zero-product guard: every requested plate was skipped (e.g. all
-            // empty) or failed before export, so the task must not report
-            // success through exit_code() with no artifact on disk. Placed
-            // AFTER the packaging / cleanup decisions above on purpose:
-            // m_any_error feeds the all-or-nothing gate (line ~280) and the
-            // single-plate GCODE removal — setting it earlier would drag
-            // partial output down with it. Partial success (some plates
-            // produced G-code) keeps rc=0: an empty plate among good ones is
-            // a benign skip (desktop parity, see process_plate's EMPTY_PLATE
-            // issue). m_error_type is only raised when still EXIT_OK so a
-            // more specific failure code recorded earlier (slicing=4, etc.)
-            // is not masked by the generic preprocess code.
-            if (!has_output)
-            {
-                m_any_error = true;
-                if (m_error_type == EXIT_OK)
-                    set_error_type(EXIT_PREPROCESS_ERROR);
-            }
+            finalize_output();
         }
         catch (const std::exception& e)
         {
@@ -2357,6 +2300,23 @@ static void decode_one_plate_thumbnail(PlateData& pd)
     }
 }
 
+// Stage 3 tail: resolve the export destination before the per-plate loop.
+// generate_output_path (Utils) appends a timestamp suffix when the requested
+// path is already occupied (multi-process collision protection). The artifact
+// then lands elsewhere while rc stays 0 — surface the relocation so callers
+// reading the requested path know to check stats().output_path() (JSON:
+// print_info_total.output_file) instead of serving the stale leftover. The
+// relocation itself is intentional and unchanged.
+void SliceEngine::resolve_output_path()
+{
+    bool output_relocated = false;
+    m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
+                                         m_cfg.single_plate, &output_relocated);
+    if (output_relocated)
+        m_stats.issues.push_back(make_warning(-1, "OUTPUT_PATH_RELOCATED",
+                                              "Output path already exists; artifact written to \"" + m_output_path + "\""));
+}
+
 // ============================================================================
 // Stage 4: Process a single plate
 // ============================================================================
@@ -4032,9 +3992,73 @@ void SliceEngine::finalise_plate_result(int plate_id, PlateSliceResult& result)
     m_plate_results[plate_id] = result;
 }
 
+// Stage 4 driver: run the per-plate slicing loop over the requested plate
+// set. Single-plate mode (CLI plate_id) processes exactly that plate;
+// otherwise every plate in the 3MF. Results accumulate in m_plate_results.
+void SliceEngine::process_requested_plates()
+{
+    // Collect plates to process (internal plate_index is 0-based)
+    std::vector<int> plates_to_process;
+    if (m_cfg.single_plate)
+    {
+        plates_to_process.push_back(m_cfg.plate_id - 1); // CLI 1-based → internal 0-based
+    }
+    else
+    {
+        for (const auto& pd : m_plate_data)
+            plates_to_process.push_back(pd->plate_index);
+    }
+
+    // Process each plate
+    for (int plate_id : plates_to_process)
+    {
+        process_plate(plate_id);
+    }
+}
+
 // ============================================================================
 // Stage 5: Package output as gcode.3mf
 // ============================================================================
+
+// Post-loop output finalization, in deliberate order:
+//   1. the all-or-nothing packaging gate — package_output() runs only when no
+//      error occurred anywhere, so one failed plate suppresses the gcode.3mf
+//      for all plates (user-confirmed policy);
+//   2. single-plate GCODE cleanup — that mode writes the file directly to
+//      m_output_path during export_gcode, so remove it when errors occurred;
+//   3. the zero-product guard — every requested plate was skipped (e.g. all
+//      empty) or failed before export, so the task must not report success
+//      through exit_code() with no artifact on disk.
+// The guard sits AFTER the packaging / cleanup decisions on purpose:
+// m_any_error feeds the packaging gate above and the single-plate GCODE
+// removal — setting it earlier would drag partial output down with it.
+// Partial success (some plates produced G-code) keeps rc=0: an empty plate
+// among good ones is a benign skip (desktop parity, see process_plate's
+// EMPTY_PLATE issue). m_error_type is only raised when still EXIT_OK so a
+// more specific failure code recorded earlier (slicing=4, etc.) is not
+// masked by the generic preprocess code.
+void SliceEngine::finalize_output()
+{
+    bool has_output = !m_plate_results.empty();
+
+    // Package output — only if no errors occurred
+    if (has_output && !m_any_error && (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
+        package_output();
+
+    // For single-plate GCODE mode, the file is written directly to m_output_path
+    // during export_gcode. Remove it if errors occurred.
+    if (m_any_error && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
+    {
+        boost::filesystem::remove(m_output_path);
+    }
+
+    if (!has_output)
+    {
+        m_any_error = true;
+        if (m_error_type == EXIT_OK)
+            set_error_type(EXIT_PREPROCESS_ERROR);
+    }
+}
 
 void SliceEngine::package_output()
 {

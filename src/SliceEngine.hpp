@@ -377,6 +377,19 @@ private:
     // and before the per-plate loop.
     void rebuild_plate_membership();
 
+    // Resolve m_output_path for this run: delegates to generate_output_path
+    // (Utils) and surfaces an OUTPUT_PATH_RELOCATED warning when the requested
+    // path was occupied and the artifact landed on a timestamped path instead.
+    // Run-once from run(), after decode_plate_thumbnails and before the
+    // per-plate loop.
+    void resolve_output_path();
+
+    // Drive the per-plate slicing loop over the requested plate set:
+    // single-plate mode (CLI plate_id) processes exactly that plate,
+    // otherwise every plate in the 3MF. Results accumulate in
+    // m_plate_results via process_plate.
+    void process_requested_plates();
+
     // Run the full slicing pipeline for a single plate: filter instances, check
     // build volume, slice, export G-code, and post-process. Results are stored
     // in m_plate_results[plate_id].
@@ -385,6 +398,14 @@ private:
     // Package all successfully sliced plate results (G-code + metadata) into a
     // single .3mf output file. Only called when at least one plate produced output.
     void package_output();
+
+    // Post-loop output finalization, in deliberate order: the all-or-nothing
+    // packaging gate (package_output only when no error occurred anywhere),
+    // single-plate GCODE cleanup on error, then the zero-product guard (no
+    // plate produced output → the task must not report success with no
+    // artifact on disk; partial success keeps rc=0 — desktop parity). See the
+    // cpp for the ordering rationale.
+    void finalize_output();
 
     // Push slice results back into PlateData: gcode path, prediction, weight,
     // support/toolpath flags, filament info (overlaid with config-sourced
