@@ -24,6 +24,8 @@
 
 #include <catch_amalgamated.hpp>
 
+#include <boost/filesystem.hpp>
+
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -554,4 +556,44 @@ TEST_CASE("Hollow embedded process preset rejected, project slices clean (train 
     // The applied process preset is the official system one resolved through
     // the chain, never the embedded shell.
     REQUIRE(engine.last_process_preset_name().find("train") == std::string::npos);
+}
+
+TEST_CASE("run_preset_substitution_only fails cleanly without system presets (P-09)", "[integration][preset]")
+{
+    // All three entry points (run / run_preset_substitution_only /
+    // run_geometry_preprocess_only) share the ensure_presets_available()
+    // precondition: with no vendor JSONs under data_dir, the run must abort
+    // with PRESETS_MISSING before any stage touches m_preset_bundle (P-09:
+    // init_print dereferences a null bundle and crashes with SIGSEGV).
+    // Before the guard was hoisted, this path reported the divergent
+    // "cannot apply official presets" message from the check that used to
+    // live inside apply_preset_substitution; the message is now unified to
+    // the run()-level "cannot slice" wording.
+    const std::string empty_res = "/tmp/orca_preset_p09_empty_res";
+    boost::system::error_code ec;
+    boost::filesystem::create_directories(empty_res, ec); // stays empty: no vendor JSONs
+
+    Slic3r::set_resources_dir(empty_res);
+    Slic3r::set_data_dir(empty_res);
+
+    EngineConfig cfg;
+    cfg.input_file = kFixture;
+    cfg.temp_dir = "/tmp";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    REQUIRE_FALSE(engine.run_preset_substitution_only());
+
+    const auto& stats = engine.stats();
+    bool found = false;
+    for (const auto& iss : stats.issues)
+        if (iss.code == "PRESETS_MISSING")
+            found = true;
+    REQUIRE(found);
+    REQUIRE(stats.error_message.find("cannot slice") != std::string::npos);
+
+    // Restore the real resources for subsequent test cases.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+    boost::filesystem::remove_all(empty_res, ec);
 }

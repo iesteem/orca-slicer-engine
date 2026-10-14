@@ -286,17 +286,10 @@ bool SliceEngine::run()
     // apply_*_official_preset stages below.
     load_system_presets();
 
-    // Hard precondition: later stages (init_print) dereference m_preset_bundle,
-    // so a failed preset load must abort here — otherwise the run crashes with
-    // SIGSEGV (precedent P-09, gdb-confirmed 2026-08-06).
-    if (!m_presets_available || !m_preset_bundle)
+    // Hard precondition (P-09): must abort before init_print dereferences
+    // m_preset_bundle. See ensure_presets_available for the full contract.
+    if (!ensure_presets_available())
     {
-        std::string msg = "System presets not available; cannot slice.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
         build_statistics();
         return false;
     }
@@ -477,6 +470,13 @@ bool SliceEngine::run_preset_substitution_only()
     // Load vendor presets so apply_*_official_preset can resolve.
     load_system_presets();
 
+    // Hard precondition (P-09), mirroring run()'s prefix.
+    if (!ensure_presets_available())
+    {
+        build_statistics();
+        return false;
+    }
+
     if (!apply_preset_substitution())
     {
         build_statistics();
@@ -516,6 +516,13 @@ bool SliceEngine::run_geometry_preprocess_only()
 
     collect_config_warnings();
     load_system_presets();
+
+    // Hard precondition (P-09), mirroring run()'s prefix.
+    if (!ensure_presets_available())
+    {
+        build_statistics();
+        return false;
+    }
 
     if (!apply_preset_substitution())
     {
@@ -589,11 +596,11 @@ bool SliceEngine::load_3mf()
     return true;
 }
 
-void SliceEngine::record_load_error(const std::string& code, const std::string& msg)
+void SliceEngine::record_stage_error(int exit_type, const std::string& code, const std::string& msg)
 {
     BOOST_LOG_TRIVIAL(error) << msg;
     m_any_error = true;
-    set_error_type(EXIT_LOAD_ERROR);
+    set_error_type(exit_type);
     m_stats.error_message = msg;
     m_stats.issues.push_back(make_error(-1, code, msg));
 }
@@ -605,8 +612,8 @@ bool SliceEngine::validate_input_file()
     boost::to_lower(extension);
     if (extension != ".3mf")
     {
-        record_load_error(
-            "FORMAT_REJECTED",
+        record_stage_error(
+            EXIT_LOAD_ERROR, "FORMAT_REJECTED",
             "Only .3mf files are supported. Please export your project from Snapmaker Orca Slicer.");
         return false;
     }
@@ -619,9 +626,9 @@ bool SliceEngine::validate_input_file()
     boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, err_code);
     if (!err_code && file_size > max_file_size)
     {
-        record_load_error("FILE_SIZE_EXCEEDED",
-                          "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb) +
-                              " MB). Please simplify the model or reduce face count and try again.");
+        record_stage_error(EXIT_LOAD_ERROR, "FILE_SIZE_EXCEEDED",
+                           "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb) +
+                               " MB). Please simplify the model or reduce face count and try again.");
         return false;
     }
     return true;
@@ -657,16 +664,16 @@ bool SliceEngine::read_3mf_model()
         BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << what;
         if (what.find("empty") != std::string::npos)
         {
-            record_load_error(
-                "LOAD_3MF_ERROR",
+            record_stage_error(
+                EXIT_LOAD_ERROR, "LOAD_3MF_ERROR",
                 "This 3MF file contains no 3D model objects. "
                 "It appears to be a gcode.3mf slicing output file, not a project file. "
                 "Please upload the original .3mf project file instead.");
         }
         else
         {
-            record_load_error("LOAD_3MF_ERROR",
-                              "Failed to load 3MF file. The file may be corrupted or in an unsupported format.");
+            record_stage_error(EXIT_LOAD_ERROR, "LOAD_3MF_ERROR",
+                               "Failed to load 3MF file. The file may be corrupted or in an unsupported format.");
         }
 
         // Model::read_from_file() may have partially populated output parameters
@@ -679,7 +686,7 @@ bool SliceEngine::read_3mf_model()
 
     if (m_model.objects.empty())
     {
-        record_load_error("MODEL_EMPTY", "3MF file contains no sliceable model objects");
+        record_stage_error(EXIT_LOAD_ERROR, "MODEL_EMPTY", "3MF file contains no sliceable model objects");
         return false;
     }
 
@@ -853,11 +860,7 @@ bool SliceEngine::validate_printer_model()
 {
     auto fail_model = [&](const std::string& code, const std::string& msg)
     {
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, code, msg));
+        record_stage_error(EXIT_PREPROCESS_ERROR, code, msg);
         return false;
     };
 
@@ -975,6 +978,16 @@ void SliceEngine::load_system_presets()
     }
 }
 
+bool SliceEngine::ensure_presets_available()
+{
+    if (m_presets_available && m_preset_bundle)
+        return true;
+
+    record_stage_error(EXIT_PREPROCESS_ERROR, "PRESETS_MISSING",
+                       "System presets not available; cannot slice.");
+    return false;
+}
+
 // Unified official-preset predicate shared by the printer, filament, and
 // process substitution paths. See declaration in SliceEngine.hpp.
 
@@ -1013,27 +1026,19 @@ const Preset* SliceEngine::find_official_by_name(const PresetCollection& collect
 
 bool SliceEngine::apply_preset_substitution()
 {
-    // Bundle precondition for all three apply_*_official_preset stages.
-    // Without system presets we cannot look up official U1 / filament /
-    // process configurations, so the whole substitution block is aborted.
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        std::string msg = "System presets not available; cannot apply official presets.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
-        return false;
-    }
+    // Bundle precondition is enforced by the caller: every entry point (run,
+    // run_preset_substitution_only, run_geometry_preprocess_only) aborts via
+    // ensure_presets_available() before reaching here, so the bundle is
+    // guaranteed present (precedent P-09 — init_print would otherwise
+    // dereference a null bundle and crash with SIGSEGV).
 
     // Strip user-supplied content (G-code, notes, post_process, external
     // file refs) before any apply_*_official_preset stage. The three apply
-    // stages then restore official values for the keys each owns.
-    // Runs after the bundle check so the PRESETS_MISSING error path does
-    // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
-    // apply official presets, the user content stays untouched and the
-    // engine fails cleanly.
+    // stages then restore official values for the keys each owns. When the
+    // PRESETS_MISSING error path fires (in ensure_presets_available),
+    // strip_user_content is never reached, so no misleading
+    // USER_CONTENT_CLEARED tip is emitted — the user content stays
+    // untouched and the engine fails cleanly.
     strip_user_content();
 
     // Size every per-filament vector to the project's slot count before the
@@ -1344,13 +1349,9 @@ bool SliceEngine::apply_printer_official_preset()
     const Preset* official = SliceEngine::find_official_by_name(m_preset_bundle->printers, official_printer_name);
     if (!official)
     {
-        std::string msg = "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
-                          preset_name + "\").";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
+        record_stage_error(EXIT_PREPROCESS_ERROR, "PRINTER_PRESET_LOAD_ERROR",
+                           "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
+                               preset_name + "\").");
         return false;
     }
 
@@ -1430,13 +1431,9 @@ bool SliceEngine::verify_printer_geometry()
 
     auto fail = [&](const std::string& detail)
     {
-        std::string msg = "Printer configuration incomplete: " + detail +
-                          ". The official U1 printer preset was not applied correctly.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+        record_stage_error(EXIT_PREPROCESS_ERROR, "PRINTER_PRESET_NOT_APPLIED",
+                           "Printer configuration incomplete: " + detail +
+                               ". The official U1 printer preset was not applied correctly.");
     };
 
     auto* pa = m_config.option<ConfigOptionPoints>("printable_area");

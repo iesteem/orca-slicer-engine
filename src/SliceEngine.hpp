@@ -91,7 +91,7 @@ public:
 
     // Run only the load + preset-substitution prefix of the pipeline (load_3mf,
     // validate_printer_model, collect_config_warnings, load_system_presets,
-    // apply_preset_substitution), then stop — no geometry
+    // ensure_presets_available, apply_preset_substitution), then stop — no geometry
     // checks, no slicing, no export. Intended for config-only inspection / cloud
     // preflight: after it returns, m_config holds the substitution result and is
     // readable via config(). Returns false on any failure in the prefix (same
@@ -100,8 +100,9 @@ public:
     bool run_preset_substitution_only();
 
     // Run the preset-substitution prefix AND the geometry-half preprocessing
-    // prefix of run() (validate_input, run_geometry_checks, bake_instance_z_into_mesh,
-    // assign_arrange_order, setup_extruder_params), then stop — no slicing, no
+    // prefix of run() (ensure_presets_available, validate_input, run_geometry_checks,
+    // bake_instance_z_into_mesh, assign_arrange_order, setup_extruder_params),
+    // then stop — no slicing, no
     // export. Intended for integration testing the geometry preprocessing
     // stages: after it returns, m_model holds the post-preprocessing geometry
     // (Z baked into mesh, arrange_order assigned) and is readable via model().
@@ -180,7 +181,7 @@ private:
 
     // Validate the input file path before invoking libslic3r: extension must
     // be .3mf (case-insensitive) and size must respect --max-size (0 = no limit).
-    // Returns false if rejected; record_load_error() has already been called.
+    // Returns false if rejected; record_stage_error() has already been called.
     bool validate_input_file();
 
     // Invoke Model::read_from_file with the full load strategy and classify
@@ -191,10 +192,11 @@ private:
     // ("empty") in the libslic3r exception message — fragile, see FIXME in cpp.
     bool read_3mf_model();
 
-    // Record a load-stage failure: log, set error flag, set exit code,
-    // populate m_stats.error_message and issues. Does NOT throw and does NOT
-    // return; the caller decides whether to propagate via return false.
-    void record_load_error(const std::string& code, const std::string& msg);
+    // Record a stage failure: log, set error flag, set exit code (exit_type,
+    // one of the EXIT_* constants), populate m_stats.error_message and
+    // issues. Does NOT throw and does NOT return; the caller decides whether
+    // to propagate via return false.
+    void record_stage_error(int exit_type, const std::string& code, const std::string& msg);
 
     // Check that the printer model in the config matches a supported Snapmaker
     // model. Returns false and sets an error if the model is unknown.
@@ -207,6 +209,13 @@ private:
     // Load system printer, filament, and process presets from the resources
     // directory into m_preset_bundle. Must be called before preset substitution.
     void load_system_presets();
+
+    // Hard precondition for all post-load stages: apply_*_official_preset and
+    // init_print dereference m_preset_bundle, so a failed preset load must
+    // abort the run — proceeding crashes with SIGSEGV (precedent P-09,
+    // gdb-confirmed 2026-08-06). Must be called after load_system_presets().
+    // Reports PRESETS_MISSING and returns false when unavailable.
+    bool ensure_presets_available();
 
     // Unified "is this an official Snapmaker preset" check for the printer,
     // filament, and process substitution paths. Official = vendor is the
