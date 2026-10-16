@@ -19,6 +19,31 @@ orca-slice-engine (single static binary, Linux)
   └── statically linked: libslic3r.a + CGAL + OCCT + Boost + OpenCV + TBB
 ```
 
+The consumer / DLL boundary is layered to minimise churn when OrcaSlicer
+upstream changes:
+
+```
+┌────────────────────────────────────────────┐
+│  main.c  (pure C consumer)                 │  ← this repo
+│  depends on: slic3r_c_api.h (7 C functions)│
+├────────────────────────────────────────────┤
+│  slic3r_c_api.h   ← ABI boundary           │  ← if stable, no consumer change
+├────────────────────────────────────────────┤
+│  slic3r.dll                                │
+│  ├── SliceEngine.cpp  ← uses libslic3r     │  ← this repo (DLL source)
+│  └── JsonReport.cpp / GeometryCheck.cpp    │
+├────────────────────────────────────────────┤
+│  libslic3r + CGAL + OCCT + Boost           │  ← upstream OrcaSlicer
+└────────────────────────────────────────────┘
+```
+
+| Upstream change | Impact | Action |
+|----------------|--------|--------|
+| libslic3r internal implementation | None | Swap DLL, done |
+| libslic3r header API changes | `SliceEngine.cpp` may break | Update engine source, rebuild DLL |
+| `slic3r_c_api.h` signature changes | Consumer needs recompile | Update header, rebuild exe |
+| `resources/` format changes | Runtime may fail | Replace `resources/` directory |
+
 ## Prerequisites
 
 - CMake ≥ 3.13
@@ -43,9 +68,7 @@ You also need the preset `resources/` directory available at runtime (set via
 
 ## Build (ORCA_STATIC — the only mode)
 
-```bash
-git clone https://github.com/iesteem/orca-slice-engine.git
-cd orca-slice-engine
+The `CMakeLists.txt` supports two modes:
 
 # 1. Generate cmake/StaticConfig.cmake from a built OrcaSlicer tree
 ORCA_ROOT=/path/to/OrcaSlicer scripts/gen_static_libs.sh
