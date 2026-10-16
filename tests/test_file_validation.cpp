@@ -110,4 +110,14 @@ TEST_CASE("3mf with no model data rejected as LOAD_3MF_ERROR", "[integration][fi
     REQUIRE(has_issue(e->stats(), "LOAD_3MF_ERROR"));
 }
 
-// (gcode.3mf-as-input case removed 2026-08-25: fixture lived in the external pool that no longer exists. The reject path stays covered by the five in-repo rejection cases above.)
+// --- gcode.3mf mistaken as input: in-repo fixture (was external + SKIP). ----
+
+TEST_CASE("gcode.3mf as input rejected as LOAD_3MF_ERROR", "[integration][fileval]")
+{
+    // Small in-repo slice-output artifact (72KB, replaces the former ~37MB
+    // external-pool fixture). A real slicing output carries no model objects —
+    // the loader must reject it with the dedicated guidance message.
+    auto e = run_on(std::string(ORCA_TEST_FIXTURE_DIR) + "/file_validation/gcode_output_as_input.3mf");
+    assert_rejected(*e);
+    REQUIRE(has_issue(e->stats(), "LOAD_3MF_ERROR"));
+}

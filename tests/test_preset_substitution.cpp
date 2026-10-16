@@ -131,15 +131,27 @@ void check_matches_official(const DynamicPrintConfig& actual, const Preset& offi
             continue;
         ++total;
         if (!actual.has(key)) { ++missing; continue; }
-        const Slic3r::ConfigOption* a_opt = actual.option(key);
-        if (!a_opt) { ++missing; continue; }
-        const std::string a = a_opt->serialize();
-        const std::string b = it->second.get()->serialize();
-        if (a == b) ++matched;
+        const Slic3r::ConfigOption* actual_opt = actual.option(key);
+        if (!actual_opt) { ++missing; continue; }
+        std::string actual_str = actual_opt->serialize();
+        std::string official_str = it->second.get()->serialize();
+        // Aug-2026 high-flow data model: official presets store flow-variant
+        // vectors (e.g. inner_wall_speed "300,600", printer_flow_support
+        // "standard;high_flow"); the engine config holds the active
+        // (standard) scalar. Compare against the first element when actual
+        // is scalar.
+        if (actual_str.find(',') == std::string::npos && actual_str.find(';') == std::string::npos)
+        {
+            const size_t sep = official_str.find_first_of(",;");
+            if (sep != std::string::npos)
+                official_str = official_str.substr(0, sep);
+        }
+        if (actual_str == official_str) ++matched;
         else
         {
             ++mismatched;
-            FAIL_CHECK(label << ": key \"" << key << "\" = \"" << a << "\" != official \"" << b << "\"");
+            FAIL_CHECK(label << ": key \"" << key << "\" = \"" << actual_str
+                      << "\" != official \"" << official_str << "\"");
         }
     }
     WARN(label << " coverage: " << matched << "/" << total
@@ -227,6 +239,13 @@ TEST_CASE("Preset substitution matches official presets (model-agnostic invarian
     std::set<std::string> proc_skip = dts;
     proc_skip.insert("brim_width");
     proc_skip.insert("compatible_printers");
+    // small_area_infill_flow_compensation_model: not present in any Snapmaker
+    // process preset file — the official value comes from PrintConfig defaults
+    // filled during vendor-config load, so overwrite_all_keys_from has no
+    // preset entry to write and the fixture's author-side empty array ("[]")
+    // survives. Same overwrite-semantics class as compatible_printers above,
+    // not a substitution defect.
+    proc_skip.insert("small_area_infill_flow_compensation_model");
     check_matches_official(mc, *proc, proc_skip, "process");
 
     // brim_width fallback invariant: brim_type==auto_brim => brim_width == 0.
@@ -347,25 +366,23 @@ TEST_CASE("Preset substitution skipped when configured diverges from official", 
     CHECK(any_diff);
 }
 
+
 // --- Mini train city: hollow embedded process preset must not be applied. ---
 // The 3MF carries an embedded process preset that is a hollow shell (its only
 // real content is an "inherits" reference). Before 064dbbc/da7f518 the shell
 // was treated as official and applied wholesale, overwriting valid project
 // config with empty values (broken slicing). With is_official_preset
 // (vendor == SM_BUNDLE + not project-embedded) the shell is only an
-// inheritance-chain waypoint.
-//
-// Outcome note (2026-08-25, Orca feature-2.3.5-base): plate 1 emits the
-// prime-tower variable-layer-height rejection (Print.cpp:1778), but on this
-// branch the exception carries no dedicated type (STRING_EXCEPT_NOT_DEFINED),
-// so the engine's error-path classifier downgrades it to a warning
-// (PRINT_VALIDATE_WARNING) and slicing continues to success. On
-// feature-2.3.6-base the exception is tagged
-// STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT and hard-fails; if the
-// engine moves back to that branch, restore the failure assertions.
-// Either way the preset-substitution contract is decided before
-// validate/slicing, so the case asserts it below.
-TEST_CASE("Hollow embedded process preset rejected (train city)", "[integration][preset][embedded]")
+// inheritance-chain waypoint. Full-slice guard: plate 1 carries heterogeneous
+// variable layer heights that trip the desktop-parity PRIME_TOWER_VARIABLE_
+// LAYER_HEIGHT blocking error (a19033b/99867c3) — the run is expected to fail
+// with that specific error, which still proves the pipeline reached (and got
+// past) preset substitution with valid config instead of crashing.
+// (Note: on Orca feature-2.3.5-base the exception is untyped NOT_DEFINED and
+// the classifier downgrades it to a warning — the 05 branch carried that
+// variant. This tree builds against feature-2.3.6-base, where the exception
+// is tagged STRING_EXCEPT_PRIME_TOWER_VARIABLE_LAYER_HEIGHT and hard-fails.)
+TEST_CASE("Hollow embedded process preset rejected, project slices clean (train city)", "[integration][preset][embedded]")
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
@@ -380,21 +397,16 @@ TEST_CASE("Hollow embedded process preset rejected (train city)", "[integration]
     SliceEngine engine(cfg, temp_files);
     engine.run();
 
-    // 2.3.5-base behavior: the prime-tower variable-layer-height rejection is
-    // untyped (NOT_DEFINED) on this branch, classified as a warning — slicing
-    // is not blocked. Assert the downgrade instead of the 2.3.6 hard failure.
-    bool has_prime_tower_warning = false;
-    for (const auto& iss : engine.stats().issues)
-        if (iss.level == IssueLevel::warning &&
-            iss.message.find("prime tower is only supported") != std::string::npos) {
-            has_prime_tower_warning = true;
-            break;
-        }
-    REQUIRE(has_prime_tower_warning);
-    REQUIRE(engine.stats().success);
-
-    // Core regression guard (unaffected by the plate-1 failure, substitution
-    // runs before validate): the applied process preset is the official
-    // system one resolved through the chain, not the embedded shell.
+    // Desktop parity: heterogeneous variable layer heights + wipe tower blocks
+    // slicing at validation (Plater.cpp:12653 UPDATE_BACKGROUND_PROCESS_INVALID).
+    REQUIRE(!engine.stats().success);
+    REQUIRE(engine.exit_code() != 0);
+    bool has_prime_tower_error = false;
+    for (const auto& issue : engine.stats().issues)
+        if (issue.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT")
+            has_prime_tower_error = true;
+    REQUIRE(has_prime_tower_error);
+    // The applied process preset is the official system one resolved through
+    // the chain, never the embedded shell.
     REQUIRE(engine.last_process_preset_name().find("train") == std::string::npos);
 }

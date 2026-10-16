@@ -99,7 +99,20 @@ TEST_CASE("Toolpath conflict (too close, 168 layers) blocks output", "[integrati
     assert_toolpath_conflict(*e);
 }
 
-// (Spiral-lift near-boundary case removed 2026-08-25: fixture lived in the external pool that no longer exists on this machine.)
+// --- Spiral-lift near boundary: in-repo fixture (was external + SKIP). ------
+
+TEST_CASE("Spiral-lift near boundary downgrades to warning, slices OK", "[integration][pathconflict]")
+{
+    // Small in-repo fixture (28KB, replaces the former ~85MB external-pool one
+    // that SKIPped without the pool and was never verified end-to-end there).
+    // Model sits within the 3.5mm spiral-lift clearance of the bed edge: the
+    // serious_warning is downgraded to a plain warning and slicing succeeds.
+    // Verified live 2026-08-21: exit 0, SPIRAL_LIFT_NEAR_BOUNDARY warning.
+    auto e = run_on(std::string(ORCA_TEST_FIXTURE_DIR) + "/path_conflict/spiral_lift_near_boundary.3mf", "spiral");
+    REQUIRE(e->stats().success);
+    REQUIRE(e->exit_code() == 0);
+    REQUIRE(has_issue(e->stats(), "SPIRAL_LIFT_NEAR_BOUNDARY", IssueLevel::warning));
+}
 
 
 // --- 514d: 10-plate real-world project, 2 plates conflict (serious_warning). ---

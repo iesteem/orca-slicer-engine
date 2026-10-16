@@ -72,11 +72,14 @@ void check_heights(int n, double exp_lh, double exp_flh)
 }
 } // namespace
 
-// Nozzle 0.2mm, process preset 0.14 layer height.
+// Nozzle 0.2mm. The fixture references "0.14 Standard @U1 (0.2 nozzle)",
+// which the Aug-2026 official profile merge folded into "0.12mm Standard"
+// (renamed_from includes 0.14). The folded preset inherits layer 0.12 from
+// fdm_process_U1_0.12_nozzle_0.2 but overrides first-layer to 0.14 in its
+// own diff — so the substituted preset yields layer 0.12, first-layer 0.14.
 TEST_CASE("0.2 nozzle: default heights from preset", "[integration][layerheight]")
 {
-    // User did not modify: layer 0.14, first-layer 0.1.
-    check_heights(1, 0.14, 0.10);
+    check_heights(1, 0.12, 0.14);
 }
 
 TEST_CASE("0.2 nozzle: user override wins", "[integration][layerheight]")
@@ -96,10 +99,13 @@ TEST_CASE("0.4 nozzle: user override wins", "[integration][layerheight]")
     check_heights(4, 0.19, 0.22);
 }
 
-// Nozzle 0.6mm, process preset 0.36 layer height.
+// Nozzle 0.6mm. The fixture references "0.36 Standard @U1 (0.6 nozzle)",
+// folded into "0.30mm Standard @U1 (0.6 nozzle)" by the Aug-2026 official
+// profile merge (renamed_from includes 0.36) — substituted preset yields
+// layer 0.30, first-layer 0.30.
 TEST_CASE("0.6 nozzle: default heights from preset", "[integration][layerheight]")
 {
-    check_heights(5, 0.36, 0.30);
+    check_heights(5, 0.30, 0.30);
 }
 
 TEST_CASE("0.6 nozzle: user override wins", "[integration][layerheight]")

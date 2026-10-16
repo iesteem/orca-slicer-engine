@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <set>
@@ -28,6 +29,7 @@ struct EngineConfig
     int timeout_seconds = 0; // 0 = no timeout; cloud service sets based on file size
     int max_size_mb = 200; // 0 = no limit; max input file size in megabytes
     std::string cancel_file; // watchdog file path for external cancellation
+    std::atomic<bool>* cancel_requested = nullptr; // programmatic cancel flag (set by slic3r_cancel)
     std::string log_path; // log file path (empty = auto-derive from output)
     std::string json_output_path; // -j/--json: path for JSON output file (empty = auto-derive from output)
     bool skip_preset_substitution = false; // --skip-preset-substitution
@@ -202,6 +204,11 @@ private:
     // and other vendors' system presets are NOT official — they may be
     // waypoints on an inheritance chain but must never be applied wholesale.
     static bool is_official_preset(const Slic3r::Preset& p);
+
+    // Exact-name lookup with renamed_from fallback (see cpp for why the
+    // rename map is not populated on the engine's preset-load path).
+    static const Slic3r::Preset* find_official_by_name(const Slic3r::PresetCollection& collection,
+                                                       const std::string& name);
 
     // Strip all user-supplied content from m_config: G-code keys (machine +
     // process + filament level), user-authored text (printer_notes /

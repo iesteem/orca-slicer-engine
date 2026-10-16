@@ -52,14 +52,11 @@ target_include_directories(engine-tests PRIVATE
 # Boost headers + archives (Utils.hpp includes <boost/filesystem.hpp>). On this
 # host Boost is built privately under the OrcaSlicer deps tree; reuse the same
 # headers and archives the static engine uses (captured in StaticConfig.cmake),
-# so the test target never hard-codes absolute paths.
-if(ORCA_STATIC)
-    target_include_directories(engine-tests PRIVATE ${ORCA_STATIC_INCLUDES})
-    target_link_libraries(engine-tests PRIVATE ${ORCA_STATIC_BOOST_LIBS})
-else()
-    find_package(Boost REQUIRED COMPONENTS filesystem log log_setup)
-    target_link_libraries(engine-tests PRIVATE Boost::filesystem Boost::log Boost::log_setup)
-endif()
+# so the test target never hard-codes absolute paths. The project only supports
+# the ORCA_STATIC (single static binary) mode, so the static boost archives are
+# always used here.
+target_include_directories(engine-tests PRIVATE ${ORCA_STATIC_INCLUDES})
+target_link_libraries(engine-tests PRIVATE ${ORCA_STATIC_BOOST_LIBS})
 
 target_sources(engine-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/Utils.cpp
@@ -93,6 +90,8 @@ if(ORCA_STATIC)
         test_filament_count.cpp
         test_unsupported.cpp
         test_accuracy.cpp
+        test_high_flow.cpp
+        test_print_sequence.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
@@ -117,7 +116,7 @@ if(ORCA_STATIC)
 
     target_compile_definitions(engine-integration PRIVATE
         ${ORCA_STATIC_DEFINES}
-        ENGINE_VERSION="02.01.05"
+        ENGINE_VERSION="${ENGINE_VERSION}"
         ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
         ORCA_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
