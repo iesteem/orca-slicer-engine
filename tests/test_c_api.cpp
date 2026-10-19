@@ -130,9 +130,11 @@ TEST_CASE("C API: resources_version echoes vendor profile version on failure exi
     REQUIRE(j["resources_version"].get<std::string>() == expected);
 
     // Verdict fields ride along on failure exits (same triage rationale as
-    // resources_version above): the JSON mirrors the process rc exactly.
+    // resources_version above): the JSON mirrors the process rc exactly, and
+    // error_code names the blocking issue(s) — the fixture's non-U1 printer
+    // trips exactly this code.
     REQUIRE(j["exit_code"].get<int>() == rc);
-    REQUIRE_FALSE(j["error_message"].get<std::string>().empty());
+    REQUIRE(j["error_code"].get<std::string>() == "PRINTER_MODEL_UNSUPPORTED");
 
     rm("/tmp/orca_capi_resver.json");
     rm("/tmp/orca_capi_resver.log");
@@ -233,18 +235,67 @@ TEST_CASE("C API: missing presets fails cleanly; deprecated skip_preset_substitu
     // "no mixed filament in use").
     REQUIRE_FALSE(j["print_info_total"].contains("mixed_filament_used"));
 
-    // exit_code + error_message (2026-10-19): the JSON mirrors the process rc
-    // verbatim, and error_message is the same string slic3r_get_error returns.
-    // This case also pins the delivery channel: the guard fires BEFORE
-    // resolve_output_path, so no JSON file lands on disk — in-process
-    // consumers see this report only via stats_out.
+    // exit_code + error_code (2026-10-19): the JSON mirrors the process rc
+    // verbatim, and error_code aggregates the codes of every error /
+    // serious_warning issue — here exactly the PRESETS_MISSING error above.
+    // Delivery channel: this call passes NO json_output_path, and the guard
+    // fires BEFORE resolve_output_path — so no JSON file lands on disk
+    // (2026-10-13 no-litter decision, narrowed by P-28: a caller-supplied
+    // json_output_path WOULD write the file even here; see the P-28 case
+    // below). In-process consumers see this report only via stats_out.
     REQUIRE(j["exit_code"].get<int>() == rc);
-    REQUIRE_FALSE(j["error_message"].get<std::string>().empty());
-    REQUIRE(j["error_message"].get<std::string>() == std::string(slic3r_get_error(ctx)));
+    REQUIRE(j["error_code"].get<std::string>() == "PRESETS_MISSING");
     REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_p09.json"));
 
     rm("/tmp/orca_capi_p09.json");
     rm("/tmp/orca_capi_p09.log");
+    slic3r_destroy(ctx);
+    boost::filesystem::remove_all(empty_res, ec);
+    restore_dirs();
+}
+
+// ============================================================================
+// (P-28, 2026-10-19) A caller-supplied json_output_path must be written
+// UNCONDITIONALLY — including early-failure exits (rc=6 PRESETS_MISSING here)
+// where the engine never resolved an output path. Before P-28 the write was
+// guarded on engine.output_path() alone, so an explicit JSON path was silently
+// ignored on every pre-resolve failure. Callers that omit json_output_path
+// keep the no-file behaviour (pinned by the P-09 case above).
+// ============================================================================
+
+TEST_CASE("C API: explicit json_output_path written on early failure (P-28)", "[integration][capi][presets]")
+{
+    const std::string empty_res = "/tmp/orca_capi_empty_res";
+    boost::system::error_code ec;
+    boost::filesystem::create_directories(empty_res, ec); // stays empty: no vendor JSONs
+
+    // Pre-clean: a stale file from a previous run would make the exists()
+    // assertion pass vacuously (test-artifact-stale-trap).
+    rm("/tmp/orca_capi_p28j.json");
+    rm("/tmp/orca_capi_p28j.log");
+
+    slic3r_ctx_t* ctx = slic3r_create(empty_res.c_str());
+    REQUIRE(ctx != nullptr);
+
+    const char* params = R"({"json_output_path":"/tmp/orca_capi_p28j","log_path":"/tmp/orca_capi_p28j.log"})";
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_p28j", params, stats, sizeof(stats));
+
+    REQUIRE(rc == SLIC3R_ERR_PREPROCESS);
+    REQUIRE(std::string(slic3r_get_error(ctx)).find("presets") != std::string::npos);
+
+    // The file channel now carries the same report stats_out does.
+    REQUIRE(boost::filesystem::exists("/tmp/orca_capi_p28j.json"));
+    std::ifstream ifs("/tmp/orca_capi_p28j.json");
+    auto jf = nlohmann::json::parse(ifs);
+    REQUIRE(jf["exit_code"].get<int>() == rc);
+    REQUIRE(jf["error_code"].get<std::string>() == "PRESETS_MISSING");
+    // On a failed run output_file is emitted empty by contract (success ?
+    // output_file_path : "") — the engine never resolved one here.
+    REQUIRE(jf["print_info_total"].value("output_file", std::string("sentinel")) == "");
+
+    rm("/tmp/orca_capi_p28j.json");
+    rm("/tmp/orca_capi_p28j.log");
     slic3r_destroy(ctx);
     boost::filesystem::remove_all(empty_res, ec);
     restore_dirs();
@@ -728,7 +779,7 @@ TEST_CASE("C API: second slice does not grow the first slice's log (sink leak)",
 }
 
 // ============================================================================
-// exit_code + error_message — top-level verdict fields (2026-10-19). The
+// exit_code + error_code — top-level verdict fields (2026-10-19). The
 // process/C-API rc is mirrored verbatim into the JSON so file consumers can
 // read the verdict without $?. Contract (docs/requirements/json-output.md):
 //   - exit_code: SliceEngine::exit_code() as-is, stamped at the
@@ -736,14 +787,18 @@ TEST_CASE("C API: second slice does not grow the first slice's log (sink leak)",
 //     stamps, so the value can EXCEED the code implied by the visible issues
 //     (the mixed case below proves ratchet survival: TOOLPATH_OUTSIDE stamps
 //     7 and every later 6-stamp is a no-op). Never recomputed from issues.
-//   - error_message: always emitted; "" is a definitive "no error", not an
-//     unknown — deliberately NOT in the MISSING-semantics family.
-//   - invariant on every report: success == (exit_code == 0) == error_message
+//   - error_code: always emitted; "" is a definitive "no error", not an
+//     unknown — deliberately NOT in the MISSING-semantics family. Content:
+//     comma-joined codes of every error / serious_warning issue, global
+//     issue-list order, no dedup. Renamed from error_message same-day
+//     in-place (2.2.0 unreleased) — the old field mirrored
+//     slic3r_get_error's generic summary, empty/uninformative on rc=6/7.
+//   - invariant on every report: success == (exit_code == 0) == error_code
 //     empty. rc=1 (bad args) / rc=99 (exception escape) produce no report at
 //     all: a missing file means "no report", never exit_code 1/99.
 // ============================================================================
 
-TEST_CASE("C API: exit_code 0 and empty error_message on success", "[integration][capi][exit_code]")
+TEST_CASE("C API: exit_code 0 and empty error_code on success", "[integration][capi][exit_code]")
 {
     // Cheapest success fixture already in the pool (single plate, no support
     // generation, mixed slots defined but never referenced).
@@ -759,7 +814,7 @@ TEST_CASE("C API: exit_code 0 and empty error_message on success", "[integration
     REQUIRE(j["success"].get<bool>());
     REQUIRE(j["exit_code"].get<int>() == rc);
     REQUIRE(j["exit_code"].get<int>() == 0);
-    REQUIRE(j["error_message"].get<std::string>().empty());
+    REQUIRE(j["error_code"].get<std::string>().empty());
 
     rm("/tmp/orca_capi_ec_ok.gcode.3mf");
     rm("/tmp/orca_capi_ec_ok.json");
@@ -789,19 +844,54 @@ TEST_CASE("C API: mixed-outcome failure carries ratcheted exit_code 7 into the f
     auto j = nlohmann::json::parse(stats);
     REQUIRE_FALSE(j["success"].get<bool>());
     REQUIRE(j["exit_code"].get<int>() == rc);
-    REQUIRE_FALSE(j["error_message"].get<std::string>().empty());
-    // 1 of 2 plates failed → finalise_statistics backfills this summary
-    // (TOOLPATH_OUTSIDE pushes only an issue, never error_message).
-    REQUIRE(j["error_message"].get<std::string>() == "Some plates failed with errors");
+    // Aggregated from the error-level issues: plate 1's TOOLPATH_OUTSIDE is
+    // the only error / serious_warning issue this fixture produces
+    // (plate 2 is clean; EMPTY_PLATE etc. are warning level and excluded).
+    REQUIRE(j["error_code"].get<std::string>() == "TOOLPATH_OUTSIDE");
 
     // On-disk channel: the report file must exist and carry the same verdict.
     REQUIRE(boost::filesystem::exists("/tmp/orca_capi_ec_mixed.json"));
     auto jf = nlohmann::json::parse(read_file("/tmp/orca_capi_ec_mixed.json"));
     REQUIRE(jf["exit_code"].get<int>() == rc);
-    REQUIRE(jf["error_message"].get<std::string>() == j["error_message"].get<std::string>());
+    REQUIRE(jf["error_code"].get<std::string>() == j["error_code"].get<std::string>());
 
     rm("/tmp/orca_capi_ec_mixed.json");
     rm("/tmp/orca_capi_ec_mixed.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: error_code aggregates error and serious_warning codes across plates", "[integration][capi][exit_code]")
+{
+    // multi_error_aggregation_cube.3mf (from 立方体.3mf, md5
+    // 5984c28f9d222789d80296cd95c0c18e): the only in-repo fixture whose run
+    // yields MORE THAN ONE error/serious_warning issue — plate 1
+    // BUILD_VOLUME_OUTSIDE_XY (error), plate 2 TOOLPATH_CONFLICT
+    // (serious_warning). Pins the aggregation contract end-to-end:
+    // English-comma join, global-issue-list order (finalise_statistics
+    // sorts error before serious_warning — reversed insertion order would
+    // fail this), no dedup semantics left to future drift, and warning-level
+    // issues (PRINTER/FILAMENT/PROCESS_SUBSTITUTED, PRINT_VALIDATE_WARNING)
+    // excluded — exact-equality leaves no room for a stray inclusion.
+    rm("/tmp/orca_capi_ec_agg.json"); // stale-path trap
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/multi_error_aggregation_cube.3mf",
+                          "/tmp/orca_capi_ec_agg", R"({"log_path":"/tmp/orca_capi_ec_agg.log"})", stats, sizeof(stats));
+    // TOOLPATH_CONFLICT stamps EXIT_POSTPROCESS_ERROR (7); the ratchet keeps
+    // it above the plates' 6-stamps.
+    REQUIRE(rc == 7);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE_FALSE(j["success"].get<bool>());
+    REQUIRE(j["exit_code"].get<int>() == rc);
+    REQUIRE(j["error_code"].get<std::string>() == "BUILD_VOLUME_OUTSIDE_XY,TOOLPATH_CONFLICT");
+
+    rm("/tmp/orca_capi_ec_agg.gcode.3mf");
+    rm("/tmp/orca_capi_ec_agg.json");
+    rm("/tmp/orca_capi_ec_agg.log");
     slic3r_destroy(ctx);
     restore_dirs();
 }

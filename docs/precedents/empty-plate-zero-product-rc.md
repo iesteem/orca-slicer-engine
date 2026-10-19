@@ -121,6 +121,8 @@ error 级路径（BUILD_VOLUME / SLICING_TIMEOUT / PLATE_NOT_FOUND 等）的
    `exit_code` + `error_message` 作为恒输出顶层字段进 JSON
    （json-output.md 2.2.0 追加行），零产物时报告携带
    `success=false` + `exit_code` + 原因字符串，与 ctx error 同串。
+   （同日修订：JSON 字段已改名 `error_code` 并改为 error/
+   serious_warning issue code 聚合；`slic3r_get_error` 通道不变。）
 3. **未提交**：修复与并行会话工作（`SliceEngine.hpp`、
    `test_high_flow.cpp`、precedents P-17/P-18 等）交织于同一工作区，
    提交时需按 hunk 拆分（P-17 的 awk + `git apply --cached` 先例）。

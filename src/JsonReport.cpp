@@ -124,13 +124,38 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     // the visible issues imply — never recompute from issues). Domain is
     // {0,3,4,5,6,7} on JSON-emitting paths; rc=1 (bad args) and rc=99
     // (exception escape) never produce a report at all — absence of the file
-    // means "no report", not exit_code 1/99.
+    // means "no report", not exit_code 1/99. File-channel nuance (P-28):
+    // a caller-supplied json_output_path is written on ANY engine-executed
+    // exit (early rc=3/6 included); the stats_out buffer always carries the
+    // report regardless.
     root["exit_code"] = stats.exit_code;
+    // error_code: English-comma-joined `code` of every error / serious_warning
+    // issue, in issue-list order (finalise_statistics stable-sorts that list
+    // error-first). Occurrences are NOT deduplicated — one entry per issue;
+    // multiplicity detail stays in issues[]. Walks the global issue list
+    // only: it is the superset (assemble_plate_stats funnels every plate
+    // issue into it), so also walking plates[] would double-count orphan
+    // issues (patch_orphan_plate_issues copies them into placeholder plates).
+    std::string error_code;
+    for (const auto& issue : stats.issues)
+    {
+        if (issue.level != IssueLevel::error && issue.level != IssueLevel::serious_warning)
+            continue;
+        if (!error_code.empty())
+            error_code += ",";
+        error_code += issue.code;
+    }
     // Always emitted; empty string is a definitive "no error", not an
-    // unknown (hence not in the MISSING-semantics family). Same string the
-    // C API returns via slic3r_get_error. Invariant on every report:
-    // success == (exit_code == 0) == (error_message empty).
-    root["error_message"] = stats.error_message;
+    // unknown (hence not in the MISSING-semantics family). Invariant on
+    // every report: success == (exit_code == 0) == (error_code empty) —
+    // audited 2026-10-19, every rc!=0 run() path co-pushes an error or
+    // serious_warning issue (P-23's NO_PLATES_PRODUCED closed the last
+    // issue-less gap), and any such issue flips success in
+    // finalise_statistics. Renamed from error_message in-place (same
+    // unreleased 2.2.0, support_free precedent): that field mirrored
+    // slic3r_get_error()'s generic summary, which was empty or generic
+    // exactly on rc=6/7; the aggregated codes say WHY precisely.
+    root["error_code"] = error_code;
     root["engine_version"] = ENGINE_VERSION;
     // Resources (vendor profile) version read verbatim from
     // <resources>/profiles/Snapmaker.json at report time — no Semver
