@@ -39,5 +39,5 @@
 | P-24 | 非空 membership 与几何错位 → 3 盘误判越界零产物（always-rebuild，人类批准推翻 P-23 收敛） | always-rebuild-plate-membership.md | 已修复（2026-10-10，always-rebuild + INSTANCE_NOT_ON_ANY_PLATE warning + tip 静默路径） |
 | P-25 | 输出 3MF 盘元数据 `support_used` 换源 gcode 实际层（人类批准推翻 D1 parity；全 fork 树零真实消费方） | support-used-3mf-metadata-source.md | 已落地（2026-10-10，契约决策；JSON `support_free` 与 3MF `support_used` 互补同源） |
 | P-26 | 3MF 存储塔位与对象 bbox 重叠 → TOOLPATH_CONFLICT z=0（引擎检测正确，缺桌面自动摆塔） | wipe-tower-position-clamp.md（塔族合订） | **未修复**（2026-10-19；移塔/移模两路绕行均实测 rc=0） |
-| P-27 | 塔位 parity 已证仍 CONFLICT → 塔几何/flush 规整分叉疑案（V-FM01b；另含第 4 色槽不出现缺口） | wipe-tower-position-clamp.md（塔族合订） | **未钉死**（2026-10-19；塔位分叉假说已证伪，桌面重存修复版仍逐字同症） |
+| P-27 | 塔位 parity 已证仍 CONFLICT → 塔深度三盘恒 +2mm 系统性分叉（V-FM01b；另含第 4 色槽不出现缺口） | wipe-tower-position-clamp.md（塔族合订） | **根因待钉死**（2026-10-19 gcode 级实锤：三盘前缘 +2.00mm、CP 网格 9 vs 7 行、对象侧逐点一致；头号嫌疑 flush 矩阵规整偏大，ORCA_KEEP_FAILED_GCODE 已入库） |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |

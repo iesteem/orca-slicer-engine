@@ -10,7 +10,7 @@
 > |---|---|---|
 > | P-08 | 塔位超床 → TOOLPATH_OUTSIDE（0.21mm 越界） | 未修复（WIP 在 stash） |
 > | P-26 | 3MF 存储塔位与对象 bbox 重叠 → TOOLPATH_CONFLICT z=0（引擎检测正确） | 未修复（用户侧绕行已验证） |
-> | P-27 | 塔位 parity 已证仍 CONFLICT → 塔几何/flush 规整分叉疑案 | 未钉死 |
+> | P-27 | 塔位 parity 已证仍 CONFLICT → 塔深度三盘恒 +2mm（flush 规整嫌疑） | 根因待钉死（gcode 级实锤） |
 
 ---
 
@@ -106,12 +106,12 @@ TOOLPATH_CONFLICT 消息里带 "Wipe Tower" 与对象名且 `z = 0.000000` →
 
 ---
 
-## P-27: 塔位 parity 已证仍 CONFLICT → 塔几何分叉疑案（未钉死）
+## P-27: 塔位 parity 已证仍 CONFLICT → 塔深度恒 +2mm 系统性分叉（根因待钉死）
 
-**状态：** 2026-10-19 取证中；塔位分叉假说**已被推翻**，嫌疑收窄到
-**塔几何尺寸/flush 矩阵规整**。
-**Fixture：** V-FM01b Sunflower（线上 5215，3 盘全彩；原版 + `修复-`
-桌面重存版均在 `~/Downloads/`，未入库）。
+**状态：** 2026-10-19 下午取证升级——塔位假说证伪、**塔深度分叉已 gcode 级实锤**
+（每盘前缘恒 +2.00mm）；flush 体积规整偏大为头号嫌疑，最终行级交点待 fork 侧插桩。
+**Fixture：** V-FM01b Sunflower（线上 5215，3 盘全彩；原版 + `修复-` 桌面重存版均在
+`~/Downloads/`，未入库）。
 
 ### 现象（原版与修复版完全同症）
 
@@ -123,7 +123,7 @@ TOOLPATH_CONFLICT 消息里带 "Wipe Tower" 与对象名且 `z = 0.000000` →
 - 不崩溃（fe5c61c 撑住；该件 flush 矩阵实为 **8×8=64 值** vs 4 槽，比
   P-02 判例的 3×3 更极端）。
 
-### 已证伪：塔位分叉假说（2026-10-19 修正）
+### 已证伪：塔位分叉假说（2026-10-19 上午修正）
 
 此前记录"原文件塔位为单值 (206,215.286)、引擎把单值用于所有盘"
 **与实物不符**。实测（python zipfile 逐处核对，两文件各仅 1 处
@@ -135,28 +135,68 @@ wipe_tower_x/y）：
 - libslic3r 消费端 `Config.hpp:435 get_at(i)`：i 在界内取
   `values[i]`（0 基逐盘），越界回落 `front()`。3 盘 + 3 元素 → 引擎
   盘 3 塔位 = (206, 208.857)，**与桌面一致**。
-- 决定性实验：桌面重存修复版（对象文件改源命名、缩略图重生、
-  project_settings 36.8KB→45.5KB、slice_info 清空）引擎实测 **rc=7，
-  冲突消息与原版逐字相同**，盘 1/2 仍 3 色 → 桌面重存不治，塔位不是
-  分叉源。
+- 决定性实验：桌面重存修复版引擎实测 **rc=7，冲突消息与原版逐字相同**，
+  盘 1/2 仍 3 色 → 桌面重存不治，塔位不是分叉源。
 
-### 剩余嫌疑（按优先级）
+### 塔深度分叉：gcode 级实锤（2026-10-19 下午，ORCA_KEEP_FAILED_GCODE 取证）
 
-1. **塔几何尺寸分叉**：桌面塔仅 35×11mm（prime_tower_width=35 的瘦塔）；
-   引擎塔若深度/锥底/裙边更大即与对象 bbox 相交。重点查
-   **flush_volumes_matrix 规整路径**——fe5c61c 移植的 PresetBundle 规整
-   逻辑对 8×8→4 槽的行为是否放大塔体积。
-2. 第 0 层塔裙边/锥底多边形差异（P-08 移植尝试已证明 brim+cone base
-   是塔延展的大头）。
+工具：重引入 `ORCA_KEEP_FAILED_GCODE=1`（Types.hpp TempFileGuard 单点守卫，
+保留全部 plate_N.gcode 并打印路径）；桌面参照解包
+Sunflower A__PLA_2h16m.gcode.3mf 的 Metadata/plate_N.gcode。
 
-### 下一步
+逐盘第 0 层 `;TYPE:Prime tower` 段实测（引擎失败 gcode vs 桌面成功 gcode）：
 
-需要引擎侧失败 gcode：重新引入 ORCA_KEEP_FAILED_GCODE 类调试开关
-（原 2026-09 临时 hack 已不在源码），取引擎盘 3 失败 gcode 与桌面参照
-（Sunflower A__PLA_2h16m.gcode.3mf 内逐盘 gcode）diff 塔实际走刀
-footprint。取证副本：`/tmp/vfm01b_towerfix.3mf`（含 5 元素数组打补丁
-痕迹，重打需修 count=1——注意该实验结论"打进桌面塔位仍撞"如今看是
-**必然**：原文件本就带着逐盘塔位，补丁是冗余操作）。
+| 盘 | 塔体 y 范围 引擎 | 桌面 | 前缘差 |
+|---|---|---|---|
+| 1（引擎成功） | …[163.08, 228.49] | …226.49 | **+2.00** |
+| 2（引擎成功） | …[79.49, 223.06] | …221.06 | **+2.00** |
+| 3（引擎失败） | [208.857, 218.857] | [208.857, 216.857] | **+2.00** |
+
+- **后缘（y_min）、宽度（35）、位置全部一致；前缘三盘恒 +2.00mm——系统性，非盘 3 特有**。
+- 盘 3 CP EMPTY GRID：引擎 9 行（209.857→218.357）vs 桌面 7 行（209.357→215.857）
+  ——恰好多 2 行 × 0.5mm 行距 = 2.0mm。塔深度按行量化，引擎比桌面**多算两个 purge 行**。
+- 对象侧无分叉：Sunflower O_.step 第 0 层挤出 433 点**逐点相同**（含 brim，
+  y_max=205.794 两侧一致）。分叉纯在塔侧。
+- 次要漂移（2.4.1-base vs 桌面 2.4.0）：引擎 gcode 无
+  `; WIPE_TOWER_BRIM_START/END` 标记；prime 起角相反（引擎左上 vs 桌面右下）；
+  塔体宽度方向 brim 圈数循环结构同但无标记包裹。疑似同源代码漂移，未单独定级。
+
+### 冲突判定链（fork 侧代码定位，2026-10-19）
+
+- 检测入口：`Print.cpp:2763-2781` `_make_skirt` 后、`!m_no_check &&
+  !has_adaptive_layer_height` 时 `ConflictChecker::find_inter_of_lines_in_diff_objs`。
+- 塔侧线集：`FakeWipeTower::getTrueExtrusionLayersFromWipeTower`
+  （Print.cpp:5076）= 真实 `WipeTower2::m_outer_wall` 逐层多边形（Print.cpp:3533
+  喂数），pos 经 `get_at(m_plate_index)`（Print.cpp:2769）——塔深度分叉直接进检测器。
+- 对象侧线集：每 PrintObject 的 perimeters+fills+support_fills，按
+  `instances().front().shift` 平移（ConflictChecker.cpp:233-234）——注意多实例对象
+  仅用第一实例 shift，若引擎路径坐标空间与桌面不同会放大/缩小重叠。
+- 判据：线段真相交且交点到两线段端点最小距离 > 0.01mm（双 support 为 100mm，
+  ConflictChecker.cpp:283-305）；1mm 网格光栅化加速。
+- 锥底（cone_angle 缺省 30°）在本件塔高 ~6mm 下 r≈1.6mm，够不到对象——已排除。
+- 引擎侧消费：SliceEngine.cpp do_postprocessing 读 `conflict_result` 报
+  serious_warning + rc=7（引擎检测行为正确，错在塔几何本身偏大）。
+
+### 根因嫌疑与下一步
+
+头号嫌疑：**flush_volumes_matrix 规整后体积偏大**——8×8 矩阵 vs 4 槽，
+fe5c61c 移植的 PresetBundle 规整路径（引擎侧）与桌面 2.4.0 的规整结果不同，
+多出的 purge 体积量化成 +2 行。次嫌疑：fork 2.4.1-base vs 桌面 2.4.0 的
+WipeTower2 深度公式漂移。**#FFFFFF 槽不现**（盘 1/2 仅 3 色）可能与矩阵规整
+同根（槽位参与 toolchange 的映射），未验证。
+
+1. 引擎侧加日志：规整后打印 wipe volumes 矩阵 + toolchanges（对比桌面
+   project_settings 内矩阵推算的有效体积），定位哪对槽位的体积被放大。
+2. fork 侧插桩 ConflictChecker：dump z=0 塔/对象线集，找出确切相交线段
+   （区分"塔外墙 2mm 前伸压线" vs "对象 shift 坐标空间错位"）。
+3. #FFFFFF 缺口单独开查（plates 1/2 成功 gcode 已保留）。
+
+### 取证文件（重启即失，及时转存）
+
+- 引擎三盘 gcode：`/tmp/claude-1000/orca_slice_5b67-7f20-1d5f-adbc/plate_{0,1,2}.gcode`
+- 桌面盘 3 参照：`/tmp/desk_plate3.gcode`（plate_1/2 在 /tmp/deskref/Metadata/）
+- 旧副本：`/tmp/vfm01b_towerfix.3mf`（重打需修 count=1；"打进桌面塔位仍撞"
+  如今看是必然——原文件本就带逐盘塔位，该补丁是冗余操作）
 
 ---
 
