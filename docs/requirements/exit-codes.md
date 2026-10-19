@@ -19,6 +19,10 @@
 
 139 = SIGSEGV，**不是合法退出码**，出现即引擎缺陷（见判例 P-01/P-02/P-09/P-10）。
 
+> 2026-10-19 起退出码同步镜像进 JSON 统计报告顶层 `exit_code` 字段
+> （原样发射，棘轮语义；rc=1/99 不产出报告），语义详见
+> docs/requirements/json-output.md。
+
 ## Issue level 四级
 
 `error`（阻断，决定退出码）/ `serious_warning` / `warning` / `tip`。

@@ -27,6 +27,18 @@
 ```jsonc
 {
   "success": true,                    // bool；全部请求的盘成功才为 true
+  "exit_code": 0,                     // int；进程/C API 返回码的原样镜像（SliceEngine::
+                                      // exit_code() 在 build_statistics() 尾部盖章）。
+                                      // 恒输出。set_error_type 单调棘轮原样发射——值可
+                                      // 高于 issues 表面暗示的档位（TOOLPATH_OUTSIDE 记 7
+                                      // 后，后续 6-stamp 是 no-op），**禁止从 issues 反推**。
+                                      // 值域 {0,3,4,5,6,7}；rc=1（参数错）/rc=99（异常
+                                      // 逃逸）**不产出任何报告**——文件缺席 = 无报告，
+                                      // 绝非 exit_code 1/99
+  "error_message": "",                // string；恒输出，成功为空串（确定值"无错误"，
+                                      // 非未知，故不属"缺席=未知"家族）。失败时为人类
+                                      // 可读一行摘要，与 C API slic3r_get_error() 同串。
+                                      // 不变式：success ⟺ exit_code==0 ⟺ error_message==""
   "engine_version": "2.2.0",          // = ENGINE_VERSION（CMake 唯一来源）
   "resources_version": "02.03.03.03", // 可选；<resources>/profiles/Snapmaker.json 的
                                       // "version" 原样回显（不走 Semver，保留补零）。
@@ -104,6 +116,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.0 (2026-10-19 追加) | 顶层新增 `exit_code`（int，恒输出：进程/C API 返回码原样镜像，棘轮语义勿从 issues 反推，值域 {0,3,4,5,6,7}，rc=1/99 无报告）与 `error_message`（string，恒输出：成功为空串、失败为人类可读摘要、与 slic3r_get_error 同串）。不变式 success ⟺ exit_code==0 ⟺ error_message==""。同时关闭 empty-plate-zero-product-rc.md 遗留项 2（"error_message 不进 JSON"） |
 | 2.2.0 (2026-10-10) | 顶层新增可选 `resources_version`（vendor profile 版本原样回显，缺席=未知）；`print_info_total` 新增可选 `support_free`（gcode 实际层：true=零支撑挤出，仅整体 success 时输出）与 `mixed_filament_used`（plates[] 非空即输出，输入文件属性）；`plates[]` success 组新增 `support_free`（同 gcode 实际层语义）。三者缺席一律=未知，非 false/空串；support_free 缺席坍缩在保守侧（"有支撑"）。同版 issue 码新增见 exit-codes.md（NO_PLATES_PRODUCED、PLATE_MEMBERSHIP_REBUILT、INSTANCE_NOT_ON_ANY_PLATE） |
 | v02.01.07 (2026-09-24) | 无 plate 元数据 3MF 合成单盘：`issues[]` 新增 tip 级 `PLATE_DATA_SYNTHESIZED`；此类文件 plates[] 首次可含成功盘（plate_id=1、无 model_thumbnail） |
 | v02.01.10 (2026-06-11) | `plates[].filaments[].filament_id` → `id`。libslic3r 内部 `FilamentInfo::filament_id` 不变 |
@@ -126,6 +139,12 @@
   "缺省即 false / 空串"读取。`support_free` 取反极性（2026-10-10 由
   `support_required` 改名翻转，未发布前原地修订）：有利状态（true=无需
   支撑）只能由显式 true 到达，缺席/误读缺省全部坍缩到保守侧"有支撑"。
+- `exit_code` / `error_message` 与上述家族**刻意相反**：恒输出，空串/
+  0 是确定值而非未知（空 error_message = "确无错误"）。下游读 verdict
+  无需 contains() 判断。报告缺席（无 JSON 文件 / stats_out 空）只发生
+  在 rc=1（参数错，含 CLI 侧）与 rc=99（异常逃逸）——缺席 = 无报告，
+  应回退读进程返回码与 `slic3r_get_error`，**不得**当作 exit_code=1/99
+  或空 error_message 解析。
 - `support_free` 判定源是 **gcode 实际层**（同日二次修订）：per-plate
   支撑挤出体积（`GCodeProcessor support_volumes_per_extruder`，
   erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖）>0

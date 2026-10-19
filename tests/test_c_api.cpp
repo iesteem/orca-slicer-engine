@@ -129,6 +129,11 @@ TEST_CASE("C API: resources_version echoes vendor profile version on failure exi
     REQUIRE(j.contains("resources_version"));
     REQUIRE(j["resources_version"].get<std::string>() == expected);
 
+    // Verdict fields ride along on failure exits (same triage rationale as
+    // resources_version above): the JSON mirrors the process rc exactly.
+    REQUIRE(j["exit_code"].get<int>() == rc);
+    REQUIRE_FALSE(j["error_message"].get<std::string>().empty());
+
     rm("/tmp/orca_capi_resver.json");
     rm("/tmp/orca_capi_resver.log");
     slic3r_destroy(ctx);
@@ -227,6 +232,16 @@ TEST_CASE("C API: missing presets fails cleanly; deprecated skip_preset_substitu
     // absent (a "false" here would let consumers misread "never parsed" as
     // "no mixed filament in use").
     REQUIRE_FALSE(j["print_info_total"].contains("mixed_filament_used"));
+
+    // exit_code + error_message (2026-10-19): the JSON mirrors the process rc
+    // verbatim, and error_message is the same string slic3r_get_error returns.
+    // This case also pins the delivery channel: the guard fires BEFORE
+    // resolve_output_path, so no JSON file lands on disk — in-process
+    // consumers see this report only via stats_out.
+    REQUIRE(j["exit_code"].get<int>() == rc);
+    REQUIRE_FALSE(j["error_message"].get<std::string>().empty());
+    REQUIRE(j["error_message"].get<std::string>() == std::string(slic3r_get_error(ctx)));
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_p09.json"));
 
     rm("/tmp/orca_capi_p09.json");
     rm("/tmp/orca_capi_p09.log");
@@ -708,6 +723,85 @@ TEST_CASE("C API: second slice does not grow the first slice's log (sink leak)",
         rm(std::string("/tmp/orca_capi_") + tag + ".json");
         rm(std::string("/tmp/orca_capi_") + tag + ".log");
     }
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+// ============================================================================
+// exit_code + error_message — top-level verdict fields (2026-10-19). The
+// process/C-API rc is mirrored verbatim into the JSON so file consumers can
+// read the verdict without $?. Contract (docs/requirements/json-output.md):
+//   - exit_code: SliceEngine::exit_code() as-is, stamped at the
+//     build_statistics() tail. It is a monotonic ratchet over set_error_type
+//     stamps, so the value can EXCEED the code implied by the visible issues
+//     (the mixed case below proves ratchet survival: TOOLPATH_OUTSIDE stamps
+//     7 and every later 6-stamp is a no-op). Never recomputed from issues.
+//   - error_message: always emitted; "" is a definitive "no error", not an
+//     unknown — deliberately NOT in the MISSING-semantics family.
+//   - invariant on every report: success == (exit_code == 0) == error_message
+//     empty. rc=1 (bad args) / rc=99 (exception escape) produce no report at
+//     all: a missing file means "no report", never exit_code 1/99.
+// ============================================================================
+
+TEST_CASE("C API: exit_code 0 and empty error_message on success", "[integration][capi][exit_code]")
+{
+    // Cheapest success fixture already in the pool (single plate, no support
+    // generation, mixed slots defined but never referenced).
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/mixed_filament_defined_unused.3mf",
+                          "/tmp/orca_capi_ec_ok", R"({"log_path":"/tmp/orca_capi_ec_ok.log"})", stats, sizeof(stats));
+    REQUIRE(rc == SLIC3R_OK);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE(j["success"].get<bool>());
+    REQUIRE(j["exit_code"].get<int>() == rc);
+    REQUIRE(j["exit_code"].get<int>() == 0);
+    REQUIRE(j["error_message"].get<std::string>().empty());
+
+    rm("/tmp/orca_capi_ec_ok.gcode.3mf");
+    rm("/tmp/orca_capi_ec_ok.json");
+    rm("/tmp/orca_capi_ec_ok.log");
+    slic3r_destroy(ctx);
+    restore_dirs();
+}
+
+TEST_CASE("C API: mixed-outcome failure carries ratcheted exit_code 7 into the file JSON", "[integration][capi][exit_code]")
+{
+    // toolpath_outside_mixed_7855.3mf: plate 1 TOOLPATH_OUTSIDE (error), plate
+    // 2 clean — the in-repo mixed-outcome project (e2e Case 11's fixture).
+    // Fails AFTER resolve_output_path, so unlike the P-09 case the report also
+    // lands on disk — assert both channels carry the same verdict.
+    // Ratchet proof: the failed plate later stamps 6, but TOOLPATH_OUTSIDE
+    // already stamped 7 — the JSON must keep 7, not silently downgrade to the
+    // code the issue list alone would suggest.
+    rm("/tmp/orca_capi_ec_mixed.json"); // on-disk assertion below: pre-clean (stale-path trap)
+    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
+    REQUIRE(ctx != nullptr);
+
+    char stats[32768] = {0};
+    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/toolpath_outside_mixed_7855.3mf",
+                          "/tmp/orca_capi_ec_mixed", R"({"log_path":"/tmp/orca_capi_ec_mixed.log"})", stats, sizeof(stats));
+    REQUIRE(rc == 7);
+
+    auto j = nlohmann::json::parse(stats);
+    REQUIRE_FALSE(j["success"].get<bool>());
+    REQUIRE(j["exit_code"].get<int>() == rc);
+    REQUIRE_FALSE(j["error_message"].get<std::string>().empty());
+    // 1 of 2 plates failed → finalise_statistics backfills this summary
+    // (TOOLPATH_OUTSIDE pushes only an issue, never error_message).
+    REQUIRE(j["error_message"].get<std::string>() == "Some plates failed with errors");
+
+    // On-disk channel: the report file must exist and carry the same verdict.
+    REQUIRE(boost::filesystem::exists("/tmp/orca_capi_ec_mixed.json"));
+    auto jf = nlohmann::json::parse(read_file("/tmp/orca_capi_ec_mixed.json"));
+    REQUIRE(jf["exit_code"].get<int>() == rc);
+    REQUIRE(jf["error_message"].get<std::string>() == j["error_message"].get<std::string>());
+
+    rm("/tmp/orca_capi_ec_mixed.json");
+    rm("/tmp/orca_capi_ec_mixed.log");
     slic3r_destroy(ctx);
     restore_dirs();
 }

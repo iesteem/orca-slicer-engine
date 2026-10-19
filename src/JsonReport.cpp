@@ -118,6 +118,19 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     }
 
     root["success"] = stats.success;
+    // Verbatim mirror of the process/C-API return code, emitted as-is from
+    // the engine's monotonic set_error_type ratchet (a TOOLPATH_CONFLICT
+    // stamps 7 and a later 6-stamp is a no-op, so the value can exceed what
+    // the visible issues imply — never recompute from issues). Domain is
+    // {0,3,4,5,6,7} on JSON-emitting paths; rc=1 (bad args) and rc=99
+    // (exception escape) never produce a report at all — absence of the file
+    // means "no report", not exit_code 1/99.
+    root["exit_code"] = stats.exit_code;
+    // Always emitted; empty string is a definitive "no error", not an
+    // unknown (hence not in the MISSING-semantics family). Same string the
+    // C API returns via slic3r_get_error. Invariant on every report:
+    // success == (exit_code == 0) == (error_message empty).
+    root["error_message"] = stats.error_message;
     root["engine_version"] = ENGINE_VERSION;
     // Resources (vendor profile) version read verbatim from
     // <resources>/profiles/Snapmaker.json at report time — no Semver

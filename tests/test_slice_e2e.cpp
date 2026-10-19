@@ -419,6 +419,9 @@ TEST_CASE("Toolpath outside on 2-plate project: only offending plate flagged", "
 
     REQUIRE_FALSE(r->engine->stats().success);
     REQUIRE(r->engine->exit_code() == 7);
+    // Struct mirror stamped at the build_statistics() tail (JSON exit_code
+    // reads this field) — must agree with the rc the C API returns.
+    REQUIRE(r->engine->stats().exit_code == 7);
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 
     REQUIRE(r->engine->stats().plates.size() == 2);

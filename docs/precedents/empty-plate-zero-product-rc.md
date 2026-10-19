@@ -117,9 +117,10 @@ error 级路径（BUILD_VOLUME / SLICING_TIMEOUT / PLATE_NOT_FOUND 等）的
 1. **`NO_PRINTABLE_OBJECTS` 新行为未运行时触发**：需构造"实例已标记
    printable 但 `Print::apply` 后归零"的 fixture，当前无法制；其 benign
    化由与 `EMPTY_PLATE` 同一分级机制保证（代码级推断，非实测）。
-2. **`error_message` 不进 JSON**：`JsonReport.cpp` 无该字段，零产物时
-   JSON `success=false` 无原因字符串（理由只在 ctx error / CLI stderr /
-   日志）。属独立 schema 议题，按 json-output.md 契约另行决策。
+2. ~~**`error_message` 不进 JSON**~~ **已关闭（2026-10-19）**：
+   `exit_code` + `error_message` 作为恒输出顶层字段进 JSON
+   （json-output.md 2.2.0 追加行），零产物时报告携带
+   `success=false` + `exit_code` + 原因字符串，与 ctx error 同串。
 3. **未提交**：修复与并行会话工作（`SliceEngine.hpp`、
    `test_high_flow.cpp`、precedents P-17/P-18 等）交织于同一工作区，
    提交时需按 hunk 拆分（P-17 的 awk + `git apply --cached` 先例）。

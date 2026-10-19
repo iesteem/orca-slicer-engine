@@ -130,6 +130,16 @@ struct SliceOutputStats
 
     bool success = false;
     std::string error_message;
+    // Verbatim mirror of the process/C-API return code (SliceEngine::
+    // exit_code()), stamped at the tail of build_statistics(). Emitted as-is:
+    // exit_code() is a monotonic ratchet over set_error_type stamps, so the
+    // value may EXCEED the code implied by the visible issues — never
+    // recompute it from the issue list. Invariant success == (exit_code == 0)
+    // holds on run()-driven (JSON-emitting) paths only; the test-only prefix
+    // entry points (run_geometry_preprocess_only / run_preset_substitution_
+    // only) can legitimately carry success=false with exit_code=0 — do not
+    // "fix" that, they never emit JSON.
+    int exit_code = 0;
     std::vector<PlateStats> plates;
     std::vector<Issue> issues; // Global issues (e.g. load errors)
     // Input-file property: any object/part/painted facet/height-range in the

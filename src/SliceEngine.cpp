@@ -4366,6 +4366,16 @@ void SliceEngine::build_statistics()
 
     patch_orphan_plate_issues();
     finalise_statistics();
+
+    // Stamp the exit code AFTER finalise_statistics(): it (and
+    // assemble_plate_stats above) are the last code paths that can raise
+    // m_any_error / m_error_type. Audited 2026-10-19: every set_error_type /
+    // m_any_error site lives before or inside build_statistics(); between
+    // this stamp and every entry point's return there is only pure reading.
+    // A future guard appended AFTER build_statistics() would silently
+    // desynchronise stats.exit_code from the returned rc — the test_c_api
+    // [exit_code] cases assert j["exit_code"] == rc to catch exactly that.
+    m_stats.exit_code = exit_code();
 }
 
 void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& result,
