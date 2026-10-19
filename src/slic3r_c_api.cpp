@@ -249,26 +249,25 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
         const auto& stats = engine.stats();
         std::string json_str = build_statistics_json(stats, engine.output_path());
 
-        // Write JSON statistics to file. Skipped when the run never determined
-        // an output path (e.g. preprocess failure): the auto-derivation below
-        // turns an empty path into the literal ".json" in the CWD — a hidden
-        // litter file that ctest's build-dir CWD masked until a repo-root run
-        // (2026-10-13). The JSON itself always returns via stats_out, so
-        // nothing observable is lost on the failure path.
-        if (!engine.output_path().empty())
+        // Write JSON statistics to file. A caller-supplied json_output_path
+        // is honoured unconditionally — including early-failure exits (e.g.
+        // rc=6 preprocess) where the engine never resolved an output path
+        // (P-28, 2026-10-19). Only the auto-derivation branch needs the
+        // output-path guard: deriving from an empty path would produce the
+        // literal ".json" in the CWD — a hidden litter file that ctest's
+        // build-dir CWD masked until a repo-root run (2026-10-13). Callers
+        // that omit json_output_path on a failed run therefore still get no
+        // file; the JSON itself always returns via stats_out.
+        std::string json_path;
+        if (!cfg.json_output_path.empty())
+            json_path = ensure_extension(cfg.json_output_path, ".json");
+        else if (!engine.output_path().empty())
         {
-            std::string json_path = cfg.json_output_path;
-            if (json_path.empty())
-            {
-                boost::filesystem::path out_p(engine.output_path());
-                json_path = (out_p.parent_path() / out_p.stem().stem()).string() + ".json";
-            }
-            else
-            {
-                json_path = ensure_extension(json_path, ".json");
-            }
-            output_slice_statistics(stats, json_path, engine.output_path());
+            boost::filesystem::path out_p(engine.output_path());
+            json_path = (out_p.parent_path() / out_p.stem().stem()).string() + ".json";
         }
+        if (!json_path.empty())
+            output_slice_statistics(stats, json_path, engine.output_path());
 
         if (stats_out && stats_size > 0)
         {
