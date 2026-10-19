@@ -1,4 +1,4 @@
-# P-08 / P-26 / P-27: 擦塔判例族（位置 clamp 缺失 / 塔位重叠 CONFLICT / 塔几何分叉疑案）
+# P-08 / P-26 / P-27: 擦塔判例族（位置 clamp 缺失 / 塔位重叠 CONFLICT / ramming 透传 + 检测器分叉）
 
 > 本文件为**塔族合订判例**（文件名沿用 P-08 单案时期，保持链接稳定）。
 > 共同根因面：桌面 GUI 在渲染/保存时重算塔位并**回写** project config，
@@ -10,7 +10,7 @@
 > |---|---|---|
 > | P-08 | 塔位超床 → TOOLPATH_OUTSIDE（0.21mm 越界） | 未修复（WIP 在 stash） |
 > | P-26 | 3MF 存储塔位与对象 bbox 重叠 → TOOLPATH_CONFLICT z=0（引擎检测正确） | 未修复（用户侧绕行已验证） |
-> | P-27 | 塔位 parity 已证仍 CONFLICT → 塔深度三盘恒 +2mm（flush 规整嫌疑） | 根因待钉死（gcode 级实锤） |
+> | P-27 | V-FM01b 双 bug：enable_filament_ramming 透传致塔深 +2mm（A，根因钉死）+ 检测器 0.137mm brim 亲吻分叉（B，桌面侧未 diff） | A 待修（规范化方案已定）；B 待桌面源码对照 |
 
 ---
 
@@ -106,100 +106,103 @@ TOOLPATH_CONFLICT 消息里带 "Wipe Tower" 与对象名且 `z = 0.000000` →
 
 ---
 
-## P-27: 塔位 parity 已证仍 CONFLICT → 塔深度恒 +2mm 系统性分叉（根因待钉死）
+## P-27: V-FM01b 双 bug 定稿——enable_filament_ramming 透传致塔深 +2mm + 检测器 0.137mm brim 亲吻分叉
 
-**状态：** 2026-10-19 下午取证升级——塔位假说证伪、**塔深度分叉已 gcode 级实锤**
-（每盘前缘恒 +2.00mm）；flush 体积规整偏大为头号嫌疑，最终行级交点待 fork 侧插桩。
-**Fixture：** V-FM01b Sunflower（线上 5215，3 盘全彩；原版 + `修复-` 桌面重存版均在
-`~/Downloads/`，未入库）。
+**状态：** 2026-10-19 晚定稿。分离出**两个独立 parity bug**，各自定级：
+Bug A 根因钉死（单键注入实验）；Bug B 触发器实证、桌面侧差异未 diff（无 2.4.0 源码）。
+**Fixture：** V-FM01b Sunflower（线上 5215，3 盘全彩；原版 + `修复-` 桌面重存版在
+`~/Downloads/`，单键补丁版在 /tmp，均未入库）。
 
-### 现象（原版与修复版完全同症）
+### 现象
 
-- 盘 3 rc=7 TOOLPATH_CONFLICT "Wipe Tower <-> Sunflower O_.step"
-  第 0/30 层 z=0；盘 1/2 成功但只解析 3/4 色
-  （#000000/#400000/#FFFF80，**#FFFFFF 槽在两盘都不出现**）。
-- 桌面参照（Sunflower A__PLA_2h16m.gcode.3mf）：3 盘全部成功、4 色全
-  解析。→ 引擎另有**第 4 色槽不出现**的独立 parity 缺口（未定位）。
-- 不崩溃（fe5c61c 撑住；该件 flush 矩阵实为 **8×8=64 值** vs 4 槽，比
-  P-02 判例的 3×3 更极端）。
+- 原版与修复版引擎 rc=7 完全同症：盘 3 TOOLPATH_CONFLICT "Wipe Tower <->
+  Sunflower O_.step" 第 0/30 层 z=0；盘 1/2 成功但只解析 3/4 色
+  （#FFFFFF 槽不现——独立缺口，见文末）。
+- 桌面参照（Sunflower A__PLA_2h16m.gcode.3mf）：3 盘全成、4 色全解析。
+- 不崩溃（fe5c61c；该件 flush 矩阵实为 **8×8=64 值** vs 4 槽）。
 
-### 已证伪：塔位分叉假说（2026-10-19 上午修正）
+### 前置证伪：塔位假说（2026-10-19 上午）
 
-此前记录"原文件塔位为单值 (206,215.286)、引擎把单值用于所有盘"
-**与实物不符**。实测（python zipfile 逐处核对，两文件各仅 1 处
-wipe_tower_x/y）：
+"原文件塔位为单值"记录有误——原版 project_settings.config 本就带逐盘 3 元素
+数组 x=[206,202.571,206]、y=[215.286,209.862,208.857]，修复版逐值相同；
+`Config.hpp:435 get_at(i)` 0 基逐盘取值 → 塔位 parity 成立，塔位不是分叉源。
 
-- 原版 project_settings.config：逐盘 3 元素数组 x=[206, 202.571, 206]、
-  y=[215.286, 209.862, 208.857]（桌面保存时逐盘回写实锤）。
-- `修复-` 桌面重存版：数组**逐值相同**。
-- libslic3r 消费端 `Config.hpp:435 get_at(i)`：i 在界内取
-  `values[i]`（0 基逐盘），越界回落 `front()`。3 盘 + 3 元素 → 引擎
-  盘 3 塔位 = (206, 208.857)，**与桌面一致**。
-- 决定性实验：桌面重存修复版引擎实测 **rc=7，冲突消息与原版逐字相同**，
-  盘 1/2 仍 3 色 → 桌面重存不治，塔位不是分叉源。
+### Bug A：塔深三盘恒 +2.00mm ← enable_filament_ramming 透传（根因钉死）
 
-### 塔深度分叉：gcode 级实锤（2026-10-19 下午，ORCA_KEEP_FAILED_GCODE 取证）
+取证路径（ORCA_KEEP_FAILED_GCODE，ccede9e）：保留引擎三盘 gcode（含失败盘），
+解包桌面 gcode.3mf 逐盘参照。
 
-工具：重引入 `ORCA_KEEP_FAILED_GCODE=1`（Types.hpp TempFileGuard 单点守卫，
-保留全部 plate_N.gcode 并打印路径）；桌面参照解包
-Sunflower A__PLA_2h16m.gcode.3mf 的 Metadata/plate_N.gcode。
+- **实测**：塔体后缘（y=208.857）、宽度 35、位置三侧全同；**前缘三盘恒
+  +2.00mm**（228.49/226.49、223.06/221.06、222.06/220.06）——系统性。
+  盘 3 CP EMPTY GRID 引擎 9 行 vs 桌面 7 行（0.5mm 行距）恰 2.0mm。
+- **对象侧无分叉**：Sunflower O_.step 第 0 层 433 挤出点逐点相同（含 brim，
+  y_max=205.794）。
+- **gcode 头三方配置 diff**：引擎两次均用**内嵌脏打印机预设 MyToolChanger**
+  （桌面=官方 Snapmaker U1）；原版-引擎带 8 槽向量族 +
+  `enable_filament_ramming=1`、`machine_tool_change_time=0`、
+  `tool_change_temprature_wait=1`、`z_hop_when_prime=1`、
+  `extruder_clearance_radius=40`；修复版-引擎（桌面重存已规范化）全为
+  官方值（ramming=0、4 槽等）→ 塔 parity（220.057）。
+- **单键注入二分**（给原版 project_settings.config 注入单键后重切量塔前缘）：
+  - `purge_in_prime_tower=0` → 仍 222.057（**证伪**，/tmp/vfm01b_purge0.3mf）
+  - `enable_filament_ramming=0` → **220.057，与桌面逐 mm 一致（坐实）**，
+    /tmp/vfm01b_ram0.3mf
+- **机制**：文件无该键 → 内嵌 MyToolChanger 预设缺省 1 被引擎透传 →
+  WipeTower2 `m_enable_filament_ramming=1`，其 ungated 路径
+  （WipeTower2.cpp:2204 等，注意 2107/2112/2125/2194 多处与 SEMM 门混合）
+  向塔计入 ramming 体积 → 多 2 个 purge 行。桌面加载按官方 U1 规范化为 0。
+- **方向性**：+2mm 朝床前（对象在塔后方 y≤205.794），**不是冲突触发器**；
+  风险面=塔前伸挤占床前空间/诱发 TOOLPATH_OUTSIDE（P-08 族）。
+- 修复方向：引擎加载对非 SEMM 打印机把 enable_filament_ramming 压 0
+  （或内嵌脏预设键族按官方预设回填——与 MyToolChanger 脏 ID 历史问题
+  合流，见 nvt-reset 判例 P-17 时期的云审查根因链）。
 
-逐盘第 0 层 `;TYPE:Prime tower` 段实测（引擎失败 gcode vs 桌面成功 gcode）：
+### Bug B：rc=7 触发器 = 0.137mm brim 亲吻，检测器行为分叉（桌面侧未 diff）
 
-| 盘 | 塔体 y 范围 引擎 | 桌面 | 前缘差 |
-|---|---|---|---|
-| 1（引擎成功） | …[163.08, 228.49] | …226.49 | **+2.00** |
-| 2（引擎成功） | …[79.49, 223.06] | …221.06 | **+2.00** |
-| 3（引擎失败） | [208.857, 218.857] | [208.857, 216.857] | **+2.00** |
+- **物理交叠双侧相同**：Sunflower O_.step 第 0 层底面 **12 条线段**穿越塔
+  brim 后缘线 y=205.657（=塔后缘 208.857 − brim 3.2），最深 205.794，
+  越线 **0.137mm**；引擎与桌面 gcode 逐点一致。
+- **引擎报、桌面不报**：fork 2.4.1 检测器塔线集=outer_wall **含 brim**
+  （WipeTower2.hpp:308 注释明言 "for wipe tower out wall and brim"），
+  判据=线段真相交且交点距线段端点 >0.01mm（ConflictChecker.cpp:283-305）
+  → 12 处命中 → rc=7。桌面 2.4.0 同几何零告警 → 检测器输入集/阈值/行为
+  在 2.4.0→2.4.1 间漂移；**无桌面 2.4.0 源码，具体差异未定**。
+- **独立性实证**：ramming0 补丁版（塔几何已 parity 220.057）仍同消息失败
+  → B 独立于 A。
+- 判定链（引擎侧）：Print.cpp:2763 门（!m_no_check && 无自适应层高）→
+  ConflictChecker::find_inter_of_lines_in_diff_objs → 塔线集
+  getTrueExtrusionLayersFromWipeTower（Print.cpp:5076，真实 outer_wall，
+  pos=get_at(m_plate_index)），对象线集=perimeters/fills+support 按首实例
+  shift 平移；锥底排除（30° 缺省但塔高 ~6mm → r≈1.6mm 够不到对象）。
+- 用户侧绕行：对象与塔拉开 ≥brim 宽度量级间隙（同 P-26 ACC-01 的
+  模型右移方案）。
 
-- **后缘（y_min）、宽度（35）、位置全部一致；前缘三盘恒 +2.00mm——系统性，非盘 3 特有**。
-- 盘 3 CP EMPTY GRID：引擎 9 行（209.857→218.357）vs 桌面 7 行（209.357→215.857）
-  ——恰好多 2 行 × 0.5mm 行距 = 2.0mm。塔深度按行量化，引擎比桌面**多算两个 purge 行**。
-- 对象侧无分叉：Sunflower O_.step 第 0 层挤出 433 点**逐点相同**（含 brim，
-  y_max=205.794 两侧一致）。分叉纯在塔侧。
-- 次要漂移（2.4.1-base vs 桌面 2.4.0）：引擎 gcode 无
-  `; WIPE_TOWER_BRIM_START/END` 标记；prime 起角相反（引擎左上 vs 桌面右下）；
-  塔体宽度方向 brim 圈数循环结构同但无标记包裹。疑似同源代码漂移，未单独定级。
+### 已证伪推测汇总（防重走弯路）
 
-### 冲突判定链（fork 侧代码定位，2026-10-19）
+1. "原文件塔位单值、引擎单值用于所有盘"——文件本带逐盘数组。
+2. "塔几何尺寸/8×8→4 规整放大塔体积"——矩阵三方同为 4×4 同值
+   （引擎规整=桌面=取 8×8 左上块），且 SEMM=0 下矩阵本就不参与。
+3. "purge_in_prime_tower=1 致 +2mm"——单键注入证伪。
+4. "+2mm 前缘是冲突触发器"——前缘朝床前，对象在塔后方；ramming0 后
+   仍冲突。
 
-- 检测入口：`Print.cpp:2763-2781` `_make_skirt` 后、`!m_no_check &&
-  !has_adaptive_layer_height` 时 `ConflictChecker::find_inter_of_lines_in_diff_objs`。
-- 塔侧线集：`FakeWipeTower::getTrueExtrusionLayersFromWipeTower`
-  （Print.cpp:5076）= 真实 `WipeTower2::m_outer_wall` 逐层多边形（Print.cpp:3533
-  喂数），pos 经 `get_at(m_plate_index)`（Print.cpp:2769）——塔深度分叉直接进检测器。
-- 对象侧线集：每 PrintObject 的 perimeters+fills+support_fills，按
-  `instances().front().shift` 平移（ConflictChecker.cpp:233-234）——注意多实例对象
-  仅用第一实例 shift，若引擎路径坐标空间与桌面不同会放大/缩小重叠。
-- 判据：线段真相交且交点到两线段端点最小距离 > 0.01mm（双 support 为 100mm，
-  ConflictChecker.cpp:283-305）；1mm 网格光栅化加速。
-- 锥底（cone_angle 缺省 30°）在本件塔高 ~6mm 下 r≈1.6mm，够不到对象——已排除。
-- 引擎侧消费：SliceEngine.cpp do_postprocessing 读 `conflict_result` 报
-  serious_warning + rc=7（引擎检测行为正确，错在塔几何本身偏大）。
+### #FFFFFF 槽不现（独立缺口，未查）
 
-### 根因嫌疑与下一步
-
-头号嫌疑：**flush_volumes_matrix 规整后体积偏大**——8×8 矩阵 vs 4 槽，
-fe5c61c 移植的 PresetBundle 规整路径（引擎侧）与桌面 2.4.0 的规整结果不同，
-多出的 purge 体积量化成 +2 行。次嫌疑：fork 2.4.1-base vs 桌面 2.4.0 的
-WipeTower2 深度公式漂移。**#FFFFFF 槽不现**（盘 1/2 仅 3 色）可能与矩阵规整
-同根（槽位参与 toolchange 的映射），未验证。
-
-1. 引擎侧加日志：规整后打印 wipe volumes 矩阵 + toolchanges（对比桌面
-   project_settings 内矩阵推算的有效体积），定位哪对槽位的体积被放大。
-2. fork 侧插桩 ConflictChecker：dump z=0 塔/对象线集，找出确切相交线段
-   （区分"塔外墙 2mm 前伸压线" vs "对象 shift 坐标空间错位"）。
-3. #FFFFFF 缺口单独开查（plates 1/2 成功 gcode 已保留）。
+盘 1/2 仅解析 3 色（#000000/#400000/#FFFF80），桌面 4 色全解析。
+修复版（SEMM=0、矩阵清零路径）下依旧 3 色 → 与 flush 矩阵/SEMM 无关，
+另有其因。原版-引擎 `filament_multi_colors=""` vs 修复版/桌面带全 4 色
+值——线索之一，未跟进。
 
 ### 取证文件（重启即失，及时转存）
 
-- 引擎三盘 gcode：`/tmp/claude-1000/orca_slice_5b67-7f20-1d5f-adbc/plate_{0,1,2}.gcode`
+- 引擎 gcode：`/tmp/claude-1000/orca_slice_5b67-…/plate_{0,1,2}.gcode`（原版）、
+  `orca_slice_b447-…`（修复版）、`orca_slice_69a6-…`（purge0）、最新目录（ram0）
 - 桌面盘 3 参照：`/tmp/desk_plate3.gcode`（plate_1/2 在 /tmp/deskref/Metadata/）
-- 旧副本：`/tmp/vfm01b_towerfix.3mf`（重打需修 count=1；"打进桌面塔位仍撞"
-  如今看是必然——原文件本就带逐盘塔位，该补丁是冗余操作）
+- 单键补丁件：`/tmp/vfm01b_purge0.3mf`、`/tmp/vfm01b_ram0.3mf`
+- 旧副本：`/tmp/vfm01b_towerfix.3mf`（"打进桌面塔位仍撞"是必然——原文件
+  本就带逐盘塔位，该补丁冗余）
 
 ---
-
 ## 注意
 
 引擎曾有临时调试改动（ORCA_KEEP_FAILED_GCODE，SliceEngine.cpp 两处）
