@@ -8,7 +8,7 @@
 # Output:
 #   package/                 ← 可直接运行的部署目录
 #   ├── orca-slice-engine    ← 二进制
-#   └── resources/           ← info + Snapmaker profiles
+#   └── resources/           ← Snapmaker profiles (来自 resources/ submodule; info/ 可选)
 #
 #   package-02.01.01.zip     ← 部署压缩包 (项目根目录)
 #
@@ -31,12 +31,10 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN="$PROJECT_DIR/build-static/orca-slice-engine"
 [ -f "$BIN" ] || die "Binary not found: $BIN. Build with ORCA_STATIC=ON first."
 
-ORCA_ROOT="${ORCA_ROOT:-$HOME/Desktop/code/OrcaSlicer}"
-SRC_RESOURCES="$ORCA_ROOT/resources"
-[ -d "$SRC_RESOURCES" ] || die "OrcaSlicer resources not found: $SRC_RESOURCES (set ORCA_ROOT env var)"
-[ -d "$SRC_RESOURCES/profiles/Snapmaker" ] || die "profiles/Snapmaker/ not found"
-[ -f "$SRC_RESOURCES/profiles/Snapmaker.json" ] || die "profiles/Snapmaker.json not found"
-[ -f "$SRC_RESOURCES/info/filament_info.json" ] || die "info/filament_info.json not found"
+# Presets come from the resources/ submodule (snapmaker-profiles, at resources/profiles)
+SRC_RESOURCES="$PROJECT_DIR/resources/profiles"
+[ -f "$SRC_RESOURCES/Snapmaker.json" ] || die "resources/profiles/Snapmaker.json not found (run: git submodule update --init)"
+[ -d "$SRC_RESOURCES/Snapmaker" ] || die "resources/profiles/Snapmaker/ not found"
 
 # ---- version (from engine's own CMakeLists.txt) ----
 VERSION=$(grep 'ENGINE_VERSION' "$PROJECT_DIR/CMakeLists.txt" | head -1 | sed 's/.*"\(.*\)".*/\1/')
@@ -59,27 +57,33 @@ cp "$BIN" "$PKG_DIR/"
 chmod 755 "$PKG_DIR/orca-slice-engine"
 info "Binary: $(du -h "$BIN" | cut -f1)"
 
-# Resources — info/
+# Resources — profiles/ (Snapmaker vendor from submodule, JSON only)
 echo ""
-echo "=== Copying info/ ==="
-cp -r "$SRC_RESOURCES/info" "$PKG_DIR/resources/"
-info "info: $(du -sh "$PKG_DIR/resources/info" | cut -f1)"
-
-# Resources — profiles/ (Snapmaker only, JSON only)
-echo ""
-echo "=== Copying profiles/ (Snapmaker vendor, JSON only) ==="
+echo "=== Copying profiles/ (Snapmaker vendor from submodule, JSON only) ==="
 mkdir -p "$PKG_DIR/resources/profiles"
 
-cp "$SRC_RESOURCES/profiles/Snapmaker.json" "$PKG_DIR/resources/profiles/"
+cp "$SRC_RESOURCES/Snapmaker.json" "$PKG_DIR/resources/profiles/"
 info "  Snapmaker.json"
 
-cp -r "$SRC_RESOURCES/profiles/Snapmaker" "$PKG_DIR/resources/profiles/"
+cp -r "$SRC_RESOURCES/Snapmaker" "$PKG_DIR/resources/profiles/"
 find "$PKG_DIR/resources/profiles/Snapmaker" -type f ! -name '*.json' -delete
 find "$PKG_DIR/resources/profiles/Snapmaker" -type d -empty -delete 2>/dev/null || true
 
 JSON_COUNT=$(find "$PKG_DIR/resources/profiles" -name '*.json' | wc -l)
 PROFILES_SIZE=$(du -sh "$PKG_DIR/resources/profiles" | cut -f1)
 info "  profiles: $PROFILES_SIZE ($JSON_COUNT JSON files)"
+
+# Resources — info/ (optional, copied from an OrcaSlicer checkout when present;
+# the engine itself does not read it)
+ORCA_ROOT="${ORCA_ROOT:-$HOME/Desktop/code/OrcaSlicer}"
+if [ -f "$ORCA_ROOT/resources/info/filament_info.json" ]; then
+    echo ""
+    echo "=== Copying info/ ==="
+    cp -r "$ORCA_ROOT/resources/info" "$PKG_DIR/resources/"
+    info "info: $(du -sh "$PKG_DIR/resources/info" | cut -f1)"
+else
+    info "info/ skipped (not found under ORCA_ROOT=$ORCA_ROOT)"
+fi
 
 RES_SIZE=$(du -sh "$PKG_DIR/resources" | cut -f1)
 info "Total resources: $RES_SIZE"

@@ -79,6 +79,28 @@ if(ORCA_STATIC)
 
     target_link_libraries(orca-slice-engine PRIVATE ${ORCA_STATIC_LIBS})
 
+    # ---- install (发布: cmake --install) ----
+    # Binary and resources/ side by side. 
+    # Auto-init the resources submodule at configure time if missing
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/profiles/Snapmaker.json")
+        find_package(Git QUIET)
+        if(NOT GIT_FOUND)
+            message(WARNING "git not found — run manually: git submodule update --init")
+        else()
+            message(STATUS "Initializing resources submodule...")
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} submodule update --init
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                RESULT_VARIABLE _submod_rc)
+            if(NOT _submod_rc EQUAL 0)
+                message(WARNING "git submodule update --init failed (${_submod_rc})")
+            endif()
+        endif()
+    endif()
+    install(TARGETS orca-slice-engine RUNTIME DESTINATION .)
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/" DESTINATION resources
+            FILES_MATCHING PATTERN "*.json")
+
     # Extract the boost static archives from ORCA_STATIC_LIBS so the unit-test
     # target (which does NOT link the full engine) can reuse the same private
     # boost build without hard-coding absolute paths. boost.log pulls in

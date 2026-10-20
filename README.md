@@ -38,14 +38,18 @@ defines (`ORCA_STATIC_DEFINES`):
 ORCA_ROOT=/path/to/OrcaSlicer scripts/gen_static_libs.sh
 ```
 
-You also need the preset `resources/` directory available at runtime (set via
-`ORCA_RESOURCES` or `-r`); the packaging step copies it to `package/resources`.
+You also need the preset `resources/` directory — a git submodule
+(`snapmaker-profiles`, checked out at `resources/profiles`) — available at
+runtime (set via `ORCA_RESOURCES` or `-r`). The repo tree already has the
+runtime layout, so you can point `ORCA_RESOURCES` at the repo's `resources/`
+directly; the packaging step copies it to `package/resources`.
 
 ## Build (ORCA_STATIC — the only mode)
 
 ```bash
 git clone https://github.com/iesteem/orca-slice-engine.git
 cd orca-slice-engine
+git submodule update --init
 
 # 1. Generate cmake/StaticConfig.cmake from a built OrcaSlicer tree
 ORCA_ROOT=/path/to/OrcaSlicer scripts/gen_static_libs.sh
@@ -61,12 +65,30 @@ runtime `.so`/`.dll` dependencies beyond the system libc.
 ## Run
 
 ```bash
-export ORCA_RESOURCES=/path/to/OrcaSlicer/resources   # or pass -r <dir>
+export ORCA_RESOURCES="$(pwd)/resources"   # repo tree works as-is; or package/resources after packaging
 ./build-static/orca-slice-engine model.3mf -v
 ```
 
 The preset `resources/` directory must be available at runtime (via
 `ORCA_RESOURCES` or `-r`).
+
+## Updating the presets submodule
+
+The parent repo pins `resources/profiles` to a specific commit of
+`snapmaker-profiles`. To advance the pin to a newer version:
+
+```bash
+cd resources/profiles
+git fetch origin
+git checkout origin/main        # or a specific commit / tag
+cd ../..
+git add resources/profiles      # stages the new gitlink (pinned commit)
+git commit -m "chore: bump snapmaker-profiles to <version>"
+```
+
+The new preset version takes effect for everyone once that parent-repo
+commit lands; fresh clones pick it up automatically via
+`git submodule update --init`.
 
 ## CLI Reference
 

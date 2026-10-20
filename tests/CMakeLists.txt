@@ -119,7 +119,7 @@ if(ORCA_STATIC)
         ENGINE_VERSION="${ENGINE_VERSION}"
         ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
         ORCA_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-        ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
+        ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/resources/profiles"
     )
 
     target_compile_options(engine-integration PRIVATE
