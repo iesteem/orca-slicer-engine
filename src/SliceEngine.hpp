@@ -32,6 +32,15 @@ struct EngineConfig
     std::atomic<bool>* cancel_requested = nullptr; // programmatic cancel flag (set by slic3r_cancel)
     std::string log_path; // log file path (empty = auto-derive from output)
     std::string json_output_path; // -j/--json: path for JSON output file (empty = auto-derive from output)
+    // Debug-only escape hatch (CLI --keep-failed-gcode3mf, C API params key
+    // of the same name): on a run whose worst failure class is
+    // EXIT_POSTPROCESS_ERROR (rc=7 — G-code generated, flagged unusable),
+    // still build the gcode.3mf so a human can inspect the toolpaths
+    // (confirm/refute TOOLPATH_OUTSIDE / TOOLPATH_CONFLICT). Does NOT touch
+    // the contract: rc stays 7, the JSON stays success=false with
+    // output_file="" — the artifact is forensics, not delivery. Default
+    // false: rc=4/5/6/7 all suppress output as before.
+    bool keep_failed_gcode3mf = false;
 };
 
 // Intermediate result for a single plate during the pipeline
