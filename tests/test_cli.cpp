@@ -164,6 +164,54 @@ TEST_CASE("CLI: unknown -f format rejected", "[integration][cli][validation]")
 }
 
 // ============================================================================
+// (external MR !3 review F4, fixed 2026-10-20) A required-value option ending
+// the command line bare used to be silently swallowed by the "++i < argc"
+// guard — the call sliced on defaults instead of erroring, contradicting the
+// strict-validation posture (-p explicitly rejected, garbage integers
+// rejected). All six option groups now exit 1 naming the exact flag form.
+// GENERATE runs each flag as an independent case: one regression must not
+// mask the other nine. --log/-j keep their documented optional-value
+// semantics — bare --log is pinned below, bare -j by the P-28 json test.
+// ============================================================================
+
+TEST_CASE("CLI: value-taking option ending command line bare is rejected", "[integration][cli][validation]")
+{
+    const char* flag = GENERATE("-t", "--timeout", "--max-size", "--cancel-file",
+                                "-o", "--output", "-f", "--format", "-r", "--resources");
+
+    // Pre-clean: a stale artifact from an unrelated run must not turn the
+    // no-product assertion below into a false failure (test-artifact-stale-trap).
+    rm("/tmp/orca_cli_v.gcode.3mf");
+
+    // Full valid context with the bare flag last — the exact caller bug shape.
+    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
+                          + "\" -o /tmp/orca_cli_v " + flag);
+    INFO(r.out);
+    REQUIRE(r.exited);
+    REQUIRE(r.exit_code == 1);
+    REQUIRE(r.out.find(std::string("option ") + flag + " requires a value") != std::string::npos);
+    // The rejection must happen at parse time — never a silent default slice.
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_cli_v.gcode.3mf"));
+
+    rm("/tmp/orca_cli_capture.txt");
+}
+
+TEST_CASE("CLI: bare --log keeps optional-value semantics and proceeds", "[integration][cli][validation]")
+{
+    // --log's value is optional by contract: a bare flag must NOT trip the
+    // missing-value rejection the six groups above rely on — it proceeds
+    // until an honest later failure (no input file in this invocation).
+    CliResult r = run_cli("--log");
+    INFO(r.out);
+    REQUIRE(r.exited);
+    REQUIRE(r.exit_code == 1);
+    REQUIRE(r.out.find("requires a value") == std::string::npos);
+    REQUIRE(r.out.find("input file required") != std::string::npos);
+
+    rm("/tmp/orca_cli_capture.txt");
+}
+
+// ============================================================================
 // Removed -p/--plate flag — removed 2026-09-30. The CLI always slices all
 // plates. Unlike other unknown options (silently ignored, see the deprecated
 // flag test below), -p is REJECTED: honoring-by-ignoring would silently widen
