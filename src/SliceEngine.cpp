@@ -3584,14 +3584,24 @@ void SliceEngine::restore_brim_width_echo(const std::string& gcode_path)
         std::string line;
         while (std::getline(in, line))
         {
-            if (line == kBlockStart)
+            // Match on a copy without a trailing '\r' so a CRLF file still
+            // hits (external MR !3 review F2); the ORIGINAL line is written
+            // out, so an LF file stays byte-identical and a hypothetical
+            // CRLF file keeps its EOLs everywhere except the one replaced
+            // echo line. Engine-written gcode is always LF (GCode.cpp) —
+            // this is robustness against post-processing, not an expected
+            // input shape.
+            std::string cmp = line;
+            if (!cmp.empty() && cmp.back() == '\r')
+                cmp.pop_back();
+            if (cmp == kBlockStart)
                 in_config_block = true;
-            else if (line == kBlockEnd)
+            else if (cmp == kBlockEnd)
                 in_config_block = false;
 
-            if (!replaced && in_config_block && line.size() > kPrefix.size() &&
-                line.compare(0, kPrefix.size(), kPrefix) == 0 &&
-                line.substr(kPrefix.size()) == "0")
+            if (!replaced && in_config_block && cmp.size() > kPrefix.size() &&
+                cmp.compare(0, kPrefix.size(), kPrefix) == 0 &&
+                cmp.substr(kPrefix.size()) == "0")
             {
                 out << expected << "\n";
                 replaced = true;
