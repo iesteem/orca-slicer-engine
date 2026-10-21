@@ -75,8 +75,20 @@ constexpr double NOZZLE_FORMAT_EPSILON = 0.05;
 // semantics. Vectors replace the whole values array, so a source vector
 // shorter than dst's truncates dst and an empty source vector clears dst;
 // per-filament lengths are reconciled afterwards by
-// normalize_filament_vectors_to_slot_count (2026-09-20 C3 fix). Only keys
-// that already exist in dst are touched.
+// normalize_filament_vectors_to_slot_count (2026-09-20 C3 fix).
+//
+// Keys absent from dst are CREATED (option(key, true)) — desktop apply
+// semantics installs the whole preset key set. The old skip-absent rule let a
+// key the official preset declares but the 3MF omits (enable_filament_ramming,
+// purge_in_prime_tower, extruder_clearance_radius, …) fall through to the
+// FullPrintConfig defaults backfill in normalize_loaded_config, which runs
+// AFTER substitution: the code default masqueraded as the official preset
+// value (ramming default true vs U1's declared 0 deepened the wipe tower and
+// tripped tower-family TOOLPATH_CONFLICT — W2 rerun, 2026-10-21). The
+// filament path (PresetRollback::overwriteExtruderFrom) already created
+// absent keys; this aligns the printer/process paths with it. option(key,
+// true) returns nullptr for keys unknown to PrintConfig's def — the guard
+// below skips those, same as before.
 inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
                                          const std::set<std::string>* except)
 {
@@ -86,7 +98,7 @@ inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicP
         if (except && except->find(key) != except->end())
             continue;
 
-        ConfigOption* dst_opt = dst.option(key, false);
+        ConfigOption* dst_opt = dst.option(key, true);
         if (!dst_opt)
             continue;
 
@@ -99,9 +111,8 @@ inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicP
     }
 }
 
-// Overwrite every key present in `src` onto `dst` (only keys that already
-// exist in `dst`). Scalars and vectors are copied wholesale. No user value
-// is preserved.
+// Overwrite every key present in `src` onto `dst` (absent keys are created).
+// Scalars and vectors are copied wholesale. No user value is preserved.
 inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
 {
     overwrite_all_keys_from_impl(dst, src, nullptr);
@@ -4336,6 +4347,16 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         pd->is_support_used = result.support_generated;
         pd->is_label_object_enabled = result.gcode_result.label_object_enabled;
 
+        // Import residue guard (W2 rerun, 5215): the 3MF reader populates
+        // slice_filaments_info from an embedded slice_info.config (bbs_3mf
+        // read side), and sources produced by older engine versions carry
+        // polluted entries there — flush-matrix virtual slots (6/7/8) with
+        // real gram weights and repeated physical ids. parse_filament_info
+        // only appends (no clear), so without this the packaged slice_info
+        // shows stale+fresh concatenated (observed: 5 residual + 3 fresh
+        // entries, sum 109.06g vs the same file's plate weight 52.97g).
+        // Export statistics must describe THIS slice, never the import.
+        pd->slice_filaments_info.clear();
         pd->parse_filament_info(&result.gcode_result);
 
         for (auto& info : pd->slice_filaments_info)
