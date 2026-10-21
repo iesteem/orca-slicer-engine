@@ -289,6 +289,62 @@ TEST_CASE("Nozzle volume type survives printer preset substitution", "[integrati
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
 }
 
+TEST_CASE("Wipe tower rotation angle survives process preset substitution", "[integration][highflow]")
+{
+    // P-30: wipe_tower_rotation_angle is project-owned state (the desktop
+    // keeps it in PresetBundle::project_config, outside preset substitution).
+    // Official process JSONs never declare it — fdm_process_idex's 90 being
+    // the sole, deliberate exception — so Preset::normalize backfills the
+    // code default 0 into official->config and the wholesale overwrite used
+    // to reset a 3MF's rotation (HueForge ships 270°; the tower then rotates
+    // ~30mm toward the bed edge and 4.7mm out of the printable area).
+    // Post-fix contract, mirroring the nvt case above: the header echo and
+    // the packaged project_settings.config both carry the 3MF's value.
+    // The fixture (u1_preset_test_wipe_tower_rot) is the single-object
+    // baseline with rotation=270 + dithering_local_z_mode=1 grafted into
+    // project_settings.config — it has no tower geometry, so the rotation
+    // is write-back fidelity, exactly like nozzle_volume_type here.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test_wipe_tower_rot.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_wt_rot_echo";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+
+    // Pre-run cleanup: same stale-artifact hazard as the nvt case — a
+    // previous failed run's leftover would relocate this run's output and
+    // the assertions below would read the stale file forever.
+    boost::filesystem::remove("/tmp/orca_test_wt_rot_echo.gcode.3mf");
+
+    engine.run();
+
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const std::string gcode = extract_gcode("/tmp/orca_test_wt_rot_echo.gcode.3mf");
+    // Prefix match covers both echo formats ("270" / "270.000").
+    REQUIRE(gcode.find("wipe_tower_rotation_angle = 270") != std::string::npos);
+    // The coBool sibling from the same candidate table survives too.
+    REQUIRE(gcode.find("dithering_local_z_mode = 1") != std::string::npos);
+
+    // Write-back surface 2: the packaged project_settings.config is written
+    // from m_config post-substitution — the preserved value must round-trip.
+    const std::string settings =
+        extract_3mf_text("/tmp/orca_test_wt_rot_echo.gcode.3mf", "Metadata/project_settings.config");
+    REQUIRE(settings.find("\"wipe_tower_rotation_angle\": \"270\"") != std::string::npos);
+    REQUIRE(settings.find("\"dithering_local_z_mode\": \"1\"") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_wt_rot_echo.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract_entry.txt", ec);
+}
+
 TEST_CASE("Output path relocation is surfaced, not silent", "[integration][slice]")
 {
     // generate_output_path (Utils.cpp) appends a timestamp suffix when the

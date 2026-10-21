@@ -1669,6 +1669,21 @@ void SliceEngine::emit_filament_warnings(const FilamentGrouping& rolled_back, co
 // Stage 1.4c: Process preset substitution (official, preserves user overrides)
 // ============================================================================
 
+// Project-owned keys that also live in Preset::print_options: official
+// process preset JSONs do not declare them (verified 2026-10: 111/112 files;
+// fdm_process_idex.json deliberately declares wipe_tower_rotation_angle=90),
+// so Preset::normalize (Preset.cpp:444-452) backfills the FullPrintConfig
+// default into official->config. Protect each key ONLY when the official
+// value IS that backfill artifact; a declared non-default value (idex=90)
+// keeps the official preset as owner. Mirrors s_project_options ∩
+// Preset::print_options() (4 keys, PresetBundle.cpp:201 / Preset.cpp:926).
+static const std::set<std::string> kProjectOwnedProcessKeys = {
+    "wipe_tower_rotation_angle",       // coFloat, default 0     PrintConfig.cpp:6214
+    "dithering_local_z_mode",          // coBool,  default false PrintConfig.cpp:4486
+    "dithering_local_z_whole_objects", // coBool,  default false PrintConfig.cpp:4493
+    "dithering_local_z_infill",        // coBool,  default false PrintConfig.cpp:4501
+};
+
 void SliceEngine::apply_process_official_preset()
 {
     // Precondition: bundle availability is verified by run() before this
@@ -1727,6 +1742,41 @@ void SliceEngine::apply_process_official_preset()
         // value is currently "" (latent bug), but drop the override anyway so
         // the official preset owns the key.
         user_overrides.erase("post_process");
+
+        // Project-owned keys (kProjectOwnedProcessKeys) survive the wholesale
+        // overwrite only when the official value is the normalize backfill
+        // artifact (== code default). Gate per key: a preset that deliberately
+        // declares a non-default value (fdm_process_idex's rotation 90) keeps
+        // official ownership. Without this, a 3MF's wipe_tower_rotation_angle
+        // (e.g. HueForge's 270°) is reset to 0 and the tower rotates out of
+        // the bed (P-30). Mirrors the desktop project_config channel
+        // (PresetBundle.cpp:3138), which never lets process presets own
+        // project-level state.
+        {
+            const auto& fp_defaults = FullPrintConfig::defaults();
+            std::vector<std::string> preserved;
+            for (const std::string& key : kProjectOwnedProcessKeys)
+            {
+                // Single-arg option() is the const-safe lookup (no creation);
+                // the two-arg (key, false) overload is non-const.
+                const auto* off_opt = official->config.option(key);
+                const auto* def_opt = fp_defaults.option(key);
+                if (off_opt && def_opt && off_opt->serialize() == def_opt->serialize())
+                    if (user_overrides.insert(key).second)
+                        preserved.push_back(key);
+            }
+            if (!preserved.empty())
+            {
+                std::string joined;
+                for (const std::string& key : preserved)
+                {
+                    if (!joined.empty()) joined += ", ";
+                    joined += key;
+                }
+                BOOST_LOG_TRIVIAL(info)
+                    << "Project-owned keys preserved through process substitution: " << joined;
+            }
+        }
 
         // Apply every key from the official process preset, except keys the
         // user explicitly overrode and keys that don't exist in the current

@@ -597,3 +597,121 @@ TEST_CASE("run_preset_substitution_only fails cleanly without system presets (P-
     Slic3r::set_data_dir(kResources);
     boost::filesystem::remove_all(empty_res, ec);
 }
+
+// P-30 regression: project-owned process keys must survive the official
+// process substitution. The fixture carries wipe_tower_rotation_angle=270
+// (the HueForge case: the tower rotates out of the bed when reset to 0) and
+// dithering_local_z_mode=1, with NEITHER listed in
+// different_settings_to_system — the pre-fix behaviour cleared both to the
+// normalize backfill defaults (0/false). kProjectOwnedProcessKeys
+// (SliceEngine.cpp) now gates each key on the official preset's value being
+// that same code default, so the 3MF's project state wins.
+TEST_CASE("Project-owned process keys survive substitution (wipe tower rotation)", "[integration][preset]")
+{
+    auto bundle = load_official_bundle();
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test_wipe_tower_rot.3mf";
+    cfg.temp_dir = "/tmp";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    REQUIRE(engine.run_preset_substitution_only());
+
+    // Substitution actually ran (guards against a vacuous pass where the
+    // official preset was never applied and user values "survive" trivially).
+    REQUIRE(!engine.last_process_preset_name().empty());
+
+    const DynamicPrintConfig& mc = engine.config();
+
+    // Gate precondition pin: the resolved official process preset must carry
+    // the CODE DEFAULT for rotation (i.e. it does not declare a non-default
+    // value — only fdm_process_idex declares 90). If a future official
+    // preset declares a real value here, the exemption intentionally steps
+    // aside and this test must be revisited alongside kProjectOwnedProcessKeys.
+    const Preset* proc = bundle->prints.find_preset(engine.last_process_preset_name(), false);
+    REQUIRE(proc);
+    {
+        // Single-arg option<T>() is the const-safe lookup (no creation).
+        const auto* off_rot = proc->config.option<Slic3r::ConfigOptionFloat>("wipe_tower_rotation_angle");
+        const auto* def_rot = Slic3r::FullPrintConfig::defaults().option<Slic3r::ConfigOptionFloat>(
+            "wipe_tower_rotation_angle");
+        REQUIRE(off_rot);
+        REQUIRE(def_rot);
+        REQUIRE(off_rot->value == def_rot->value);
+    }
+
+    // The project-owned values survive with no different_settings_to_system
+    // entry protecting them.
+    const auto* rot = mc.option<Slic3r::ConfigOptionFloat>("wipe_tower_rotation_angle");
+    REQUIRE(rot);
+    CHECK(rot->value == 270.0);
+
+    const auto* dz = mc.option<Slic3r::ConfigOptionBool>("dithering_local_z_mode");
+    REQUIRE(dz);
+    CHECK(dz->value == true);
+
+    // Control assertion: a key the official process preset DOES own is still
+    // wholesale-overwritten (the exemption must not bleed into normal keys).
+    const auto* lh = mc.option<Slic3r::ConfigOptionFloat>("layer_height");
+    const auto* off_lh = proc->config.option<Slic3r::ConfigOptionFloat>("layer_height");
+    REQUIRE(lh);
+    REQUIRE(off_lh);
+    CHECK(lh->value == off_lh->value);
+}
+
+// Tripwire against upstream drift: kProjectOwnedProcessKeys mirrors
+// s_project_options ∩ Preset::print_options() and its gate assumes official
+// process JSONs do not declare these keys. Verified 2026-10: 111/112 files
+// declare none; fdm_process_idex.json alone declares wipe_tower_rotation_angle
+// (=90, a deliberate machine-form value the gate correctly defers to). If a
+// base bump introduces new declarations, this goes red and the candidate
+// table's comment / gate semantics must be re-reviewed — the gate itself
+// adapts at runtime (a declared non-default value keeps official ownership).
+TEST_CASE("Official process presets declare project-owned keys only in fdm_process_idex", "[integration][preset]")
+{
+    namespace fs = boost::filesystem;
+    const fs::path dir = std::string(kResources) + "/Snapmaker/process";
+    REQUIRE(fs::exists(dir));
+
+    const std::vector<std::string> keys = {
+        "\"wipe_tower_rotation_angle\"",
+        "\"dithering_local_z_mode\"",
+        "\"dithering_local_z_whole_objects\"",
+        "\"dithering_local_z_infill\"",
+    };
+
+    std::map<std::string, std::vector<std::string>> declarers; // key -> files
+    size_t files_checked = 0;
+    for (fs::directory_iterator it(dir), end; it != end; ++it)
+    {
+        if (it->path().extension() != ".json") continue;
+        ++files_checked;
+        std::ifstream in(it->path().string());
+        std::stringstream buf;
+        buf << in.rdbuf();
+        const std::string text = buf.str();
+        for (const std::string& key : keys)
+            if (text.find(key) != std::string::npos)
+                declarers[key].push_back(it->path().filename().string());
+    }
+    REQUIRE(files_checked > 100); // sanity: the official set is ~112 files
+
+    for (const std::string& key : keys)
+    {
+        INFO(key);
+        if (key == "\"wipe_tower_rotation_angle\"")
+        {
+            // The single allowed declarer, with its deliberate non-default 90.
+            REQUIRE(declarers.count(key) == 1);
+            REQUIRE(declarers[key].size() == 1);
+            CHECK(declarers[key][0] == "fdm_process_idex.json");
+        }
+        else
+        {
+            CHECK(declarers.find(key) == declarers.end());
+        }
+    }
+}
