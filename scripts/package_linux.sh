@@ -114,9 +114,13 @@ for name, j in by_name.items():
     inst += 1
     seen, cur, vendor = set(), j, None
     while isinstance(cur, dict):
-        if cur.get("filament_vendor"):
+        # Chain merge: first resolution wins (child overrides ancestors).
+        # A resolvable vendor is NOT a chain terminator — every inherits hop
+        # must still be structurally valid (no dangling parent, no cycle).
+        # Breaking here (external PR #10 review, 2026-10-16) let e.g.
+        # child{vendor, inherits:"missing"} pass as "0 dangling".
+        if vendor is None and cur.get("filament_vendor"):
             vendor = cur["filament_vendor"]
-            break
         inh = cur.get("inherits")
         if not inh:
             break
