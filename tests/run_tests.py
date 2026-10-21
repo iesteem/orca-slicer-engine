@@ -12,8 +12,9 @@ Usage:
     python3 tests/run_tests.py <build-dir>            # run ctest, then summarize
     python3 tests/run_tests.py --report-only <build-dir>  # summarize last reports
 
-Exit code: the wrapped ctest's exit code (report-only: 1 if any failure is
-recorded, else 0).
+Exit code: the wrapped ctest's exit code, except that an unparseable report
+alongside a green ctest also exits 1 (report-only: 1 if any failure is
+recorded or any report is unparseable, else 0).
 """
 
 import subprocess
@@ -85,12 +86,18 @@ def main() -> int:
 
     grand_total = grand_failed = 0
     all_failures: list[tuple[str, str, str, str]] = []
+    invalid_reports: list[str] = []
     for report in reports:
         try:
             failures, total, _ = summarize_report(report)
         except ET.ParseError as e:
+            # An unparseable report is NOT "0 failures": SIGTERM mid-run
+            # leaves exactly this shape (see the junit-report truncation
+            # trap). Count it as results-incomplete, never green
+            # (external PR #10 review, 2026-10-16).
             print(f"[run_tests] WARNING: cannot parse {report.name}: {e}",
                   file=sys.stderr)
+            invalid_reports.append(report.name)
             continue
         grand_total += total
         all_failures += [(report.stem, *f) for f in failures]
@@ -106,12 +113,22 @@ def main() -> int:
             print(f"[{suite}] {name}")
             if snippet:
                 print(snippet)
+    elif invalid_reports:
+        print(f"RESULTS INCOMPLETE: {len(invalid_reports)} report(s) "
+              f"unparseable, {grand_total} cases parsed OK — "
+              f"do NOT read this run as green")
     else:
         print(f"ALL GREEN: {grand_total} cases passed "
               f"({', '.join(p.name for p in reports)})")
+    for name in invalid_reports:
+        print(f"INVALID REPORT: {name}")
     print("=" * 70)
 
-    return ctest_rc if not report_only else (1 if grand_failed else 0)
+    if report_only:
+        return 1 if (grand_failed or invalid_reports) else 0
+    # Normal mode keeps ctest's verdict, but a green ctest alongside an
+    # unparseable report is itself anomalous — surface it instead of 0.
+    return ctest_rc if ctest_rc else (1 if invalid_reports else 0)
 
 
 if __name__ == "__main__":
