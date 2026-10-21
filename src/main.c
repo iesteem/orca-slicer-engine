@@ -32,6 +32,16 @@ bad:
     return -1;
 }
 
+/* Required-value options ending the command line bare are a caller bug and
+ * exit 1 — not a silently-ignored default (2026-10-20, external MR !3 review
+ * F4; aligns with -p's explicit-rejection precedent). --log/-j keep their
+ * documented optional-value (bare-flag) semantics and don't use this. */
+static int missing_value(const char* opt)
+{
+    fprintf(stderr, "Error: option %s requires a value\n", opt);
+    return 1;
+}
+
 /* Append formatted text to buf at pos. Returns the new position, or -1 if
  * the result would not fit in cap bytes (including the NUL). Never lets pos
  * pass the end of the buffer — the accumulation idiom it replaces kept
@@ -136,17 +146,22 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--timeout"))
         {
-            if (++i < argc && parse_int_opt(argv[i - 1], argv[i], &timeout_sec) != 0)
+            if (i + 1 >= argc) return missing_value(argv[i]);
+            ++i;
+            if (parse_int_opt(argv[i - 1], argv[i], &timeout_sec) != 0)
                 return 1;
         }
         else if (!strcmp(argv[i], "--max-size"))
         {
-            if (++i < argc && parse_int_opt(argv[i - 1], argv[i], &max_size_mb) != 0)
+            if (i + 1 >= argc) return missing_value(argv[i]);
+            ++i;
+            if (parse_int_opt(argv[i - 1], argv[i], &max_size_mb) != 0)
                 return 1;
         }
         else if (!strcmp(argv[i], "--cancel-file"))
         {
-            if (++i < argc) cancel_file = argv[i];
+            if (i + 1 >= argc) return missing_value(argv[i]);
+            cancel_file = argv[++i];
         }
         else if (!strcmp(argv[i], "--keep-failed-gcode3mf"))
         {
@@ -159,7 +174,8 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output"))
         {
-            if (++i < argc) output = argv[i];
+            if (i + 1 >= argc) return missing_value(argv[i]);
+            output = argv[++i];
         }
         else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate"))
         {
@@ -177,11 +193,13 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format"))
         {
-            if (++i < argc) format = argv[i];
+            if (i + 1 >= argc) return missing_value(argv[i]);
+            format = argv[++i];
         }
         else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--resources"))
         {
-            if (++i < argc) resources = argv[i];
+            if (i + 1 >= argc) return missing_value(argv[i]);
+            resources = argv[++i];
         }
         else if (!strcmp(argv[i], "--log"))
         {
