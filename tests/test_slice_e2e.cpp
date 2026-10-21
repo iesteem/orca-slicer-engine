@@ -1162,3 +1162,30 @@ TEST_CASE("Sole off-grid instance: warning plus zero-product exit 6", "[integrat
     // Nothing may be packaged for a zero-product run.
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 }
+
+// ============================================================================
+// Case 32 — The sanitizer's own missing-key guard (P-29, external MR !3
+// review F1 2026-10-16). The Case 24/25 fixtures carry "layer_height" in
+// their config block, so sanitize_layer_config_ranges()'s
+// opt_float("layer_height") never saw an absent key — but m_config at that
+// point holds only keys the 3MF block actually wrote
+// (Model::read_from_file fills it directly; the defaults backfill in
+// normalize_loaded_config runs later, in run() after preset substitution),
+// and the const opt_float dereferences option() without a null check
+// (fork Config.hpp). layer_range_no_global_key.3mf is Case 24's fixture
+// with the global layer_height line deleted: the sanitizer must fall back
+// to the FullPrintConfig default instead of dying on the very
+// hand-crafted-input class it exists to guard.
+// ============================================================================
+TEST_CASE("Height range sanitize survives missing global layer_height key", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_no_global_key.3mf", "lr_no_global_key");
+
+    // Pre-fix this was a SIGSEGV (rc 139) inside sanitize_layer_config_ranges;
+    // the whole regression contract is reaching these assertions at all.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+}

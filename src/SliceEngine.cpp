@@ -705,7 +705,18 @@ void SliceEngine::sanitize_layer_config_ranges()
 {
     const auto* colours = m_config.option<ConfigOptionStrings>("filament_colour");
     const size_t num_physical = colours ? colours->values.size() : 0;
-    const double default_layer_height = m_config.opt_float("layer_height");
+    // P-29 (external MR !3 review F1, 2026-10-16): m_config at this point
+    // holds only keys the 3MF block actually wrote — Model::read_from_file
+    // fills it directly and the defaults backfill in normalize_loaded_config
+    // runs later, back in run(). A hand-crafted block can omit the global
+    // layer_height entirely, and the const opt_float dereferences option()
+    // without a null check (fork Config.hpp) — the sanitizer then died with
+    // SIGSEGV on the very input class it exists to guard. Fall back to the
+    // same FullPrintConfig default the backfill installs moments later.
+    const auto* global_lh = m_config.option<ConfigOptionFloat>("layer_height");
+    const double default_layer_height =
+        global_lh ? global_lh->value
+                  : FullPrintConfig::defaults().option<ConfigOptionFloat>("layer_height")->value;
 
     for (ModelObject* obj : m_model.objects)
     {
