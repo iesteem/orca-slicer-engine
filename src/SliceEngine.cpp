@@ -215,15 +215,23 @@ size_t normalize_filament_vectors_to_slot_count(DynamicPrintConfig& config)
         if (key == "compatible_prints" || key == "compatible_printers" ||
             key == "filament_flow_support")
             continue;
-        ConfigOption* opt = config.option(key, false);
+        // Create absent keys through the config's own def (option(key,true) →
+        // create_default_option), NOT by cloning the static FullPrintConfig
+        // member. The static members are default-constructed and the coEnums
+        // ones carry keys_map == nullptr for their whole life (zero
+        // assignment sites in PrintConfig.hpp); clone() copies that null
+        // through and set_key_value stores it wholesale, bypassing the
+        // create_default_option() keys_map fixup. A config built that way
+        // slices fine but dies at gcode export, where
+        // ConfigOptionEnumsGenericTempl::serialize walks *this->keys_map
+        // (87fa2fa third-party 3MF, 2026-10-22: minimal config block →
+        // overhang_fan_threshold created null-keyed [50%x4], load and all
+        // 749 layers OK, SIGSEGV in append_full_config). The def default
+        // values are identical to the static member's, so this only adds the
+        // fixup.
+        ConfigOption* opt = config.option(key, true);
         if (!opt)
-        {
-            const ConfigOption* def = defaults.option(key);
-            if (!def)
-                continue;
-            config.set_key_value(key, def->clone());
-            opt = config.option(key, false);
-        }
+            continue;
         if (opt && opt->is_vector())
         {
             auto* vec = static_cast<ConfigOptionVectorBase*>(opt);
@@ -3273,11 +3281,13 @@ void SliceEngine::check_filament_bed_rules(int plate_id, Print& print)
 
 // Desktop parity helper (Plater.cpp collect_filament_slots_from_model_config,
 // :461-484 in the current checkout): the filament slots referenced by ONE
-// config layer (object or volume) are the primary extruder plus the six
-// per-feature filament keys. Values outside [1, num_filaments] (including
-// the "0 = inherit default" sentinel) are ignored, matching the desktop
-// collector exactly.
-static void collect_filament_slots_from_model_config(const ModelConfigObject& config,
+// config layer (object, volume, or layer-height range) are the primary
+// extruder plus the six per-feature filament keys. Values outside
+// [1, num_filaments] (including the "0 = inherit default" sentinel) are
+// ignored, matching the desktop collector exactly. Takes the ModelConfig
+// base so ModelConfigObject call sites bind by upcast and layer-range
+// ModelConfig values fit unchanged.
+static void collect_filament_slots_from_model_config(const ModelConfig& config,
                                                      int num_filaments,
                                                      std::set<int>& used_slots_0_based)
 {
@@ -3318,6 +3328,11 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     //       filament keys, so this source is inexpressible in cloud input;
     //  (ii) object config, (iii) every volume's config — modifiers included
     //       — plus per-volume extruders: collected in (a) below;
+    //  (ii+) layer-height-range configs — ENGINE-ONLY source (P-33): the
+    //       desktop collector never reads layer_config_ranges (upstream
+    //       issue#5 family); the engine deliberately collects them so
+    //       range-band extruder switches are mixing-checked. Divergence
+    //       is stricter-than-desktop by design; see (a) below;
     //  (iv) global always/conditional keys: (b)/(c) below.
     int num_filaments = 0;
     auto* ftype_opt = m_config.option<ConfigOptionStrings>("filament_type");
@@ -3351,6 +3366,18 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
             continue;
 
         collect_filament_slots_from_model_config(obj->config, num_filaments, used_slots);
+        // Layer-height ranges (engine-first addition, P-33): each range's
+        // ModelConfig overrides the per-feature filament keys for its z span,
+        // so a band can switch the print to another extruder mid-object.
+        // Desktop Plater::check_filament_temp_mixing() never reads
+        // layer_config_ranges (upstream issue#5 family) and waves range-only
+        // mixing through; the engine deliberately diverges stricter — the
+        // printed output really does change tools at the band boundary
+        // (repro fixture: T0+T1 toolchanges in the gcode while exit stays 0),
+        // so a high/low pair reachable this way is blocked like every other
+        // source. Same collector, same [1, num_filaments] guard.
+        for (const auto& range_entry : obj->layer_config_ranges)
+            collect_filament_slots_from_model_config(range_entry.second, num_filaments, used_slots);
         // An object without an explicit "extruder" key in its config
         // (or with extruder==0) inherits the global default.  This
         // matches the desktop Plater::check_filament_temp_mixing logic.
