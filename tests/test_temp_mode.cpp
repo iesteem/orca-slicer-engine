@@ -183,6 +183,32 @@ TEST_CASE("RED: modifier-volume ABS extruder + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
+// --- Layer-height range filaments (engine-only source, P-33). ---------------
+// A layer_config_ranges band switching wall/sparse/solid to the ABS slot is
+// real high/low mixing in the printed output: the repro fixture's gcode has
+// T0+T1 toolchanges at the band boundary (measured 2026-10-22, W2 round-2).
+// Desktop's collector never reads ranges (Plater issue#5 family) and slices
+// these through; the engine deliberately blocks them — a documented
+// stricter-than-desktop divergence.
+
+TEST_CASE("Layer-range ABS band + PLA body must fail temp mix",
+          "[integration][tempmode]")
+{
+    auto e = run_on(fixture("range_feature_abs_fail.3mf"), "rng_abs");
+    REQUIRE_FALSE(e->stats().success);
+    REQUIRE(e->exit_code() == EXIT_PREPROCESS_ERROR);
+    REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
+}
+
+TEST_CASE("Layer-range same-temperature band must not fail temp mix",
+          "[integration][tempmode]")
+{
+    auto e = run_on(fixture("range_same_temp_ok.3mf"), "rng_same");
+    REQUIRE(e->stats().success);
+    REQUIRE(e->exit_code() == 0);
+    REQUIRE_FALSE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
+}
+
 // --- Guard: the fix must NOT over-collect. ----------------------------------
 // A high-temp slot that is merely loaded but referenced by nothing must keep
 // slicing (kills a "collect all num_filaments slots" regression), and a second
