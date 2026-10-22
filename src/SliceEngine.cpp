@@ -724,10 +724,36 @@ void SliceEngine::sanitize_layer_config_ranges()
     // without a null check (fork Config.hpp) — the sanitizer then died with
     // SIGSEGV on the very input class it exists to guard. Fall back to the
     // same FullPrintConfig default the backfill installs moments later.
+    // The fallback arm itself needs a null check too: option<T>() returns
+    // nullptr for an absent key AND for a type mismatch, and a stale-header
+    // build once made this defaults() lookup return null — the bare ->value
+    // deref then compiled to a ud2 trap (87fa2fa third-party 3MF, 2026-10-21,
+    // load-stage SIGSEGV). Last resort is the PrintConfig default (0.2),
+    // surfaced as a warning so the substituted height stays attributable.
     const auto* global_lh = m_config.option<ConfigOptionFloat>("layer_height");
-    const double default_layer_height =
-        global_lh ? global_lh->value
-                  : FullPrintConfig::defaults().option<ConfigOptionFloat>("layer_height")->value;
+    double default_layer_height = 0.2;
+    if (global_lh)
+    {
+        default_layer_height = global_lh->value;
+    }
+    else
+    {
+        const auto* fallback = FullPrintConfig::defaults().option<ConfigOptionFloat>("layer_height");
+        if (fallback)
+        {
+            default_layer_height = fallback->value;
+        }
+        else
+        {
+            BOOST_LOG_TRIVIAL(error) << "layer_height resolvable from neither the 3MF config nor "
+                                        "FullPrintConfig::defaults(); height-range sanitizer falls "
+                                        "back to 0.2";
+            m_stats.issues.push_back(make_warning(
+                -1, "CONFIG_DEFAULT_UNAVAILABLE",
+                "Default layer height could not be resolved from engine defaults; height ranges "
+                "missing layer_height are set to 0.2mm"));
+        }
+    }
 
     for (ModelObject* obj : m_model.objects)
     {
