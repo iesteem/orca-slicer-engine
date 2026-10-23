@@ -2916,14 +2916,25 @@ void SliceEngine::push_build_volume_issues(int plate_id, const std::string& obje
 void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolume& build_volume,
                                                   const std::set<int>& identify_ids)
 {
-    // Matches desktop 3DScene.cpp:1105-1122.
+    // Matches desktop 3DScene.cpp:1105-1122, applied to the *effective*
+    // per-slot lift type: machine z_hop_types merged with the
+    // filament_z_hop_types override, the same merge Print::apply's
+    // print_config_diffs performs before G-code generation (P-35). Reading
+    // the raw machine key reports a false SPIRAL_LIFT_NEAR_BOUNDARY for jobs
+    // whose filament override disables spiral lift (SnapSpeed "Slope Lift"
+    // over U1 machine "Auto Lift" base) — after the P-35 GCode.cpp fix the
+    // runtime never spirals on those slots.
     bool spiral_lift_active = false;
     if (m_config.has("z_hop_types"))
     {
         auto* zht_opt = m_config.option<ConfigOptionEnumsGeneric>("z_hop_types");
         if (zht_opt)
         {
-            for (int v : zht_opt->values)
+            ConfigOption* effective = zht_opt->clone();
+            const ConfigOption* fil_override = m_config.option("filament_z_hop_types");
+            if (fil_override != nullptr && !fil_override->is_nil())
+                static_cast<ConfigOptionVectorBase*>(effective)->apply_override(fil_override);
+            for (int v : static_cast<ConfigOptionEnumsGeneric*>(effective)->values)
             {
                 if (v == static_cast<int>(ZHopType::zhtSpiral) || v == static_cast<int>(ZHopType::zhtAuto))
                 {
@@ -2931,6 +2942,7 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
                     break;
                 }
             }
+            delete effective;
         }
     }
     if (!spiral_lift_active || build_volume.type() != BuildVolume_Type::Rectangle)
