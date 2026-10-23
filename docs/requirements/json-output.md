@@ -129,6 +129,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.0 (2026-10-23 追加 P-35) | `SPIRAL_LIFT_NEAR_BOUNDARY` 触发条件精度化：判定源从机器域 `z_hop_types` 平键改为**有效值**（机器键 clone 后 `apply_override` 组合 `filament_z_hop_types`，镜像 PrintApply 合并语义）。code/level/消息不变，仅消除耗材覆盖已关掉螺旋时的误报（SnapSpeed Slope × 机器 Auto 基值场景实测两条误报→0） |
 | 2.2.0 (2026-10-19 修订) | **`error_message` → `error_code` 原地改名**（同日二次修订，2.2.0 未发布，support_free 改名先例）：内容从"与 slic3r_get_error 同串的人类可读摘要"改为"全部 error / serious_warning issue 的 code 英文逗号拼接（issues 列表序，不去重）"——旧摘要在 rc=6/7 恰好为空或泛化，聚合 code 精确归因。不变式改述为 success ⟺ exit_code==0 ⟺ error_code==""（全路径审计：所有 rc≠0 的 run() 出口均伴随 error/serious_warning issue，P-23 NO_PLATES_PRODUCED 已封掉最后一个无 issue 缺口）。C API `slic3r_get_error` 通道**不变**（仍返回结构体 error_message 摘要），JSON 不再镜像该串 |
 | 2.2.0 (2026-10-19 追加 P-28) | **文件通道**：显式 json_output_path 无条件落盘（含 rc=3/6 早期失败；CLI 因 main.c 预填而恒落盘）；2026-10-13 防垃圾文件决策收窄至"未传路径的 C API 直调方失败运行"。裸 `-j` 对齐为预填 `<output>.json`（原发空路径=只打印不落盘，与帮助文本矛盾）。报告字段与不变式不变 |
 | 2.2.0 (2026-10-19 追加) | 顶层新增 `exit_code`（int，恒输出：进程/C API 返回码原样镜像，棘轮语义勿从 issues 反推，值域 {0,3,4,5,6,7}，rc=1/99 无报告）与 `error_message`（string，恒输出：成功为空串、失败为人类可读摘要、与 slic3r_get_error 同串）。不变式 success ⟺ exit_code==0 ⟺ error_message==""。同时关闭 empty-plate-zero-product-rc.md 遗留项 2（"error_message 不进 JSON"） |
