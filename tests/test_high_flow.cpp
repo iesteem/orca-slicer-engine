@@ -407,3 +407,137 @@ TEST_CASE("Output path relocation is surfaced, not silent", "[integration][slice
     boost::filesystem::remove(contract_path, ec);
     boost::filesystem::remove(engine.output_path(), ec);
 }
+
+// ============================================================================
+// P-35: filament z_hop override must reach the G-code generator at runtime
+// ============================================================================
+
+// Count spiral-lift full circles (G3 with the P1 360-degree marker) per
+// current tool. _spiral_travel_to_z emits "G3 ... P1" once per forced
+// layer-change SpiralLift; ownership = the last T command before the arc.
+static std::map<int, int> spiral_full_circles_per_tool(const std::string& gcode)
+{
+    std::map<int, int> counts;
+    std::regex  tool_re(R"(^T(\d+))");
+    std::smatch m;
+    int         cur = -1;
+    std::istringstream iss(gcode);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (std::regex_search(line, m, tool_re))
+            cur = std::stoi(m[1]);
+        if (line.rfind("G3 ", 0) == 0 && line.find(" P1") != std::string::npos)
+            ++counts[cur];
+    }
+    return counts;
+}
+
+// List the packaged per-plate G-code entry names (e.g. "Metadata/plate_1.gcode").
+static std::vector<std::string> gcode_entries(const std::string& gcode_3mf_path)
+{
+    const std::string tmp = "/tmp/orca_test_zhop_entries.txt";
+    boost::filesystem::remove(tmp);
+    const std::string cmd =
+        "python3 -c \"import zipfile;"
+        "z=zipfile.ZipFile('" + gcode_3mf_path + "');"
+        "open('" + tmp + "','w').write(' '.join(n for n in z.namelist() if n.endswith('.gcode')))\"";
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    std::ifstream f(tmp);
+    REQUIRE(f.good());
+    std::vector<std::string> names;
+    std::string              line;
+    while (std::getline(f, line, ' '))
+        if (!line.empty())
+            names.push_back(line);
+    boost::filesystem::remove(tmp);
+    return names;
+}
+
+TEST_CASE("P-35: filament z_hop override reaches runtime, no spiral arcs (2033 field fixture)",
+          "[integration][zhop]")
+{
+    // Fixture = the recovered 2033 cloud-task input: bed-filling 270 mm
+    // walls-only cube (1350 layers) on Snapmaker U1 0.4, SnapSpeed x4. The
+    // project carries the full desktop-composed flow data
+    // (filament_z_hop_types = [Slope Lift x8], filament_flow_step_size =
+    // [2,2,2,2], interleaved filament_flow_support) while the machine base
+    // z_hop_types stays "Auto Lift" x4.
+    //
+    // Pre-P-35 (fork 376524d9a6 ordering bug in GCode::_do_export) the
+    // engine's generator config was re-clobbered with the PRE-override
+    // full-print-config snapshot, so the runtime saw flat Auto Lift ->
+    // every layer change forced SpiralLift -> 1344 full-circle G3 arcs per
+    // cube plate with r = 1.217 mm sweeping outside the bed (X -0.548) ->
+    // U1 firmware refused the file. Post-fix the override wins: lift
+    // resolves to Slope (straight ramps, line-identical to desktop 2.4.1
+    // output at the failure site), zero arcs, and the near-boundary warning
+    // must not fire because no slot's effective lift type stays
+    // spiral-active.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    const std::string out3mf = "/tmp/orca_test_zhop_repro.gcode.3mf";
+    {   // Pre-clean: an occupied output path silently relocates (P-17 trap).
+        boost::system::error_code ec;
+        boost::filesystem::remove(out3mf, ec);
+    }
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_spiral_zhop_repro.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_zhop_repro";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    // Success-path test: substitution/validation regressions surface as
+    // false failures here rather than silently passing.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    // Effective-value warning gate: the machine base is Auto Lift x4, but
+    // after the override every slot's effective lift is Slope. A
+    // SPIRAL_LIFT_NEAR_BOUNDARY warning here would be the false positive
+    // the P-35 check_spiral_lift_near_boundary fix removes.
+    for (const auto& iss : engine.stats().issues)
+    {
+        INFO("issue " << iss.code << " plate " << iss.plate_id);
+        REQUIRE(iss.code != "SPIRAL_LIFT_NEAR_BOUNDARY");
+    }
+
+    // Core regression: zero arcs on ANY plate (pre-fix: 1344 + 1344 + 4 + 4
+    // spiral full circles). The cube is polyhedral, so no legitimate G2/G3
+    // arc-fitting moves exist either — assert zero arcs of any kind, with
+    // per-tool spiral attribution in the failure message.
+    for (const auto& entry : gcode_entries(out3mf))
+    {
+        const std::string g = extract_3mf_text(out3mf, entry);
+        int arcs = 0;
+        std::istringstream iss(g);
+        std::string line;
+        while (std::getline(iss, line))
+            if (line.rfind("G2 ", 0) == 0 || line.rfind("G3 ", 0) == 0)
+                ++arcs;
+        const auto spirals = spiral_full_circles_per_tool(g);
+        int spiral_total = 0;
+        for (const auto& [tool, n] : spirals) spiral_total += n;
+        INFO(entry << ": arcs=" << arcs << " spirals=" << spiral_total
+                   << " per-tool=" << [&]{ std::ostringstream os; for (const auto& [t, n] : spirals) os << "T" << t << ":" << n << " "; return os.str(); }());
+        REQUIRE(arcs == 0);
+    }
+
+    // Config echo documents that the composed filament data survived the
+    // pipeline. NOTE (P-35 trap): the echo comes from the PRE-override
+    // full_print_config snapshot — it proves transport, not runtime; the
+    // arc assertions above pin the runtime side.
+    const std::string g1 = extract_3mf_text(out3mf, "Metadata/plate_1.gcode");
+    REQUIRE(g1.find("; filament_z_hop_types = Slope Lift,Slope Lift,Slope Lift,Slope Lift")
+            != std::string::npos);
+    REQUIRE(g1.find("; filament_flow_step_size = 2,2,2,2") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove(out3mf, ec);
+}
