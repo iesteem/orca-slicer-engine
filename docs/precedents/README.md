@@ -47,5 +47,5 @@
 | P-32 | slice_info 导入残留叠加：旧引擎产物污染源 3MF + parse 不清空 | slice-info-import-residue.md | 已修复（9cc51b7，2026-10-21） |
 | P-33 | 温度混用检测不收集 layer_config_ranges——高度范围换高低温槽被放行（引擎有意比桌面更严，P-30 路径 A 的姊妹案） | layer-range-temp-mixing-gap.md | 已修复（2026-10-22，W2 二批问题三路径 B；上游 issue#5 族待对齐） |
 | P-34 | 病态 infill 内存爆炸：sparse infill 退化为微米级段，G-code 生成段 ~19MB/层无界增长（Faceted_Bowl_2，桌面同件 exit 2） | degenerate-infill-memory-blowup.md | 未修复（部署层缓解：cgroup/看门狗，引擎无护栏） |
-| P-35 | `_do_export` 用覆盖前 full_print_config 快照冲掉 print.config() 的耗材域 retract 覆盖（fork 376524d9a6 顺序反了）→ U1 机器 Auto 基值换层强制螺旋整圆扫出热床固件拒打；波及整个 extruder_retract 覆盖键族 | gcode-export-override-clobber.md | 已修复（2026-10-23，Up 侧重排序 + 引擎告警有效值化；回显=覆盖前快照的陷阱在案） |
+| P-35 | `_do_export` 用覆盖前 full_print_config 快照冲掉 print.config() 的耗材域 retract 覆盖（fork 376524d9a6 顺序反了）→ U1 机器 Auto 基值换层强制螺旋整圆扫出热床固件拒打；波及整个 extruder_retract 覆盖键族；S2 跟进：官方 flow-variant 段重写关闭 nil/旧值 3MF 类缺口 | gcode-export-override-clobber.md | 已修复（2026-10-23，Up 侧重排序 + 引擎告警有效值化 + S2 `overwrite_flow_variant_segment`；回显=覆盖前快照的陷阱在案） |
 | — | 测试分层：锚点 vs 实现细节 | test-layering.md | 重构验收协议 |

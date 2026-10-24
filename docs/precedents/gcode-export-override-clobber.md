@@ -96,19 +96,33 @@ Wood 槽 300/300 全螺旋 = 按槽生效），引擎全槽螺旋 = 覆盖被冲
    之外都被 Slope 覆盖关掉。
 4. **「10-16 产物系陈旧构建」**：当前 HEAD 活体复现，排除。
 
-## 残留分歧（S2 后续项，2026-10-23 外部复核确认）
+## S2 跟进（同日落地）：官方 flow-variant 段重写，关闭 nil/旧值类缺口
 
-`overwriteExtruderFrom` skip 仍是真实缺口，但作用于**另一类输入**：3MF
-携带 nil/旧值 flow-variant 键（旧版桌面导出、转换工具、App 生成文件）。
-桌面 `PresetCollection::load_external_preset`（Preset.cpp:2121-2150）会把
-不在 different_settings_to_system 里的键恢复成系统预设值（已核验），引擎
-无对应刷新 → 此类文件修复 P-35 后仍与桌面分歧（nil→机器 front=Auto→
-螺旋，桌面 Slope）。补法：在 overwriteExtruderFrom 内加逐槽分段感知写入
-（`OverwriteFlowVariantSegment`——旧/新段长重排、段内不足回退预设第 0 值、
-**只写 filament_\* 键不碰 z_hop_types**，覆盖交给 Print::apply——外部复核
-提供的设计骨架）；配套回归测试：全槽 nil 的 3mf 替换后断言
-`get_value_at(..., ConfigFlowDomain::Filament, i)` == Slope。属 P-15
-wholesale 语义完备性，行为变化面（其余 18 个 flow 键改用官方值）需 PR 明示。
+P-35 修复后残留的分歧类（2026-10-23 外部复核确认）：3MF 携带 nil/旧值
+flow-variant 键（旧版桌面导出、转换工具、App 生成文件）。桌面
+`PresetCollection::load_external_preset`（Preset.cpp:2121-2150）会把不在
+different_settings_to_system 里的键恢复成系统预设值；引擎原本无对应刷新
+→ nil 整选项被 `append_full_config`/`print_config_diffs` 的 is_nil 门跳过
+→ 机器基值获胜（Auto→螺旋）。实测 nil 形态（现场 3mf 派生
+`u1_spiral_zhop_nil.3mf`）：P-35 修复已在的情况下仍 **2696 条整圆**
+（1344×2+4×2）——S2 类失败独立于 P-35，互补关系实证。
+
+**修复**（`src/PresetRollback.cpp` `overwrite_flow_variant_segment`，外部
+复核提供骨架）：overwriteExtruderFrom 平铺循环**前**按分段重写本槽全部
+19 个 flow 键 + `filament_flow_support`——槽段长=该预设 `filament_flow_support`
+声明数（缺省 1），段内不足回退预设第 0 值（同桌面 full_fff_config 填充
+规则），兄弟槽按旧段长重排（clone 快照防自引用），写回
+`filament_flow_step_size`。**只写 filament_\* 键，机器键覆盖仍归
+Print::apply**。平铺循环的 continue 保留（双保险）。行为变化面：其余 18 个
+flow 键（PA、温度、回抽等）改用官方预设值——P-15 wholesale 语义的完备，
+与引擎"其它耗材键全部用官方值"策略一致。
+
+**验证**：`[zhop]` 双用例绿（现场件重写等值不受扰；nil 件 0 弧 + 回显
+Slope×4 + 无螺旋误报）；红证=实现前 nil 件 2696 弧 + 告警触发；
+`[preset]` 8 例绿（C3 用例断言按分段语义更新：flow 键长度=Σ声明段长
+[1,2,1,2]=6，另钉 step_size 向量等值）；`[highflow]` 3 例绿（**速度无
+漂移**——官方 SnapSpeed 预设值与项目组合值一致，P-15 担忧的 T4/T5
+漂移未发生）；`[pathconflict]` 6 例绿；全量见 junit。
 
 另：螺旋半径公式中 travel_slope=3 为**度数**，运算时须换算弧度
 （r = hop/(2π·tan(3°))）；本判例历史文本中 "arctan(3°)" 为数学简写，
