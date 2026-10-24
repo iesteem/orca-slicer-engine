@@ -454,6 +454,34 @@ static std::vector<std::string> gcode_entries(const std::string& gcode_3mf_path)
     return names;
 }
 
+// Assert no G2/G3 arc moves on any plate of the packaged output, with
+// per-tool spiral attribution in the failure message. Shared regression
+// guard for the P-35 field fixture (correct composed data) and the S2
+// nil-variant fixture (stale/nil project data).
+static void require_zero_arcs_all_plates(const std::string& gcode_3mf_path)
+{
+    for (const auto& entry : gcode_entries(gcode_3mf_path))
+    {
+        const std::string g = extract_3mf_text(gcode_3mf_path, entry);
+        int arcs = 0;
+        std::istringstream iss(g);
+        std::string line;
+        while (std::getline(iss, line))
+            if (line.rfind("G2 ", 0) == 0 || line.rfind("G3 ", 0) == 0)
+                ++arcs;
+        const auto spirals = spiral_full_circles_per_tool(g);
+        int         spiral_total = 0;
+        for (const auto& [tool, n] : spirals)
+            spiral_total += n;
+        std::ostringstream per_tool;
+        for (const auto& [t, n] : spirals)
+            per_tool << "T" << t << ":" << n << " ";
+        INFO(entry << ": arcs=" << arcs << " spirals=" << spiral_total
+                   << " per-tool=" << per_tool.str());
+        REQUIRE(arcs == 0);
+    }
+}
+
 TEST_CASE("P-35: filament z_hop override reaches runtime, no spiral arcs (2033 field fixture)",
           "[integration][zhop]")
 {
@@ -510,29 +538,73 @@ TEST_CASE("P-35: filament z_hop override reaches runtime, no spiral arcs (2033 f
 
     // Core regression: zero arcs on ANY plate (pre-fix: 1344 + 1344 + 4 + 4
     // spiral full circles). The cube is polyhedral, so no legitimate G2/G3
-    // arc-fitting moves exist either — assert zero arcs of any kind, with
-    // per-tool spiral attribution in the failure message.
-    for (const auto& entry : gcode_entries(out3mf))
-    {
-        const std::string g = extract_3mf_text(out3mf, entry);
-        int arcs = 0;
-        std::istringstream iss(g);
-        std::string line;
-        while (std::getline(iss, line))
-            if (line.rfind("G2 ", 0) == 0 || line.rfind("G3 ", 0) == 0)
-                ++arcs;
-        const auto spirals = spiral_full_circles_per_tool(g);
-        int spiral_total = 0;
-        for (const auto& [tool, n] : spirals) spiral_total += n;
-        INFO(entry << ": arcs=" << arcs << " spirals=" << spiral_total
-                   << " per-tool=" << [&]{ std::ostringstream os; for (const auto& [t, n] : spirals) os << "T" << t << ":" << n << " "; return os.str(); }());
-        REQUIRE(arcs == 0);
-    }
+    // arc-fitting moves exist either.
+    require_zero_arcs_all_plates(out3mf);
 
     // Config echo documents that the composed filament data survived the
     // pipeline. NOTE (P-35 trap): the echo comes from the PRE-override
     // full_print_config snapshot — it proves transport, not runtime; the
     // arc assertions above pin the runtime side.
+    const std::string g1 = extract_3mf_text(out3mf, "Metadata/plate_1.gcode");
+    REQUIRE(g1.find("; filament_z_hop_types = Slope Lift,Slope Lift,Slope Lift,Slope Lift")
+            != std::string::npos);
+    REQUIRE(g1.find("; filament_flow_step_size = 2,2,2,2") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove(out3mf, ec);
+}
+
+TEST_CASE("S2: official flow-variant segment replaces nil project data", "[integration][zhop][nilvariant]")
+{
+    // Fixture derived from the 2033 field input (u1_spiral_zhop_repro.3mf):
+    // identical except filament_z_hop_types is nil x8 — the "stale/nil
+    // flow data" input class (old desktop exports, converter tools,
+    // App-generated files). Desktop refreshes such keys from the system
+    // preset on project load (PresetCollection::load_external_preset,
+    // Preset.cpp:2121-2150 restores keys outside different_settings_to_
+    // system); pre-S2 the engine's overwriteExtruderFrom skipped the whole
+    // flow-variant family, so nil survived substitution -> the machine base
+    // "Auto Lift" won at runtime -> 1344+1344 spiral full circles per run
+    // (nil never engages the PrintApply override: whole-option is_nil).
+    //
+    // Post-S2 the official SnapSpeed segment [Slope Lift, Slope Lift] is
+    // rewritten per slot before the flat copy loop: zero arcs, echo
+    // collapses to Slope x4, no near-boundary false warning.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    const std::string out3mf = "/tmp/orca_test_zhop_nil.gcode.3mf";
+    {   // Pre-clean: an occupied output path silently relocates (P-17 trap).
+        boost::system::error_code ec;
+        boost::filesystem::remove(out3mf, ec);
+    }
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_spiral_zhop_nil.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_zhop_nil";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    // Effective lift is Slope on every slot after the official rewrite.
+    for (const auto& iss : engine.stats().issues)
+    {
+        INFO("issue " << iss.code << " plate " << iss.plate_id);
+        REQUIRE(iss.code != "SPIRAL_LIFT_NEAR_BOUNDARY");
+    }
+
+    // Pre-S2: 1344 + 1344 spiral full circles (nil -> machine Auto ->
+    // forced SpiralLift). Same zero-arc guard as the field fixture.
+    require_zero_arcs_all_plates(out3mf);
+
+    // The composed filament key now carries the OFFICIAL preset segment
+    // (was nil passthrough pre-S2 — echo said "nil,nil,nil,nil").
     const std::string g1 = extract_3mf_text(out3mf, "Metadata/plate_1.gcode");
     REQUIRE(g1.find("; filament_z_hop_types = Slope Lift,Slope Lift,Slope Lift,Slope Lift")
             != std::string::npos);

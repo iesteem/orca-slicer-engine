@@ -32,6 +32,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <vector>
 
 #include "libslic3r/Config.hpp"       // DynamicPrintConfig, ConfigOptionStrings, ForwardCompatibilitySubstitutionRule
@@ -360,15 +361,34 @@ TEST_CASE("Truncated per-filament vectors normalized to slot count", "[integrati
     REQUIRE(fsi);
     REQUIRE(fsi->values.size() == 4);
 
-    // The six truncated vectors must be normalized back to the slot count
-    // (nozzle_temperature* are flow-variant keys: sizing is their fix, their
-    // values are never per-slot overwritten).
-    for (const char* key : {"filament_type", "filament_diameter", "filament_colour",
-                            "nozzle_temperature", "nozzle_temperature_initial_layer",
-                            "cool_plate_temp"})
+    // The six truncated vectors must be normalized back to the slot count.
+    // Flat per-slot keys: exactly 4. Flow-variant keys (nozzle_temperature*)
+    // are SEGMENTED after P-35 S2 (overwrite_flow_variant_segment rewrites
+    // this slot's segment from the official preset): their length is the sum
+    // of the substituted presets' declared variant counts — the same layout
+    // desktop full_fff_config composes — not the flat slot count.
+    std::vector<int> expected_steps;
+    for (size_t i = 0; i < fsi->values.size(); ++i)
+    {
+        const Preset* f = bundle->filaments.find_preset(fsi->values[i], false);
+        const auto* supp = f ? f->config.option<ConfigOptionStrings>("filament_flow_support") : nullptr;
+        expected_steps.push_back((supp && !supp->values.empty()) ? static_cast<int>(supp->values.size()) : 1);
+    }
+    const auto* steps = mc.option<Slic3r::ConfigOptionInts>("filament_flow_step_size");
+    REQUIRE(steps);
+    CHECK(steps->values == expected_steps);
+    size_t composed_len = 0;
+    for (int v : expected_steps)
+        composed_len += static_cast<size_t>(std::max(1, v));
+    for (const char* key : {"filament_type", "filament_diameter", "filament_colour", "cool_plate_temp"})
     {
         INFO("key " << key);
         CHECK(vector_opt_length(mc, key) == 4);
+    }
+    for (const char* key : {"nozzle_temperature", "nozzle_temperature_initial_layer"})
+    {
+        INFO("key " << key);
+        CHECK(vector_opt_length(mc, key) == composed_len);
     }
 
     // run_preset_substitution_only also runs normalize_loaded_config, so the
