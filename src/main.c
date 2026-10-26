@@ -196,13 +196,10 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json"))
         {
-            /* Bare flag (no value) behaves like an omitted flag: left NULL,
-             * the <output>.json prefill below fills it in. The old "" value
-             * reached the engine as an empty path, which printed the stats
-             * dump but never wrote the file — contradicting the help text
-             * "Default: auto-derived" (aligned 2026-10-19, P-28). */
             if (i + 1 < argc && argv[i+1][0] != '-')
                 json_output = argv[++i];
+            else
+                json_output = "";  // flag present, no value → auto-derive
         }
         else if (argv[i][0] != '-')
         {

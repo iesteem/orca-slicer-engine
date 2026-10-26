@@ -21,10 +21,7 @@
 
 > 2026-10-19 起退出码同步镜像进 JSON 统计报告顶层 `exit_code` 字段
 > （原样发射，棘轮语义；rc=1/99 不产出报告），语义详见
-> docs/requirements/json-output.md。同日 P-28：**文件通道**对显式
-> json_output_path 无条件写——CLI（main.c 恒预填路径）下任何引擎执行过
-> 的失败（含 rc=3/6）都落盘 JSON；"无文件=无报告"仅剩 rc=1/99 与
-> 未传路径的 C API 直调方失败运行。
+> docs/requirements/json-output.md。
 
 ## Issue level 四级
 
@@ -117,6 +114,5 @@ INTERNAL_FATAL（引擎内部缺陷，出现即 bug）。
 
 | 版本 | 变更 |
 |---|---|
-| 2.2.0 (2026-10-19 追加) | 退出码值与语义零变更；P-28 收窄"无 JSON 文件"场景语义注记（见顶部引注）：显式 json_output_path 下引擎执行过的失败（含 rc=3/6）均落盘报告文件 |
 | 2.2.0 (2026-10-10) | 新增 `NO_PLATES_PRODUCED`（error）、`PLATE_MEMBERSHIP_REBUILT`（tip）、`INSTANCE_NOT_ON_ANY_PLATE`（warning），新设"盘选择与归属"分组（P-19/P-23/P-24），全表 68→71；`PLATE_NOT_FOUND` 自"输入/加载（exit 3）"组移入该组并修正为 exit 6（文档分组修正，发射点行为未变）。本周期同含 P-19 语义：`NO_PRINTABLE_OBJECTS` 定级 warning 良性跳过、新增 `EMPTY_PLATE`、零产物兜底 exit 6 |
 | v02.01.07 (2026-09-24) | 新增 `PLATE_DATA_SYNTHESIZED`（tip）、`PLATELESS_NO_PRINTABLE_INSTANCES`（error）（P-22，版本号后 bump 为 2.2.0，随 2.2.0 发布） |

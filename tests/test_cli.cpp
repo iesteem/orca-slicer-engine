@@ -165,7 +165,7 @@ TEST_CASE("CLI: unknown -f format rejected", "[integration][cli][validation]")
 // rejected). All six option groups now exit 1 naming the exact flag form.
 // GENERATE runs each flag as an independent case: one regression must not
 // mask the other nine. --log/-j keep their documented optional-value
-// semantics — bare --log is pinned below, bare -j by the P-28 json test.
+// semantics — bare --log is pinned below.
 // ============================================================================
 
 TEST_CASE("CLI: value-taking option ending command line bare is rejected", "[integration][cli][validation]")
@@ -253,63 +253,4 @@ TEST_CASE("CLI: deprecated --skip-preset-substitution silently ignored, slice pr
     rm("/tmp/orca_cli_dep.json");
     rm("/tmp/orca_cli_dep.log");
     rm("/tmp/orca_cli_capture.txt");
-}
-
-// ============================================================================
-// (P-28, 2026-10-19) JSON stats file on early failure — main.c always passes
-// a json_output_path (explicit -j value, or the <output>.json prefill), so
-// EVERY CLI run whose engine executed must land the JSON file, including
-// early-failure exits (rc=6 PRESETS_MISSING below, via an empty resources
-// dir). Pre-P-28 the write was guarded on engine.output_path() alone and the
-// file was silently skipped on all pre-resolve failures. Also pins the bare
-// `-j` alignment: the flag without a value now pre-fills <output>.json like
-// an omitted flag (it used to send an empty path — dump printed, no file).
-// ============================================================================
-
-TEST_CASE("CLI: json stats file written on early failure; bare -j pre-fills (P-28)", "[integration][cli][json]")
-{
-    const std::string empty_res = "/tmp/orca_cli_empty_res";
-    boost::system::error_code ec;
-    boost::filesystem::create_directories(empty_res, ec); // stays empty: no vendor JSONs
-
-    // Pre-clean: stale files from a previous run must not satisfy exists()
-    // vacuously (test-artifact-stale-trap).
-    rm("/tmp/orca_cli_p28.json");
-    rm("/tmp/orca_cli_p28b.json");
-    rm("/tmp/orca_cli_p28.log");
-    rm("/tmp/orca_cli_p28b.log");
-
-    // Explicit -j value: file at the requested path even though rc=6.
-    CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" + empty_res
-                          + "\" -o /tmp/orca_cli_p28 -j /tmp/orca_cli_p28");
-    INFO(r.out);
-    REQUIRE(r.exited);
-    REQUIRE(r.exit_code == 6);
-    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_p28.json"));
-    {
-        std::ifstream ifs("/tmp/orca_cli_p28.json");
-        auto jf = nlohmann::json::parse(ifs);
-        REQUIRE(jf["exit_code"].get<int>() == 6);
-        REQUIRE(jf["error_code"].get<std::string>() == "PRESETS_MISSING");
-    }
-
-    // Bare -j (no value): pre-fills <output>.json, same unconditional write.
-    CliResult rb = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" + empty_res
-                           + "\" -o /tmp/orca_cli_p28b -j");
-    INFO(rb.out);
-    REQUIRE(rb.exited);
-    REQUIRE(rb.exit_code == 6);
-    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_p28b.json"));
-    {
-        std::ifstream ifs("/tmp/orca_cli_p28b.json");
-        auto jf = nlohmann::json::parse(ifs);
-        REQUIRE(jf["exit_code"].get<int>() == 6);
-    }
-
-    rm("/tmp/orca_cli_p28.json");
-    rm("/tmp/orca_cli_p28b.json");
-    rm("/tmp/orca_cli_p28.log");
-    rm("/tmp/orca_cli_p28b.log");
-    rm("/tmp/orca_cli_capture.txt");
-    boost::filesystem::remove_all(empty_res, ec);
 }

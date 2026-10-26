@@ -124,10 +124,8 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     // the visible issues imply — never recompute from issues). Domain is
     // {0,3,4,5,6,7} on JSON-emitting paths; rc=1 (bad args) and rc=99
     // (exception escape) never produce a report at all — absence of the file
-    // means "no report", not exit_code 1/99. File-channel nuance (P-28):
-    // a caller-supplied json_output_path is written on ANY engine-executed
-    // exit (early rc=3/6 included); the stats_out buffer always carries the
-    // report regardless.
+    // means "no report", not exit_code 1/99. The stats_out buffer carries
+    // this report regardless of whether the file channel fired.
     root["exit_code"] = stats.exit_code;
     // error_code: English-comma-joined `code` of every error / serious_warning
     // issue, in issue-list order (finalise_statistics stable-sorts that list

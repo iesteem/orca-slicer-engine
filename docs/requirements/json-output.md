@@ -8,13 +8,7 @@
 ## 输出位置
 
 - stdout：包裹在 `=== SLICE STATISTICS (JSON) ===` / `=== END STATISTICS ===` 之间
-- 文件：`-j`/`--json` 指定路径（写入失败仅 warning，不影响退出码）。
-  **显式路径无条件写**（P-28，2026-10-19）：调用方给了 json_output_path
-  （CLI 显式 `-j`、裸 `-j` 预填、或不传 `-j` 时 main.c 的 `<output>.json`
-  预填）即落盘——**含引擎执行过的早期失败出口**（rc=3/6 等，此时引擎尚
-  未解析输出路径）。仅"未传 json_output_path 的 C API 直调方 + 失败运行"
-  不落盘（2026-10-13 防垃圾文件决策收窄至此场景；此前该守卫误伤一切
-  显式路径）
+- 文件：`-j`/`--json` 指定路径（写入失败仅 warning，不影响退出码）
 - 缩进 2 空格，UTF-8
 
 ## 编号约定
@@ -40,8 +34,7 @@
                                       // 后，后续 6-stamp 是 no-op），**禁止从 issues 反推**。
                                       // 值域 {0,3,4,5,6,7}；rc=1（参数错）/rc=99（异常
                                       // 逃逸）**不产出任何报告**——文件缺席 = 无报告，
-                                      // 绝非 exit_code 1/99（文件通道缺席的其余场景见
-                                      // "已知语义注意点"末条，P-28）
+                                      // 绝非 exit_code 1/99
   "error_code": "",                   // string；恒输出，成功为空串（确定值"无错误"，
                                       // 非未知，故不属"缺席=未知"家族）。内容 = 全部
                                       // level 为 error / serious_warning 的 issue 的
@@ -131,7 +124,6 @@
 |---|---|
 | 2.2.0 (2026-10-23 追加 P-35) | `SPIRAL_LIFT_NEAR_BOUNDARY` 触发条件精度化：判定源从机器域 `z_hop_types` 平键改为**有效值**（机器键 clone 后 `apply_override` 组合 `filament_z_hop_types`，镜像 PrintApply 合并语义）。code/level/消息不变，仅消除耗材覆盖已关掉螺旋时的误报（SnapSpeed Slope × 机器 Auto 基值场景实测两条误报→0） |
 | 2.2.0 (2026-10-19 修订) | **`error_message` → `error_code` 原地改名**（同日二次修订，2.2.0 未发布，support_free 改名先例）：内容从"与 slic3r_get_error 同串的人类可读摘要"改为"全部 error / serious_warning issue 的 code 英文逗号拼接（issues 列表序，不去重）"——旧摘要在 rc=6/7 恰好为空或泛化，聚合 code 精确归因。不变式改述为 success ⟺ exit_code==0 ⟺ error_code==""（全路径审计：所有 rc≠0 的 run() 出口均伴随 error/serious_warning issue，P-23 NO_PLATES_PRODUCED 已封掉最后一个无 issue 缺口）。C API `slic3r_get_error` 通道**不变**（仍返回结构体 error_message 摘要），JSON 不再镜像该串 |
-| 2.2.0 (2026-10-19 追加 P-28) | **文件通道**：显式 json_output_path 无条件落盘（含 rc=3/6 早期失败；CLI 因 main.c 预填而恒落盘）；2026-10-13 防垃圾文件决策收窄至"未传路径的 C API 直调方失败运行"。裸 `-j` 对齐为预填 `<output>.json`（原发空路径=只打印不落盘，与帮助文本矛盾）。报告字段与不变式不变 |
 | 2.2.0 (2026-10-19 追加) | 顶层新增 `exit_code`（int，恒输出：进程/C API 返回码原样镜像，棘轮语义勿从 issues 反推，值域 {0,3,4,5,6,7}，rc=1/99 无报告）与 `error_message`（string，恒输出：成功为空串、失败为人类可读摘要、与 slic3r_get_error 同串）。不变式 success ⟺ exit_code==0 ⟺ error_message==""。同时关闭 empty-plate-zero-product-rc.md 遗留项 2（"error_message 不进 JSON"） |
 | 2.2.0 (2026-10-10) | 顶层新增可选 `resources_version`（vendor profile 版本原样回显，缺席=未知）；`print_info_total` 新增可选 `support_free`（gcode 实际层：true=零支撑挤出，仅整体 success 时输出）与 `mixed_filament_used`（plates[] 非空即输出，输入文件属性）；`plates[]` success 组新增 `support_free`（同 gcode 实际层语义）。三者缺席一律=未知，非 false/空串；support_free 缺席坍缩在保守侧（"有支撑"）。同版 issue 码新增见 exit-codes.md（NO_PLATES_PRODUCED、PLATE_MEMBERSHIP_REBUILT、INSTANCE_NOT_ON_ANY_PLATE） |
 | v02.01.07 (2026-09-24) | 无 plate 元数据 3MF 合成单盘：`issues[]` 新增 tip 级 `PLATE_DATA_SYNTHESIZED`；此类文件 plates[] 首次可含成功盘（plate_id=1、无 model_thumbnail） |
@@ -157,10 +149,10 @@
   支撑）只能由显式 true 到达，缺席/误读缺省全部坍缩到保守侧"有支撑"。
 - `exit_code` / `error_code` 与上述家族**刻意相反**：恒输出，空串/
   0 是确定值而非未知（空 error_code = "确无错误"）。下游读 verdict
-  无需 contains() 判断。**文件通道**缺席（无 JSON 文件）只发生在：rc=1
-  （参数错，含 CLI 侧）、rc=99（异常逃逸），或"未传 json_output_path 的
-  C API 直调方 + 失败运行"（P-28 收窄后的 2026-10-13 防垃圾文件决策）；
-  CLI 传了路径（含预填）则任何引擎执行过的失败都落盘。文件缺席时
+  无需 contains() 判断。**文件通道**缺席（无 JSON 文件）发生在：rc=1
+  （参数错，含 CLI 侧）、rc=99（异常逃逸），以及引擎尚未解析输出路径
+  的早期失败出口（rc=3/6——写入守卫整体跳过，即使调用方显式传了
+  json_output_path；2026-10-13 防垃圾文件决策的守卫面）。文件缺席时
   stats_out（C API 进程内）通常仍有完整报告——缺席 = 该通道无报告，
   应回退读进程返回码与 `slic3r_get_error`，**不得**当作 exit_code=1/99
   或空 error_code 解析。

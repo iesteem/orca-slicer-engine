@@ -238,64 +238,15 @@ TEST_CASE("C API: missing presets fails cleanly; deprecated skip_preset_substitu
     // exit_code + error_code (2026-10-19): the JSON mirrors the process rc
     // verbatim, and error_code aggregates the codes of every error /
     // serious_warning issue — here exactly the PRESETS_MISSING error above.
-    // Delivery channel: this call passes NO json_output_path, and the guard
-    // fires BEFORE resolve_output_path — so no JSON file lands on disk
-    // (2026-10-13 no-litter decision, narrowed by P-28: a caller-supplied
-    // json_output_path WOULD write the file even here; see the P-28 case
-    // below). In-process consumers see this report only via stats_out.
+    // This case also pins the delivery channel: the guard fires BEFORE
+    // resolve_output_path, so no JSON file lands on disk — in-process
+    // consumers see this report only via stats_out.
     REQUIRE(j["exit_code"].get<int>() == rc);
     REQUIRE(j["error_code"].get<std::string>() == "PRESETS_MISSING");
     REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_p09.json"));
 
     rm("/tmp/orca_capi_p09.json");
     rm("/tmp/orca_capi_p09.log");
-    slic3r_destroy(ctx);
-    boost::filesystem::remove_all(empty_res, ec);
-    restore_dirs();
-}
-
-// ============================================================================
-// (P-28, 2026-10-19) A caller-supplied json_output_path must be written
-// UNCONDITIONALLY — including early-failure exits (rc=6 PRESETS_MISSING here)
-// where the engine never resolved an output path. Before P-28 the write was
-// guarded on engine.output_path() alone, so an explicit JSON path was silently
-// ignored on every pre-resolve failure. Callers that omit json_output_path
-// keep the no-file behaviour (pinned by the P-09 case above).
-// ============================================================================
-
-TEST_CASE("C API: explicit json_output_path written on early failure (P-28)", "[integration][capi][presets]")
-{
-    const std::string empty_res = "/tmp/orca_capi_empty_res";
-    boost::system::error_code ec;
-    boost::filesystem::create_directories(empty_res, ec); // stays empty: no vendor JSONs
-
-    // Pre-clean: a stale file from a previous run would make the exists()
-    // assertion pass vacuously (test-artifact-stale-trap).
-    rm("/tmp/orca_capi_p28j.json");
-    rm("/tmp/orca_capi_p28j.log");
-
-    slic3r_ctx_t* ctx = slic3r_create(empty_res.c_str());
-    REQUIRE(ctx != nullptr);
-
-    const char* params = R"({"json_output_path":"/tmp/orca_capi_p28j","log_path":"/tmp/orca_capi_p28j.log"})";
-    char stats[32768] = {0};
-    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE, "/tmp/orca_capi_p28j", params, stats, sizeof(stats));
-
-    REQUIRE(rc == SLIC3R_ERR_PREPROCESS);
-    REQUIRE(std::string(slic3r_get_error(ctx)).find("presets") != std::string::npos);
-
-    // The file channel now carries the same report stats_out does.
-    REQUIRE(boost::filesystem::exists("/tmp/orca_capi_p28j.json"));
-    std::ifstream ifs("/tmp/orca_capi_p28j.json");
-    auto jf = nlohmann::json::parse(ifs);
-    REQUIRE(jf["exit_code"].get<int>() == rc);
-    REQUIRE(jf["error_code"].get<std::string>() == "PRESETS_MISSING");
-    // On a failed run output_file is emitted empty by contract (success ?
-    // output_file_path : "") — the engine never resolved one here.
-    REQUIRE(jf["print_info_total"].value("output_file", std::string("sentinel")) == "");
-
-    rm("/tmp/orca_capi_p28j.json");
-    rm("/tmp/orca_capi_p28j.log");
     slic3r_destroy(ctx);
     boost::filesystem::remove_all(empty_res, ec);
     restore_dirs();
