@@ -146,8 +146,6 @@
   ——两者口径不同。
 - all-or-nothing 打包（P-05）下，任一盘失败 → `success=false` 且
   `output_file=""`，即使其余盘切片成功（其 per-plate 数据仍在 plates[] 里）。
-  调试开关 `--keep-failed-gcode3mf`（2026-10-20）会在 rc=7 时把 gcode.3mf
-  落盘，但**不改变本契约**：`output_file` 仍为 ""（产物是取证用，非交付）。
 - 无 plate 元数据的 3MF（第三方导出）按桌面 Orca 语义合成单盘切全部
   printable 实例，并发 tip 级 `PLATE_DATA_SYNTHESIZED`（云端可用其区分
   "真单盘文件"与"无盘文件被合成"）；合成盘无缩略图源，

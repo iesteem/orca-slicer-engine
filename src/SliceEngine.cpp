@@ -4184,49 +4184,17 @@ void SliceEngine::process_requested_plates()
 // EMPTY_PLATE issue). m_error_type is only raised when still EXIT_OK so a
 // more specific failure code recorded earlier (slicing=4, etc.) is not
 // masked by the generic preprocess code.
-//
-// Debug-only exception (2026-10-20, forensics hatch in the spirit of
-// ORCA_KEEP_FAILED_GCODE / P-27): with cfg.keep_failed_gcode3mf set, a run
-// whose worst failure class is EXIT_POSTPROCESS_ERROR (rc=7 — every flagged
-// plate still sliced and its G-code exists on disk) packages the gcode.3mf
-// anyway so a human can inspect the toolpaths (confirm/refute
-// TOOLPATH_OUTSIDE / TOOLPATH_CONFLICT). The CONTRACT is untouched: rc
-// stays 7, the JSON stays success=false with output_file="" — the artifact
-// is evidence, not delivery. rc=4/5/6 suppress output even with the flag.
 void SliceEngine::finalize_output()
 {
     bool has_output = !m_plate_results.empty();
 
-    // m_error_type is a numeric-max ratchet, so == EXIT_POSTPROCESS_ERROR
-    // means no failure class above 7 occurred (validation=6, slicing=4,
-    // export=5 all lose the ratchet to 7 and their plates carry no G-code
-    // entry anyway). Additionally require at least one plate G-code file on
-    // disk: an all-empty-layer run stamps 7 too, but remove_unusable_gcode
-    // already discarded every file — packaging a gcode.3mf with zero
-    // embedded G-code would be a junk artifact. Plates whose file is
-    // missing (empty-layer discard) are skipped per plate by the exporter's
-    // exists() guard (bbs_3mf.cpp:6194/8036).
-    bool keep_failed_package =
-        m_cfg.keep_failed_gcode3mf && m_any_error &&
-        m_error_type == EXIT_POSTPROCESS_ERROR &&
-        std::any_of(m_plate_results.begin(), m_plate_results.end(),
-                    [](const std::pair<const int, PlateSliceResult>& r) {
-                        return boost::filesystem::exists(r.second.gcode_path);
-                    });
-    if (keep_failed_package)
-        BOOST_LOG_TRIVIAL(warning)
-            << "[keep-failed-gcode3mf] debug flag active: packaging gcode.3mf "
-               "despite rc=7 (postprocess failure) for inspection — exit code "
-               "and JSON report are unchanged";
-
     // Package output — only if no errors occurred
-    if (has_output && (!m_any_error || keep_failed_package) &&
-        (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
+    if (has_output && !m_any_error && (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
         package_output();
 
     // For single-plate GCODE mode, the file is written directly to m_output_path
     // during export_gcode. Remove it if errors occurred.
-    if (m_any_error && !keep_failed_package && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
+    if (m_any_error && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
     {
         boost::filesystem::remove(m_output_path);
     }

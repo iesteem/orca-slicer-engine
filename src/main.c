@@ -115,7 +115,6 @@ int main(int argc, char* argv[])
     int         timeout_sec = 0;
     int         max_size_mb = 0;
     const char* cancel_file = NULL;
-    int         keep_failed_gcode3mf = 0;
 
     /* Parse CLI arguments */
     for (int i = 1; i < argc; i++)
@@ -134,9 +133,6 @@ int main(int argc, char* argv[])
             printf("  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit)\n");
             printf("  --max-size <mb>       Max input file size in MB (0 = no limit)\n");
             printf("  --cancel-file <file>  Watchdog file for external cancellation\n");
-            printf("  --keep-failed-gcode3mf  Debug: on exit code 7, still write the\n");
-            printf("                          gcode.3mf for inspection (contract unchanged:\n");
-            printf("                          rc and JSON report stay as-is)\n");
             printf("  -v, --verbose         Verbose output\n");
             return 0;
         }
@@ -162,15 +158,6 @@ int main(int argc, char* argv[])
         {
             if (i + 1 >= argc) return missing_value(argv[i]);
             cancel_file = argv[++i];
-        }
-        else if (!strcmp(argv[i], "--keep-failed-gcode3mf"))
-        {
-            /* Debug-only escape hatch (2026-10-20): keep the gcode.3mf when
-             * the run ends at exit 7 (postprocess-flagged unusable, G-code
-             * exists) so a human can inspect the toolpaths. Default runs and
-             * every other exit class are untouched — all-or-nothing output
-             * suppression (P-05) stands. */
-            keep_failed_gcode3mf = 1;
         }
         else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output"))
         {
@@ -319,8 +306,6 @@ int main(int argc, char* argv[])
         pos = appendf(params, pos, sizeof(params), ",\"cancel_file\":");
         if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), cancel_file);
     }
-    if (pos >= 0 && keep_failed_gcode3mf)
-        pos = appendf(params, pos, sizeof(params), ",\"keep_failed_gcode3mf\":true");
     if (pos >= 0) pos = appendf(params, pos, sizeof(params), "}");
     if (pos < 0)
     {

@@ -60,12 +60,6 @@ void rm(const std::string& p)
     boost::filesystem::remove(p, ec);
 }
 
-std::string read_file(const std::string& p)
-{
-    std::ifstream f(p);
-    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-}
-
 } // namespace
 
 // ============================================================================
@@ -258,44 +252,6 @@ TEST_CASE("CLI: deprecated --skip-preset-substitution silently ignored, slice pr
     rm("/tmp/orca_cli_dep.gcode.3mf");
     rm("/tmp/orca_cli_dep.json");
     rm("/tmp/orca_cli_dep.log");
-    rm("/tmp/orca_cli_capture.txt");
-}
-
-// ============================================================================
-// --keep-failed-gcode3mf debug hatch (2026-10-20). Opt-in forensics in the
-// spirit of ORCA_KEEP_FAILED_GCODE (P-27): on a run ending rc=7
-// (postprocess-flagged unusable, per-plate G-code exists — here
-// toolpath_outside_mixed_7855, plate 1 TOOLPATH_OUTSIDE) the gcode.3mf is
-// written for toolpath inspection. Contract-neutral by design: rc stays 7
-// and the JSON keeps success=false / output_file="" — the flag-off run
-// suppresses the artifact entirely (pinned in test_c_api's exit_code cases;
-// e2e Case 7 pins rc=6 suppression). End-to-end plumbing: main.c flag →
-// params key keep_failed_gcode3mf → EngineConfig → finalize_output gate.
-// ============================================================================
-TEST_CASE("CLI: --keep-failed-gcode3mf keeps rc-7 artifact, verdict unchanged", "[integration][cli][debug]")
-{
-    rm("/tmp/orca_cli_keep.gcode.3mf"); // pre-clean: stale artifacts must not satisfy assertions
-    rm("/tmp/orca_cli_keep.json");
-
-    CliResult r = run_cli(std::string(ORCA_TEST_FIXTURE_DIR "/toolpath_outside_mixed_7855.3mf -r \"")
-                          + ORCA_TEST_RESOURCES_ROOT + "\" -o /tmp/orca_cli_keep --keep-failed-gcode3mf");
-    INFO(r.out);
-    REQUIRE(r.exited);
-    REQUIRE(r.exit_code == 7); // rc unchanged — the hatch is forensics, not delivery
-
-    // The debug artifact is on disk for inspection...
-    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_keep.gcode.3mf"));
-    // ...and the JSON verdict is byte-for-byte the flag-off contract.
-    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_keep.json"));
-    auto j = nlohmann::json::parse(read_file("/tmp/orca_cli_keep.json"));
-    REQUIRE_FALSE(j["success"].get<bool>());
-    REQUIRE(j["exit_code"].get<int>() == 7);
-    REQUIRE(j["error_code"].get<std::string>() == "TOOLPATH_OUTSIDE");
-    REQUIRE(j["print_info_total"]["output_file"].get<std::string>().empty());
-
-    rm("/tmp/orca_cli_keep.gcode.3mf");
-    rm("/tmp/orca_cli_keep.json");
-    rm("/tmp/orca_cli_keep.log");
     rm("/tmp/orca_cli_capture.txt");
 }
 

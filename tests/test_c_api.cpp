@@ -833,7 +833,6 @@ TEST_CASE("C API: mixed-outcome failure carries ratcheted exit_code 7 into the f
     // already stamped 7 — the JSON must keep 7, not silently downgrade to the
     // code the issue list alone would suggest.
     rm("/tmp/orca_capi_ec_mixed.json"); // on-disk assertion below: pre-clean (stale-path trap)
-    rm("/tmp/orca_capi_ec_mixed.gcode.3mf"); // contract pin below: pre-clean likewise
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
@@ -849,13 +848,6 @@ TEST_CASE("C API: mixed-outcome failure carries ratcheted exit_code 7 into the f
     // the only error / serious_warning issue this fixture produces
     // (plate 2 is clean; EMPTY_PLATE etc. are warning level and excluded).
     REQUIRE(j["error_code"].get<std::string>() == "TOOLPATH_OUTSIDE");
-
-    // Contract pin (2026-10-20): default rc=7 suppresses the gcode.3mf
-    // (all-or-nothing, P-05) and output_file stays "" — the debug escape
-    // hatch keep_failed_gcode3mf (params key) is opt-in and asserted in its
-    // own test; without it nothing may appear on disk.
-    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_ec_mixed.gcode.3mf"));
-    REQUIRE(j["print_info_total"]["output_file"].get<std::string>().empty());
 
     // On-disk channel: the report file must exist and carry the same verdict.
     REQUIRE(boost::filesystem::exists("/tmp/orca_capi_ec_mixed.json"));
@@ -882,7 +874,6 @@ TEST_CASE("C API: error_code aggregates error and serious_warning codes across p
     // issues (PRINTER/FILAMENT/PROCESS_SUBSTITUTED, PRINT_VALIDATE_WARNING)
     // excluded — exact-equality leaves no room for a stray inclusion.
     rm("/tmp/orca_capi_ec_agg.json"); // stale-path trap
-    rm("/tmp/orca_capi_ec_agg.gcode.3mf"); // contract pin below: pre-clean likewise
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
@@ -898,51 +889,9 @@ TEST_CASE("C API: error_code aggregates error and serious_warning codes across p
     REQUIRE(j["exit_code"].get<int>() == rc);
     REQUIRE(j["error_code"].get<std::string>() == "BUILD_VOLUME_OUTSIDE_XY,TOOLPATH_CONFLICT");
 
-    // Contract pin (2026-10-20): default rc=7 suppresses the artifact
-    // (conflict-driven rc=7 included); the debug hatch is opt-in only.
-    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_ec_agg.gcode.3mf"));
-    REQUIRE(j["print_info_total"]["output_file"].get<std::string>().empty());
-
     rm("/tmp/orca_capi_ec_agg.gcode.3mf");
     rm("/tmp/orca_capi_ec_agg.json");
     rm("/tmp/orca_capi_ec_agg.log");
-    slic3r_destroy(ctx);
-    restore_dirs();
-}
-
-TEST_CASE("C API: keep_failed_gcode3mf debug hatch packages rc-7 artifact, contract untouched", "[integration][capi][exit_code][debug]")
-{
-    // Same fixture as the ratcheted-exit-7 case above, now with the debug
-    // params key set (CLI: --keep-failed-gcode3mf). The run must end exactly
-    // like the flag-off contract — rc=7, success=false, output_file=""
-    // (all-or-nothing P-05 semantics are NOT weakened: the JSON never
-    // advertises the artifact) — while the gcode.3mf lands on disk for
-    // toolpath inspection (TOOLPATH_OUTSIDE forensics). Flag-off suppression
-    // of this very fixture is pinned by the mixed-outcome case above.
-    rm("/tmp/orca_capi_ec_keep.json");      // stale-path trap
-    rm("/tmp/orca_capi_ec_keep.gcode.3mf"); // artifact assertion below: pre-clean likewise
-    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
-    REQUIRE(ctx != nullptr);
-
-    char stats[32768] = {0};
-    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/toolpath_outside_mixed_7855.3mf",
-                          "/tmp/orca_capi_ec_keep",
-                          R"({"log_path":"/tmp/orca_capi_ec_keep.log","keep_failed_gcode3mf":true})",
-                          stats, sizeof(stats));
-    REQUIRE(rc == 7);
-
-    auto j = nlohmann::json::parse(stats);
-    REQUIRE_FALSE(j["success"].get<bool>());
-    REQUIRE(j["exit_code"].get<int>() == 7);
-    REQUIRE(j["error_code"].get<std::string>() == "TOOLPATH_OUTSIDE");
-    // Contract neutrality: forensics, not delivery.
-    REQUIRE(j["print_info_total"]["output_file"].get<std::string>().empty());
-    // The debug artifact itself, on disk.
-    REQUIRE(boost::filesystem::exists("/tmp/orca_capi_ec_keep.gcode.3mf"));
-
-    rm("/tmp/orca_capi_ec_keep.gcode.3mf");
-    rm("/tmp/orca_capi_ec_keep.json");
-    rm("/tmp/orca_capi_ec_keep.log");
     slic3r_destroy(ctx);
     restore_dirs();
 }

@@ -19,13 +19,6 @@
 
 139 = SIGSEGV，**不是合法退出码**，出现即引擎缺陷（见判例 P-01/P-02/P-09/P-10）。
 
-> 2026-10-20 调试逃生舱 `--keep-failed-gcode3mf`（CLI 选项 / C API params
-> 同名 key，默认关）：仅当最终 rc=7 且至少一盘 gcode 文件在盘时，额外
-> 打包 gcode.3mf 供人工查验 toolpath（证实/证伪 TOOLPATH_OUTSIDE、
-> TOOLPATH_CONFLICT）。**契约不变**：rc 仍为 7、JSON 仍 success=false 且
-> `output_file=""`；rc=4/5/6 即使开开关也不产出。与 ORCA_KEEP_FAILED_GCODE
-> （保留 plate_N.gcode 散文件，P-27）互补：本开关给的是完整 gcode.3mf。
-
 > 2026-10-19 起退出码同步镜像进 JSON 统计报告顶层 `exit_code` 字段
 > （原样发射，棘轮语义；rc=1/99 不产出报告），语义详见
 > docs/requirements/json-output.md。同日 P-28：**文件通道**对显式

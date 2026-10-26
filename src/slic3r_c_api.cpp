@@ -112,11 +112,6 @@ static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& e
             cfg.log_path = j["log_path"].get<std::string>();
         if (j.contains("json_output_path"))
             cfg.json_output_path = j["json_output_path"].get<std::string>();
-        // Debug-only escape hatch (CLI --keep-failed-gcode3mf): package the
-        // gcode.3mf on rc=7 runs for inspection. Contract-neutral — see
-        // EngineConfig::keep_failed_gcode3mf.
-        if (j.contains("keep_failed_gcode3mf"))
-            cfg.keep_failed_gcode3mf = j["keep_failed_gcode3mf"].get<bool>();
 
         // plate_id N > 0 selects exactly one plate (1-based); the engine's
         // single_plate mode drives output naming and per-plate processing.
