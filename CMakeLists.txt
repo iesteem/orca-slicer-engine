@@ -20,7 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # The binary, the unit/integration tests, and scripts/package_linux.sh
 # all derive the version string from this value (no duplication elsewhere).
 # ==================================================================
-set(ENGINE_VERSION "2.2.0")
+set(ENGINE_VERSION "2.2.1")
 
 # ==================================================================
 # Static single-binary mode (Linux):
