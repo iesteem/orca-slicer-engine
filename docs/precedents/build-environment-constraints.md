@@ -12,6 +12,14 @@
    混链 → all_regions() 等处 SIGSEGV。
    build-engine 里裸跑 `ninja` 会编 252 个含 GUI 的目标（缺 wx 必失败），
    只编 libslic3r 目标。
+3. **build-static 也会选择性陈旧混链（已三案）**：①layer-ranges skip
+   日志案（bbs_3mf.cpp.o 陈旧，.a mtime 不可信）；②P-35 期间旧构建
+   冒充新代码；③P-36 伴生案（2026-10-28/29）：10-26 构建的主二进制含
+   7c82968 的 `error_code` 改名却缺同日 8f729b5 的 P-28 无条件写行为，
+   测试二进制缺 10-19 已入库的 P-28 用例——**跨翻译单元选择性陈旧**，
+   "二进制里有特性 A"推不出"有同批特性 B"。防身法：凡结论依赖"某修复
+   行为在/不在"，先 `cmake --build build-static -j 2` 再复测；测试二进制
+   用 `./engine-integration --list-tests | grep <新用例名>` 实数核对。
 
 ## 无害噪音（不是回归信号）
 

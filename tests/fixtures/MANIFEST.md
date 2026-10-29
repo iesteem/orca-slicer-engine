@@ -32,6 +32,7 @@
 | fixture | 判例 | md5 | 锚定行为 |
 |---|---|---|---|
 | 2c242c10f0e4b521.3mf (1.04MB) | P-08 | `3dba3d258052e3d4503bd1514d15ce77` | 擦塔位置超界 0.21mm → exit 7 TOOLPATH_OUTSIDE（未修复，修复后应转绿） |
+| bc053c0feb92b10c.3mf (4.6MB) | P-36 | `c93791fc498cc0ac28d03d6c5f50cbed` | 新版桌面端写盘 setting_id/filament_id 数组化 → load_from_json type_error.302 整配置弃载 → 误报 rc=6 "Printer model is missing"（printer_model="Snapmaker U1" 实际完好）；两键降为数组首元素即 rc=0。2026-10-28 从回收站救回入库（Downloads 原件当日被清理） |
 
 ## In-repo fixtures（tests/fixtures/）
 
