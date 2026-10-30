@@ -64,7 +64,14 @@ target_sources(engine-tests PRIVATE
 
 target_link_libraries(engine-tests PRIVATE pthread)
 
-add_test(NAME engine-tests COMMAND engine-tests)
+# Dual reporter: console to stdout (ctest --output-on-failure keeps working
+# unchanged) plus a JUnit XML written to the build tree, recording EVERY test
+# case name and status — after a red run the failed cases are read from the
+# XML instead of re-running the 30-minute suite to recover them.
+#   python3 tests/run_tests.py --report-only <build-dir>   # summarize
+add_test(NAME engine-tests COMMAND engine-tests
+    -r console
+    -r "junit::out=${CMAKE_CURRENT_BINARY_DIR}/engine-tests.junit.xml")
 
 # ============================================================================
 # Integration test target — links the FULL libslic3r (unlike the lightweight
@@ -92,12 +99,16 @@ if(ORCA_STATIC)
         test_accuracy.cpp
         test_high_flow.cpp
         test_print_sequence.cpp
+        test_c_api.cpp
+        test_cli.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
+        ${CMAKE_SOURCE_DIR}/src/slic3r_c_api.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
         ${CMAKE_SOURCE_DIR}/src/GeometryCheck.cpp
         ${CMAKE_SOURCE_DIR}/src/Utils.cpp
-        ${CMAKE_SOURCE_DIR}/src/nanosvg.cpp
+        # src/nanosvg.cpp removed — same duplicate-symbol reason as the main
+        # engine target (libslic3r/Format/svg.cpp now embeds nanosvg).
     )
 
     # Reuse the exact include dirs / defines / flags / link list of the static
@@ -114,12 +125,20 @@ if(ORCA_STATIC)
     endforeach()
     target_include_directories(engine-integration PRIVATE ${_int_inc_dirs})
 
+    # test_cli.cpp shells out to the real executable; make sure it is built
+    # first and pass its path in.
+    add_dependencies(engine-integration orca-slice-engine)
+
     target_compile_definitions(engine-integration PRIVATE
         ${ORCA_STATIC_DEFINES}
         ENGINE_VERSION="${ENGINE_VERSION}"
+        ORCA_ENGINE_EXE="$<TARGET_FILE:orca-slice-engine>"
         ORCA_TEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u1_preset_test.3mf"
         ORCA_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         ORCA_TEST_RESOURCES="${CMAKE_SOURCE_DIR}/package/resources/profiles"
+        # Root containing profiles/ — what slic3r_create() and CLI -r expect
+        # (the C API appends "/profiles" itself; see slic3r_c_api.cpp).
+        ORCA_TEST_RESOURCES_ROOT="${CMAKE_SOURCE_DIR}/package/resources"
     )
 
     target_compile_options(engine-integration PRIVATE
@@ -130,11 +149,16 @@ if(ORCA_STATIC)
 
     target_link_libraries(engine-integration PRIVATE ${ORCA_STATIC_LIBS})
 
-    add_test(NAME engine-integration COMMAND engine-integration)
+    add_test(NAME engine-integration COMMAND engine-integration
+        -r console
+        -r "junit::out=${CMAKE_CURRENT_BINARY_DIR}/engine-integration.junit.xml")
 
+    # Wrapped ctest: the script runs ctest, then ALWAYS parses the JUnit XML
+    # written above and prints the failed case names (a plain COMMAND sequence
+    # here would stop at ctest's non-zero exit and never reach the summary).
     add_custom_target(run-tests
-        COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} -R engine --output-on-failure
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/run_tests.py ${CMAKE_BINARY_DIR}
         DEPENDS engine-tests engine-integration
-        COMMENT "Running engine-tests + engine-integration via CTest"
+        COMMENT "Running engine-tests + engine-integration via CTest (JUnit report + failure summary)"
     )
 endif()

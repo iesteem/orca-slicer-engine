@@ -9,7 +9,10 @@
 
 #include <boost/log/trivial.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
+#include <vector>
 
 namespace Slic3r
 {
@@ -157,11 +160,118 @@ const Preset* PresetRollback::findBaseFilament(const PresetBundle* bundle, const
     return nullptr;
 }
 
+// ---- Flow-variant segment rewrite (S2, P-35 residual gap) ----
+//
+// Desktop refreshes flow-variant filament keys from the system preset on
+// project load (PresetCollection::load_external_preset, Preset.cpp:2121-2150
+// restores keys outside different_settings_to_system). The engine's
+// wholesale substitution must do the same for the 19 flow-variant keys +
+// filament_flow_support, otherwise stale/nil values from the 3MF survive
+// (nil -> machine base wins at runtime via apply_override's whole-option
+// is_nil gate). Machine keys (z_hop_types ...) are deliberately NOT
+// touched here — the filament_* override merge belongs to Print::apply.
+
+/// @brief Rewrite slot slotIdx of all flow-variant filament keys from source,
+///        keeping the segmented (filament_flow_step_size) layout.
+/// @param target   Composed multi-filament config (engine m_config).
+/// @param source   Single filament preset config (official, inherits resolved).
+/// @param slotIdx  Destination filament slot.
+static void overwrite_flow_variant_segment(DynamicPrintConfig& target, const DynamicPrintConfig& source,
+                                            const size_t slotIdx)
+{
+    const ConfigOptionStrings* fsi = target.option<ConfigOptionStrings>("filament_settings_id");
+    const size_t slotCount = (fsi != nullptr) ? fsi->values.size() : 0;
+    if (slotIdx >= slotCount)
+    {
+        return;
+    }
+
+    // Old segment sizes; configs without the table are flat (one value per slot).
+    std::vector<int> oldSteps(slotCount, 1);
+    const ConfigOptionInts* stepOpt = target.option<ConfigOptionInts>("filament_flow_step_size");
+    if (stepOpt != nullptr && stepOpt->values.size() == slotCount)
+    {
+        for (size_t i = 0; i < slotCount; ++i)
+        {
+            oldSteps[i] = std::max(1, stepOpt->values[i]);
+        }
+    }
+
+    // New segment size of this slot = declared variant count of source.
+    std::vector<int> newSteps = oldSteps;
+    const ConfigOptionStrings* srcSupport = source.option<ConfigOptionStrings>("filament_flow_support");
+    newSteps[slotIdx] = (srcSupport != nullptr && !srcSupport->values.empty())
+                            ? static_cast<int>(srcSupport->values.size())
+                            : 1;
+
+    std::vector<std::string> keys = filament_flow_variant_options();
+    keys.push_back("filament_flow_support");
+    for (const std::string& key : keys)
+    {
+        ConfigOption* dstOpt = target.option(key, false);
+        if (dstOpt == nullptr || dstOpt->is_scalar())
+        {
+            continue;
+        }
+        // Snapshot the old layout first: set_at below may grow/shrink dst in
+        // place, and sibling segments still copy from the OLD positions.
+        const std::unique_ptr<ConfigOption> oldOpt(dstOpt->clone());
+        const ConfigOptionVectorBase* oldVec = static_cast<const ConfigOptionVectorBase*>(oldOpt.get());
+        if (oldVec->empty())
+        {
+            BOOST_LOG_TRIVIAL(warning) << "PresetRollback: flow-variant key \"" << key << "\" is empty, skipped";
+            continue;
+        }
+        const ConfigOptionVectorBase* srcVec = nullptr;
+        const ConfigOption* srcOpt = source.option(key);
+        if (srcOpt != nullptr && !srcOpt->is_scalar() && srcOpt->type() == dstOpt->type())
+        {
+            srcVec = static_cast<const ConfigOptionVectorBase*>(srcOpt);
+            if (srcVec->empty())
+            {
+                srcVec = nullptr;
+            }
+        }
+
+        ConfigOptionVectorBase* dstVec = static_cast<ConfigOptionVectorBase*>(dstOpt);
+        size_t oldStart = 0;
+        size_t newStart = 0;
+        for (size_t i = 0; i < slotCount; ++i)
+        {
+            const size_t oldStep = static_cast<size_t>(oldSteps[i]);
+            for (size_t k = 0; k < static_cast<size_t>(newSteps[i]); ++k)
+            {
+                if (i == slotIdx && srcVec != nullptr)
+                {
+                    // Same padding rule as PresetBundle::full_fff_config:
+                    // segment shorter than declared -> repeat the preset's
+                    // first (standard) value.
+                    dstVec->set_at(srcVec, newStart + k, (k < srcVec->size()) ? k : 0);
+                }
+                else
+                {
+                    // Sibling slots keep their old values, re-laid out at
+                    // their old segment size (clamped to what exists).
+                    const size_t oldIdx = std::min(oldStart + std::min(k, oldStep - 1), oldVec->size() - 1);
+                    dstVec->set_at(oldVec, newStart + k, oldIdx);
+                }
+            }
+            oldStart += oldStep;
+            newStart += static_cast<size_t>(newSteps[i]);
+        }
+        dstVec->resize(newStart);
+    }
+    target.option<ConfigOptionInts>("filament_flow_step_size", true)->values = newSteps;
+}
+
 // ---- Shared full-overwrite operation ----
 //
 // Full overwrite: replace the extruder_idx slot in target with all per-extruder
 // vector values from the source preset. Shared by both the inheritance-chain
 // substitution and filament rollback paths to guarantee consistent semantics.
+// A non-empty dst vector shorter than extruder_idx GROWS via set_at (C3: the
+// slot must be substituted, never silently skipped); only empty vectors are
+// skipped, because set_at pads growth with front() and would be UB on empty.
 
 void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Preset& source, int extruder_idx,
                                            ConfigOptionStrings* filament_ids)
@@ -169,6 +279,11 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Pre
     if (extruder_idx < 0)
         return;
     const size_t dst_idx = static_cast<size_t>(extruder_idx);
+
+    // Flow-variant keys are segmented; rewrite this slot's segment from the
+    // official preset BEFORE the flat copy loop (which still skips them —
+    // a flat set_at at index i would land inside another slot's segment).
+    overwrite_flow_variant_segment(target, source.config, dst_idx);
 
     for (auto it = source.config.cbegin(); it != source.config.cend(); ++it)
     {
@@ -179,8 +294,9 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Pre
         // (filament_flow_step_size): slot i's segment starts at
         // sum(step_size[0..i-1]), not at flat index i. A flat per-extruder
         // copy via set_at() would corrupt the segment alignment and drop the
-        // high_flow variant (source index 0 = standard). Skip them — same rule
-        // as DynamicPrintConfig::set_num_filaments (PrintConfig.cpp).
+        // high_flow variant (source index 0 = standard). Skipped here — the
+        // segment-aware rewrite above (overwrite_flow_variant_segment) is
+        // their only writer in this path.
         if (key == "filament_flow_support" || key == "filament_flow_step_size" ||
             is_filament_flow_variant_option(key))
             continue;
@@ -192,8 +308,19 @@ void PresetRollback::overwriteExtruderFrom(DynamicPrintConfig& target, const Pre
         auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
         if (!dst_vec)
             continue;
+        if (dst_vec->empty())
+            continue;  // set_at on an empty vector is UB (front() padding)
         if (dst_vec->size() <= dst_idx)
-            continue;
+        {
+            // Pre-normalization this silently skipped the whole slot and the
+            // raw 3MF value survived substitution (C3). The slot-count
+            // normalize in apply_preset_substitution makes this unreachable
+            // for real per-filament keys; keys created ad hoc by
+            // option(key, true) land at default length 1 and grow here.
+            BOOST_LOG_TRIVIAL(warning)
+                << "PresetRollback: dst vector \"" << key << "\" holds " << dst_vec->size()
+                << " elements, growing to cover extruder " << extruder_idx;
+        }
 
         auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(src_opt.get());
         if (src_vec && src_vec->size() > 0)

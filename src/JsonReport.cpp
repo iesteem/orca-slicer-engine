@@ -13,33 +13,6 @@
 
 using ordered_json = nlohmann::ordered_json;
 
-// Keep base64_encode — nlohmann doesn't provide base64
-static constexpr char BASE64_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string base64_encode(const unsigned char* input, size_t input_len)
-{
-    std::string result;
-    result.reserve((input_len + 2) / 3 * 4);
-
-    int val = 0;
-    int valb = 0;
-    for (size_t i = 0; i < input_len; ++i)
-    {
-        val = (val << 8) + input[i];
-        valb += 8;
-        while (valb >= 6)
-        {
-            valb -= 6;
-            result.push_back(BASE64_CHARS[(val >> valb) & 0x3F]);
-        }
-    }
-    if (valb > 0)
-        result.push_back(BASE64_CHARS[((val << (6 - valb)) & 0x3F)]);
-    while (result.size() % 4)
-        result.push_back('=');
-    return result;
-}
-
 // Round to 2 decimal places — matches the original std::setprecision(2) output
 static double round2(double v)
 {
@@ -89,6 +62,15 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     double total_weight = 0;
     double total_length = 0;
     std::vector<ordered_json> total_filaments;
+    // G-code actual support flag: per-plate support extrusion volume
+    // (GCodeProcessor support_volumes_per_extruder, roles
+    // erSupportMaterial/Interface/Transition — normal, tree and raft support)
+    // is non-zero. NOT the config-level enable_support flag: a self-supporting
+    // model with support enabled extrudes zero support and stays "free".
+    // Aggregated from successful plates only; failed plates keep the false
+    // default. Internal polarity mirrors the source (true = support extruded);
+    // it is inverted to support_free only at the JSON emission sites below.
+    bool any_support_generated = false;
     {
         // Deduplicate by (type, color), summing used_g across plates
         struct AggFilament
@@ -106,6 +88,7 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
                 total_print_time += plate.print_time;
                 total_weight += plate.total_filament_g;
                 total_length += plate.total_filament_m;
+                any_support_generated = any_support_generated || plate.support_generated;
                 for (const auto& detail : plate.filament_details)
                 {
                     auto it = std::find_if(agg.begin(), agg.end(),
@@ -135,7 +118,49 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     }
 
     root["success"] = stats.success;
+    // Verbatim mirror of the process/C-API return code, emitted as-is from
+    // the engine's monotonic set_error_type ratchet (a TOOLPATH_CONFLICT
+    // stamps 7 and a later 6-stamp is a no-op, so the value can exceed what
+    // the visible issues imply — never recompute from issues). Domain is
+    // {0,3,4,5,6,7} on JSON-emitting paths; rc=1 (bad args) and rc=99
+    // (exception escape) never produce a report at all — absence of the file
+    // means "no report", not exit_code 1/99. The stats_out buffer carries
+    // this report regardless of whether the file channel fired.
+    root["exit_code"] = stats.exit_code;
+    // error_code: English-comma-joined `code` of every error / serious_warning
+    // issue, in issue-list order (finalise_statistics stable-sorts that list
+    // error-first). Occurrences are NOT deduplicated — one entry per issue;
+    // multiplicity detail stays in issues[]. Walks the global issue list
+    // only: it is the superset (assemble_plate_stats funnels every plate
+    // issue into it), so also walking plates[] would double-count orphan
+    // issues (patch_orphan_plate_issues copies them into placeholder plates).
+    std::string error_code;
+    for (const auto& issue : stats.issues)
+    {
+        if (issue.level != IssueLevel::error && issue.level != IssueLevel::serious_warning)
+            continue;
+        if (!error_code.empty())
+            error_code += ",";
+        error_code += issue.code;
+    }
+    // Always emitted; empty string is a definitive "no error", not an
+    // unknown (hence not in the MISSING-semantics family). Invariant on
+    // every report: success == (exit_code == 0) == (error_code empty) —
+    // audited 2026-10-19, every rc!=0 run() path co-pushes an error or
+    // serious_warning issue (P-23's NO_PLATES_PRODUCED closed the last
+    // issue-less gap), and any such issue flips success in
+    // finalise_statistics. Renamed from error_message in-place (same
+    // unreleased 2.2.0, support_free precedent): that field mirrored
+    // slic3r_get_error()'s generic summary, which was empty or generic
+    // exactly on rc=6/7; the aggregated codes say WHY precisely.
+    root["error_code"] = error_code;
     root["engine_version"] = ENGINE_VERSION;
+    // Resources (vendor profile) version read verbatim from
+    // <resources>/profiles/Snapmaker.json at report time — no Semver
+    // normalisation. Absent when the file could not be read; consumers must
+    // treat MISSING as "unknown", never as a specific version.
+    if (!stats.resources_version.empty())
+        root["resources_version"] = stats.resources_version;
 
     ordered_json print_info;
     print_info["output_file"] = stats.success ? output_file_path : "";
@@ -145,6 +170,21 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     print_info["total_length_mm"] = round2(total_length);
     print_info["plate_count"] = static_cast<int>(stats.plates.size());
     print_info["filaments"] = total_filaments;
+    // support_free = !any_support_generated (gcode actual layer). Emitted only
+    // on overall success (all plates sliced): a failed plate's support state
+    // was never determined, so aggregating it would be a guess. Consumers must
+    // treat a MISSING support_free as "unknown", never as "support-free".
+    // true = no support extrusion in any plate's gcode (config-enabled but
+    // self-supporting geometry counts as free); false = support structures
+    // (incl. raft) were actually extruded on some plate.
+    if (stats.success)
+        print_info["support_free"] = !any_support_generated;
+    // Input-file property determined at load time (any virtual mixed-filament
+    // slot reference in any plate), so unlike support_free it survives a
+    // partially failed run. Emitted whenever at least one plate was processed;
+    // absent on load-stage failures where the model was never parsed.
+    if (!stats.plates.empty())
+        print_info["mixed_filament_used"] = stats.mixed_filament_used;
     root["print_info_total"] = std::move(print_info);
 
     // Global issues
@@ -189,6 +229,10 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
             pj["filaments"] = std::move(fils);
             pj["model_thumbnail"] = plate.model_thumbnail;
             pj["long_retraction_when_cut"] = plate.long_retraction_when_cut;
+            // G-code actual layer, inverted at emission: source field is the
+            // per-plate support extrusion volume > 0 (GCodeProcessor
+            // support_volumes_per_extruder), not the config enable flag.
+            pj["support_free"] = !plate.support_generated;
         }
 
         plates_json.push_back(std::move(pj));

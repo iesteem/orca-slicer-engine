@@ -27,7 +27,29 @@
 ```jsonc
 {
   "success": true,                    // bool；全部请求的盘成功才为 true
-  "engine_version": "02.01.06",       // = ENGINE_VERSION（CMake 唯一来源）
+  "exit_code": 0,                     // int；进程/C API 返回码的原样镜像（SliceEngine::
+                                      // exit_code() 在 build_statistics() 尾部盖章）。
+                                      // 恒输出。set_error_type 单调棘轮原样发射——值可
+                                      // 高于 issues 表面暗示的档位（TOOLPATH_OUTSIDE 记 7
+                                      // 后，后续 6-stamp 是 no-op），**禁止从 issues 反推**。
+                                      // 值域 {0,3,4,5,6,7}；rc=1（参数错）/rc=99（异常
+                                      // 逃逸）**不产出任何报告**——文件缺席 = 无报告，
+                                      // 绝非 exit_code 1/99
+  "error_code": "",                   // string；恒输出，成功为空串（确定值"无错误"，
+                                      // 非未知，故不属"缺席=未知"家族）。内容 = 全部
+                                      // level 为 error / serious_warning 的 issue 的
+                                      // code，按全局 issues 列表序（finalise_statistics
+                                      // 已稳定排序：error 先于 serious_warning）英文
+                                      // 逗号拼接，**不去重**（每 issue 一项；重数细节
+                                      // 在 issues[]）。聚合源仅全局 issues 列表（它是
+                                      // 超集，plate issue 经 assemble_plate_stats 汇入；
+                                      // 再走 plates[] 会把 orphan issue 重复计入）。
+                                      // 不变式：success ⟺ exit_code==0 ⟺ error_code==""
+  "engine_version": "2.2.0",          // = ENGINE_VERSION（CMake 唯一来源）
+  "resources_version": "02.03.03.03", // 可选；<resources>/profiles/Snapmaker.json 的
+                                      // "version" 原样回显（不走 Semver，保留补零）。
+                                      // 报告时读取，成功与失败出口均在场；
+                                      // 缺席 = 版本未知，绝非特定版本
   "print_info_total": { ... },        // 跨成功盘聚合
   "issues": [ ... ],                  // 全局级 issue 数组
   "plates": [ ... ]                   // 逐盘
@@ -46,7 +68,17 @@
   "plate_count": 3,                   // stats.plates.size()，含失败盘
   "filaments": [                      // 跨盘按 (type, color) 去重，克重累加
     { "type": "PLA", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
-  ]
+  ],
+  "support_free": true,               // 可选；仅整体 success=true 时输出——失败盘
+                                      // 的支撑状态未判定，聚合即猜测。gcode 实际层：
+                                      // true=所有盘 gcode 均零支撑挤出（配置开了但
+                                      // 模型自支撑也归 true）；false=任一盘实际挤出
+                                      // 了支撑结构（含筏，普通/树支撑均计）。缺席 =
+                                      // 未知，绝非 true（缺席坍缩在保守侧）
+  "mixed_filament_used": false        // 可选；plates[] 非空即输出——载入时一次判定
+                                      // 的输入文件属性（对象/part extruder 或面片
+                                      // 引用虚拟混色槽），部分失败运行仍有效。
+                                      // 缺席（载入阶段失败，模型未解析）= 未知
 }
 ```
 
@@ -80,7 +112,9 @@
     { "id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
   ],
   "model_thumbnail": "<base64 PNG>",  // 可为空串
-  "long_retraction_when_cut": false
+  "long_retraction_when_cut": false,
+  "support_free": true                // gcode 实际层：该盘支撑挤出体积为 0（含配置
+                                      // 开启但自支撑的场景；普通/树/筏支撑均计）
 }
 ```
 
@@ -88,6 +122,11 @@
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.0 (2026-10-23 追加 P-35) | `SPIRAL_LIFT_NEAR_BOUNDARY` 触发条件精度化：判定源从机器域 `z_hop_types` 平键改为**有效值**（机器键 clone 后 `apply_override` 组合 `filament_z_hop_types`，镜像 PrintApply 合并语义）。code/level/消息不变，仅消除耗材覆盖已关掉螺旋时的误报（SnapSpeed Slope × 机器 Auto 基值场景实测两条误报→0） |
+| 2.2.0 (2026-10-19 修订) | **`error_message` → `error_code` 原地改名**（同日二次修订，2.2.0 未发布，support_free 改名先例）：内容从"与 slic3r_get_error 同串的人类可读摘要"改为"全部 error / serious_warning issue 的 code 英文逗号拼接（issues 列表序，不去重）"——旧摘要在 rc=6/7 恰好为空或泛化，聚合 code 精确归因。不变式改述为 success ⟺ exit_code==0 ⟺ error_code==""（全路径审计：所有 rc≠0 的 run() 出口均伴随 error/serious_warning issue，P-23 NO_PLATES_PRODUCED 已封掉最后一个无 issue 缺口）。C API `slic3r_get_error` 通道**不变**（仍返回结构体 error_message 摘要），JSON 不再镜像该串 |
+| 2.2.0 (2026-10-19 追加) | 顶层新增 `exit_code`（int，恒输出：进程/C API 返回码原样镜像，棘轮语义勿从 issues 反推，值域 {0,3,4,5,6,7}，rc=1/99 无报告）与 `error_message`（string，恒输出：成功为空串、失败为人类可读摘要、与 slic3r_get_error 同串）。不变式 success ⟺ exit_code==0 ⟺ error_message==""。同时关闭 empty-plate-zero-product-rc.md 遗留项 2（"error_message 不进 JSON"） |
+| 2.2.0 (2026-10-10) | 顶层新增可选 `resources_version`（vendor profile 版本原样回显，缺席=未知）；`print_info_total` 新增可选 `support_free`（gcode 实际层：true=零支撑挤出，仅整体 success 时输出）与 `mixed_filament_used`（plates[] 非空即输出，输入文件属性）；`plates[]` success 组新增 `support_free`（同 gcode 实际层语义）。三者缺席一律=未知，非 false/空串；support_free 缺席坍缩在保守侧（"有支撑"）。同版 issue 码新增见 exit-codes.md（NO_PLATES_PRODUCED、PLATE_MEMBERSHIP_REBUILT、INSTANCE_NOT_ON_ANY_PLATE） |
+| v02.01.07 (2026-09-24) | 无 plate 元数据 3MF 合成单盘：`issues[]` 新增 tip 级 `PLATE_DATA_SYNTHESIZED`；此类文件 plates[] 首次可含成功盘（plate_id=1、无 model_thumbnail） |
 | v02.01.10 (2026-06-11) | `plates[].filaments[].filament_id` → `id`。libslic3r 内部 `FilamentInfo::filament_id` 不变 |
 
 ## 已知语义注意点
@@ -99,3 +138,27 @@
   ——两者口径不同。
 - all-or-nothing 打包（P-05）下，任一盘失败 → `success=false` 且
   `output_file=""`，即使其余盘切片成功（其 per-plate 数据仍在 plates[] 里）。
+- 无 plate 元数据的 3MF（第三方导出）按桌面 Orca 语义合成单盘切全部
+  printable 实例，并发 tip 级 `PLATE_DATA_SYNTHESIZED`（云端可用其区分
+  "真单盘文件"与"无盘文件被合成"）；合成盘无缩略图源，
+  `model_thumbnail` 为空。
+- `support_free` / `mixed_filament_used` / `resources_version` 均为
+  **可选字段，缺席 = 未知**（各自输出条件见上文结构定义），下游禁止按
+  "缺省即 false / 空串"读取。`support_free` 取反极性（2026-10-10 由
+  `support_required` 改名翻转，未发布前原地修订）：有利状态（true=无需
+  支撑）只能由显式 true 到达，缺席/误读缺省全部坍缩到保守侧"有支撑"。
+- `exit_code` / `error_code` 与上述家族**刻意相反**：恒输出，空串/
+  0 是确定值而非未知（空 error_code = "确无错误"）。下游读 verdict
+  无需 contains() 判断。**文件通道**缺席（无 JSON 文件）发生在：rc=1
+  （参数错，含 CLI 侧）、rc=99（异常逃逸），以及引擎尚未解析输出路径
+  的早期失败出口（rc=3/6——写入守卫整体跳过，即使调用方显式传了
+  json_output_path；2026-10-13 防垃圾文件决策的守卫面）。文件缺席时
+  stats_out（C API 进程内）通常仍有完整报告——缺席 = 该通道无报告，
+  应回退读进程返回码与 `slic3r_get_error`，**不得**当作 exit_code=1/99
+  或空 error_code 解析。
+- `support_free` 判定源是 **gcode 实际层**（同日二次修订）：per-plate
+  支撑挤出体积（`GCodeProcessor support_volumes_per_extruder`，
+  erSupportMaterial/Interface/Transition 三角色，普通/树/筏全覆盖）>0
+  取反——配置层 `enable_support` 开启但模型自支撑时为 **true**。注意：输出
+  gcode.3mf 内嵌盘元数据 `support_used` 仍为配置层（桌面 parity），与
+  本 JSON 字段语义不同源，勿混用。
