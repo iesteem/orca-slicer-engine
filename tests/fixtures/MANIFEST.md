@@ -108,9 +108,10 @@ pla_abs_tower_conflict_fail.3mf 的 diff 集记录）。
 ### 子目录
 
 `accuracy/ boundary/ build_volume/ build_volume_dir/ filament/ filement_count/
-file_validation/ gcode_security/ layer_height/ path_conflict/ printer_reject/
-print_sequence/ support/ temp_mode/ unsupported/` —— 与同名 test_*.cpp 一一对应
-（support/ 例外：用例在 test_c_api.cpp 的 [support] 家族），
+file_validation/ gcode_security/ layer_height/ multi_error/ path_conflict/
+printer_reject/ print_sequence/ support/ temp_mode/ unsupported/` —— 大多与同名
+test_*.cpp 一一对应（例外：support/ 用例在 test_c_api.cpp 的 [support] 家族；
+multi_error/ 用例在 test_slice_e2e.cpp Case 33/34 [collect_all]），
 各文件头部注释记录实测行为（断言忠于实测，非想当然）。
 
 ### 空盘行为组（C2 修复，2026-09-20）
@@ -159,6 +160,21 @@ slice_offgrid_sibling_ok.3mf 派生配方（Python zipfile 读改写，无现成
    （UUID 末位 +1 保证唯一；459/135 = 2 盘网格 cols=2 时盘 2 cell [324,594]×[0,270] 的中心）
 ② `Metadata/model_settings.config` 在盘 1 `</plate>` 后追加无成员、无缩略图引用的盘 2 块（plater_id=2 + locked/filament_maps）
 ③ 其余 entry（含乱码本地文件名的 `3D/Objects/立方体_1.model`）逐字节保留——重打包会修复 zip 文件名编码，改变 fixture 特征
+
+### 多错误全收集组（前处理 collect-all，2026-11-03）
+
+来源：temp_mode/pla_abs_mixed_fail.3mf（457KB 基型）解包改造。共同改动：
+model_settings.config 盘块插 `<metadata key="print_sequence" value="by object"/>`
+（盘级通道才活得过 process 预设替换——project_settings 同键会被替换回默认，
+见 print_sequence 组；改键位置是本组制备的关键踩坑）。契约：前处理校验
+必须全收集——任一检查报错不得短路其余检查，JSON 携带该盘全部前处理
+错误（SliceEngine run_validation collect-all + 受谴责盘续跑 run_config_checks
++ patch_orphan_plate_issues 占位盘追加；用例 test_slice_e2e.cpp Case 33/34）。
+
+| fixture | 额外改动 | 预期 |
+|---|---|---|
+| multi_error/build_volume_by_object_temp_mix.3mf（388K，md5 `648484aef869f3a5e528c6fdb7504255`） | 立方体 build item transform 改 `1 0 0 0 10 0 0 0 1 250 136 15`（Y×10 跨床：8 顶点全在 270 方床外但 bbox 仍交盘格，P-24 几何重建不 drop） | rc=6；同盘三错全报 BUILD_VOLUME_OUTSIDE_XY + PRINT_BY_OBJECT_CAUTION + FILAMENT_TEMP_MIXING（旧代码 build-volume 失败即弃检，仅报第一条）；占位盘 plates[] 携带全部 3 条 error |
+| multi_error/validate_by_object_temp_mix.3mf（388K，md5 `b3b5c8ad6508481f560f4c55c1abbff2`） | 无（对象在床内） | rc=6；Print::validate 报 PRINT_VALIDATE_OBJECT_COLLISION_SEQ 后仍续跑 → 三错并存（旧代码 run_validation 在 validate 错误处提前返回，仅报第一条）；占位盘同样携带 3 条 |
 
 ### 支撑语义组（P-25 gcode-actual 判定，2026-10-13）
 

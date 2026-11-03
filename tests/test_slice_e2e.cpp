@@ -1189,3 +1189,95 @@ TEST_CASE("Height range sanitize survives missing global layer_height key", "[in
 
     REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
 }
+
+// ============================================================================
+// Case 33/34 — Preprocess validation collect-all (2026-11-03). Contract: the
+// JSON must contain EVERY preprocessing validation error, so a fatal error in
+// one check may no longer short-circuit the remaining independent checks.
+// Both fixtures are pla_abs_mixed_fail.3mf (temp_mode family) with the plate
+// block of model_settings.config carrying print_sequence="by object" (the
+// plate-level channel that survives process preset substitution — the same
+// mechanism as the print_sequence fixtures; the project_settings copy alone
+// is reverted by substitution and does NOT reach print.config()).
+//
+// Two short-circuit layers were removed:
+//   1. run_validation's early returns — a blocking Print::validate error
+//      (Case 34: OBJECT_COLLISION_SEQ) used to skip check_print_by_object /
+//      check_filament_bed_rules / check_filament_temp_mixing entirely.
+//   2. process_plate's build-volume abort (Case 33) — a condemned plate used
+//      to skip run_validation wholesale. Print::validate itself is still
+//      SKIPPED there on purpose (derived-error suppression: out-of-volume
+//      geometry is polluted input for the height/collision checks; see
+//      process_plate's condemned-branch comment).
+// Plus patch_orphan_plate_issues (D3): a failed plate's placeholder entry in
+// plates[] used to carry only its FIRST error issue; the rest stayed in the
+// global issues[] only. Subsequent same-plate orphans are now appended.
+// ============================================================================
+
+TEST_CASE("Build-volume failure still collects config-check errors", "[integration][slice][fail][collect_all]")
+{
+    // Cube y-scaled x10 (300mm) straddling the whole 270mm bed in Y, x kept
+    // inside the plate grid so membership keeps it: every vertex outside the
+    // bed polygon -> Partly_Outside -> BUILD_VOLUME_OUTSIDE_XY (blocking, the
+    // plate is condemned). Old behaviour: the two config errors below were
+    // never produced for this plate.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/multi_error/build_volume_by_object_temp_mix.3mf", "collect_all_bv");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Triple collection: build volume + by-object + temp mixing.
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "BUILD_VOLUME_OUTSIDE_XY", IssueLevel::error));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "PRINT_BY_OBJECT_CAUTION", IssueLevel::error));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "FILAMENT_TEMP_MIXING", IssueLevel::error));
+
+    // D3: the plate has no slice result, so its placeholder entry in plates[]
+    // must carry ALL its error issues, not just the first.
+    const SliceOutputStats::PlateStats* placeholder = nullptr;
+    for (const auto& p : r->engine->stats().plates)
+        if (p.plate_id == 0) { placeholder = &p; break; }
+    REQUIRE(placeholder != nullptr);
+    REQUIRE_FALSE(placeholder->success);
+    int placeholder_errors = 0;
+    for (const auto& iss : placeholder->issues)
+        if (iss.level == IssueLevel::error) ++placeholder_errors;
+    REQUIRE(placeholder_errors == 3);
+
+    // Condemned before slicing: no toolpath diagnostics may appear.
+    for (const auto& iss : r->engine->stats().issues) {
+        REQUIRE_FALSE(iss.code == "TOOLPATH_OUTSIDE");
+        REQUIRE_FALSE(iss.code == "TOOL_HEIGHT_OUTSIDE");
+    }
+}
+
+TEST_CASE("Validate-path error still collects config-check errors", "[integration][slice][fail][collect_all]")
+{
+    // Same two objects in-bed: Print::validate fires the blocking
+    // by-object clearance error. Old behaviour: run_validation returned at
+    // that point — PRINT_BY_OBJECT_CAUTION and FILAMENT_TEMP_MIXING were
+    // never produced. All three must now be reported together.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/multi_error/validate_by_object_temp_mix.3mf", "collect_all_val");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "PRINT_VALIDATE_OBJECT_COLLISION_SEQ", IssueLevel::error));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "PRINT_BY_OBJECT_CAUTION", IssueLevel::error));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "FILAMENT_TEMP_MIXING", IssueLevel::error));
+
+    // D3 for the normal path: validate errors orphan their plate too (no
+    // slice result), so the placeholder must again carry all three errors.
+    const SliceOutputStats::PlateStats* placeholder = nullptr;
+    for (const auto& p : r->engine->stats().plates)
+        if (p.plate_id == 0) { placeholder = &p; break; }
+    REQUIRE(placeholder != nullptr);
+    REQUIRE_FALSE(placeholder->success);
+    int placeholder_errors = 0;
+    for (const auto& iss : placeholder->issues)
+        if (iss.level == IssueLevel::error) ++placeholder_errors;
+    REQUIRE(placeholder_errors == 3);
+}

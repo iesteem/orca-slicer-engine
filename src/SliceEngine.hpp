@@ -513,8 +513,17 @@ private:
     Slic3r::DynamicPrintConfig prepare_merged_config_for_plate(int plate_id);
 
     // Run Print::validate and classify all resulting warnings and errors into
-    // m_stats.issues. Returns false if any validation error is fatal.
+    // m_stats.issues, then run the independent config checks below — ALL
+    // checks execute and ALL errors are collected (none short-circuits the
+    // rest; requirement 2026-11-03: the JSON must carry every preprocessing
+    // validation error). Returns false if any collected error is fatal.
     bool run_validation(int plate_id, Slic3r::Print& print);
+
+    // The three config-only checks (print_sequence, filament bed rules,
+    // temperature mixing). Independent of each other and of Print::validate's
+    // outcome: every check runs even after one fails, so their issues all
+    // land in m_stats.issues. Aggregate pass/fail is returned.
+    bool run_config_checks(int plate_id, Slic3r::Print& print);
 
     // Refine a StringObjectException of type FILAMENT_NOT_MATCH_BED_TYPE by
     // substituting the user-friendly filament alias into the message text.

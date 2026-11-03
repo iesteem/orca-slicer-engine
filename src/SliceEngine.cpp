@@ -2519,8 +2519,14 @@ void SliceEngine::process_plate(int plate_id)
     // coordinates) and prepare_plate_print (positions the plate in global space). Plate
     // dimensions are derived from printable_area inside setup_print_origin.
     Vec3d origin = setup_print_origin(plate_id);
-    if (!run_build_volume_check(plate_id, identify_ids, origin))
-        return;
+    // Collect-all contract (2026-11-03): a build-volume failure condemns the
+    // plate for slicing but no longer skips the independent config checks —
+    // their issues must still land in the JSON alongside the build-volume
+    // ones. The volume verdict only skips Print::validate and everything
+    // after it (derived-error suppression: out-of-volume geometry is polluted
+    // input for validate's height/collision checks, whose results on it
+    // would be noise, not independent findings).
+    bool volume_ok = run_build_volume_check(plate_id, identify_ids, origin);
 
     // --- Timeout check (before heavy slicing work) ---
     // Deliberately placed AFTER the cheap pre-stage checks
@@ -2540,6 +2546,37 @@ void SliceEngine::process_plate(int plate_id)
     // --- Create Print ---
     Print print;
     init_print(print);
+
+    if (!volume_ok)
+    {
+        // Condemned plate: its build-volume issues are already collected and
+        // it will not be sliced. Run only the independent config checks (via
+        // prepare, which populates print.config()). The continuation is
+        // guarded on purpose: print.apply on condemned geometry must not be
+        // able to escalate the clean rc=6 verdict into run()'s rc=4
+        // INTERNAL_ERROR — the plate is already fully reported, so log and
+        // keep the preprocess verdict (documented swallow, exception-safety
+        // harness §8: catch-all with logging + rationale).
+        try
+        {
+            if (prepare_plate_print(plate_id, print, origin))
+                run_config_checks(plate_id, print);
+        }
+        catch (const std::exception& e)
+        {
+            BOOST_LOG_TRIVIAL(error)
+                << "Plate " << plate_id << ": config checks after build-volume failure threw "
+                   "(plate already condemned, verdict unchanged): "
+                << e.what();
+        }
+        catch (...)
+        {
+            BOOST_LOG_TRIVIAL(error)
+                << "Plate " << plate_id << ": config checks after build-volume failure threw a "
+                   "non-standard exception (plate already condemned, verdict unchanged)";
+        }
+        return;
+    }
 
     // --- Prepare plate print ---
     if (!prepare_plate_print(plate_id, print, origin))
@@ -3170,6 +3207,15 @@ void SliceEngine::setup_print_speed_table(Print& print)
 
 bool SliceEngine::run_validation(int plate_id, Print& print)
 {
+    // Collect-all contract (2026-11-03): a fatal Print::validate error no
+    // longer aborts the remaining checks. Every independent check runs and
+    // pushes its own issue, so the JSON carries ALL preprocessing validation
+    // errors; the aggregate verdict (return false) merely blocks slicing.
+    // Exception-safety note: each sub-check already owns its side effects
+    // (issue push + m_any_error + set_error_type) before returning, so
+    // continuing after one failed check cannot lose or double-record state.
+    bool ok = true;
+
     StringObjectException warning;
     StringObjectException err = print.validate(&warning, nullptr, nullptr);
 
@@ -3181,17 +3227,24 @@ bool SliceEngine::run_validation(int plate_id, Print& print)
 
     if (!err.string.empty())
         if (!emit_validate_error(plate_id, err))
-            return false;
+            ok = false;
 
-    if (!check_print_by_object(plate_id, print))
-        return false;
+    if (!run_config_checks(plate_id, print))
+        ok = false;
 
+    return ok;
+}
+
+bool SliceEngine::run_config_checks(int plate_id, Print& print)
+{
+    // The three config-only checks, all executed regardless of each other's
+    // outcome (see header). check_filament_bed_rules only emits warnings and
+    // has no verdict to fold in.
+    bool ok = check_print_by_object(plate_id, print);
     check_filament_bed_rules(plate_id, print);
-
     if (!check_filament_temp_mixing(plate_id))
-        return false;
-
-    return true;
+        ok = false;
+    return ok;
 }
 
 void SliceEngine::refine_bed_mismatch_message(StringObjectException& ex)
@@ -4830,6 +4883,12 @@ void SliceEngine::patch_orphan_plate_issues()
     // in the global issue list with their plate_id, so callers can still see
     // which plate was skipped.
     std::set<int> plates_with_results;
+    // Fabricated placeholder plates, by plate_id → index into m_stats.plates.
+    // Collect-all (2026-11-03): a condemned plate can now carry several error
+    // issues (build volume + config checks); every subsequent orphan of the
+    // same plate is appended to its placeholder instead of only the first one
+    // landing there. Warning/tip orphans stay global-only, as before.
+    std::map<int, size_t> placeholder_index;
     for (const auto& p : m_stats.plates)
         plates_with_results.insert(p.plate_id);
 
@@ -4841,13 +4900,23 @@ void SliceEngine::patch_orphan_plate_issues()
         if (issue.level != IssueLevel::error && issue.level != IssueLevel::serious_warning)
             continue;
 
+        if (auto it = placeholder_index.find(issue.plate_id); it != placeholder_index.end())
+        {
+            m_stats.plates[it->second].issues.push_back(issue);
+            continue;
+        }
+
         SliceOutputStats::PlateStats failed_plate;
         failed_plate.plate_id = issue.plate_id;
         failed_plate.success = false;
         failed_plate.plate_count = static_cast<int>(m_plate_data.size());
         failed_plate.issues.push_back(issue);
-        plates_with_results.insert(issue.plate_id);
-        m_stats.plates.push_back(failed_plate);
+        // NOTE: not inserted into plates_with_results — that set guards REAL
+        // result plates only. Registering the placeholder there would make
+        // the top guard swallow this plate's subsequent orphan issues before
+        // the append branch above could collect them.
+        placeholder_index.emplace(issue.plate_id, m_stats.plates.size());
+        m_stats.plates.push_back(std::move(failed_plate));
     }
 }
 
