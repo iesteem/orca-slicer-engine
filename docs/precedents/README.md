@@ -40,9 +40,9 @@
 | P-25 | 输出 3MF 盘元数据 `support_used` 换源 gcode 实际层（人类批准推翻 D1 parity；全 fork 树零真实消费方） | support-used-3mf-metadata-source.md | 已落地（2026-10-10，契约决策；JSON `support_free` 与 3MF `support_used` 互补同源） |
 | P-26 | 3MF 存储塔位与对象 bbox 重叠 → TOOLPATH_CONFLICT z=0（引擎检测正确，缺桌面自动摆塔） | wipe-tower-position-clamp.md（塔族合订） | **未修复**（2026-10-19；移塔/移模两路绕行均实测 rc=0） |
 | P-27 | V-FM01b 双 bug 定稿：内嵌脏预设 `enable_filament_ramming` 透传 → 塔深三盘恒 +2.00mm（Bug A，单键注入钉死）；检测器对 0.137mm brim 亲吻报 CONFLICT 而桌面同几何不报（Bug B，rc=7 触发器） | wipe-tower-position-clamp.md（塔族合订） | **A 待修**（规范化方案已定）；**B 待桌面 2.4.0 源码对照**；purge/塔位/矩阵/前缘四假说均已证伪在案；另 #FFFFFF 槽不现独立缺口未查 |
-| P-28 | 显式 json_output_path 无条件写文件：早期失败（rc=3/6）output_path 恒空连显式路径也被守卫跳过；2026-10-13 防垃圾文件决策收窄至"未传路径的直调方"；伴生裸 `-j` 空串不落盘对齐 | explicit-json-path-unconditional-write.md | 已修复（2026-10-19，宽语义用户批准；CLI 失败恒落盘，rc=1/99 仍无文件） |
+| P-28 | 显式 json_output_path 无条件写文件：早期失败（rc=3/6）output_path 恒空连显式路径也被守卫跳过；2026-10-13 防垃圾文件决策收窄至"未传路径的直调方"；伴生裸 `-j` 空串不落盘对齐 | explicit-json-path-unconditional-write.md | 已修复（2026-10-19，宽语义用户批准；CLI 失败恒落盘，rc=1/99 仍无文件；2026-10-26 曾随范围外撤回系列撤出 2.2.0，**2026-11-03 随 2.2.1 分支血统重落地**） |
 | P-29 | 加固函数自身死于缺键输入：sanitize_layer_config_ranges 对缺 layer_height 的裸 opt_float 解引用 | sanitizer-missing-key-self-crash.md | 已修复（含 e92c7da 二次 null 兜底，2026-10-22） |
-| P-30 | 工艺预设 wholesale 替换把 3MF 塔旋转角 270° 冲成默认 0°（B1+g 门控豁免 4 键） | wipe-tower-rotation-preset-overwrite.md | 已修复（2026-10-21；同族 support/wipe_tower 耗材键豁免待产品） |
+| P-30 | 工艺预设 wholesale 替换把 3MF 塔旋转角 270° 冲成默认 0°（B1+g 门控豁免 4 键；idex=90 反例必须门控） | wipe-tower-rotation-preset-overwrite.md | 已修复（2026-10-21；2026-10-26 曾撤出 2.2.0 评审范围，**2026-11-03 随 2.2.1 分支血统重落地**；同族 support/wipe_tower 耗材键豁免待产品） |
 | P-31 | wholesale 替换跳过缺失键，官方值被 FullPrintConfig 默认值冒充 | preset-keys-backfill-masquerade.md | 已修复（3eced92，2026-10-21） |
 | P-32 | slice_info 导入残留叠加：旧引擎产物污染源 3MF + parse 不清空 | slice-info-import-residue.md | 已修复（9cc51b7，2026-10-21） |
 | P-33 | 温度混用检测不收集 layer_config_ranges——高度范围换高低温槽被放行（引擎有意比桌面更严，P-30 路径 A 的姊妹案） | layer-range-temp-mixing-gap.md | 已修复（2026-10-22，W2 二批问题三路径 B；上游 issue#5 族待对齐） |
