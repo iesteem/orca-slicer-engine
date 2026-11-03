@@ -2064,6 +2064,44 @@ void SliceEngine::bake_instance_z_into_mesh()
         // 3MF import before instance transforms were finalized.
         obj->invalidate_bounding_box();
 
+        // --- Step 0: sanitize non-finite instance offsets (P-37) ---
+        // MSVC-based producers serialize NaN instance translations as the
+        // literal "-nan(ind)" (observed: Snapmaker_Orca-2.4.1 project export,
+        // fe47c91147985294.3mf item 8), which glibc strtod parses back to
+        // NaN. Both Step 1's magnitude guard below and the bounding-box
+        // merge are NaN-blind (NaN compares false; std::min/max return the
+        // original operand), so an unsanitized NaN lets the object's z range
+        // collapse to the defined-empty box and Step 2 "raises" the mesh by
+        // +DBL_MAX (z_shift=1.79769e+308), flinging it outside the build
+        // volume and failing the whole plate. The desktop survives the same
+        // file because Print::apply unconditionally zeroes instance Z before
+        // geometry is built (PrintApply.cpp:155) — sanitize the same way.
+        bool offset_reset = false;
+        for (ModelInstance* inst : obj->instances)
+        {
+            const Vec3d off = inst->get_offset();
+            if (std::isfinite(off.x()) && std::isfinite(off.y()) && std::isfinite(off.z()))
+                continue;
+            inst->set_offset(Vec3d(std::isfinite(off.x()) ? off.x() : 0.0,
+                                   std::isfinite(off.y()) ? off.y() : 0.0,
+                                   std::isfinite(off.z()) ? off.z() : 0.0));
+            offset_reset = true;
+        }
+        if (offset_reset)
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "bake_instance_z_into_mesh: object \"" << obj->name
+                << "\" had a non-finite instance translation; reset to 0 (desktop "
+                   "Print::apply discards instance Z as well)";
+            m_stats.issues.push_back(make_warning(
+                -1, "INSTANCE_OFFSET_NON_FINITE",
+                "Object \"" + obj->name + "\": instance translation contained non-finite "
+                "values (NaN/inf, e.g. a producer-written \"-nan(ind)\"); they were "
+                "reset to 0. Desktop discards instance Z the same way when slicing.",
+                obj->name,
+                "Re-save the project in a current slicer version to fix the stored transform."));
+        }
+
         // Local helper: convert a world-space (0,0,dz) shift to local mesh
         // space using the front instance's rotation (no offset component).
         // translate() writes mesh vertices in local space; if the instance
@@ -2121,6 +2159,33 @@ void SliceEngine::bake_instance_z_into_mesh()
             const double max_z_before = obj->max_z();  // for diagnostics; geometry never mutates here
             const size_t  parts       = obj->parts_count();
 
+            // P-37: an invalid or non-finite z range makes the sinking rule's
+            // comparisons meaningless. The defined-empty box (NaN vertices
+            // merging into it, or an object whose volumes were all dropped at
+            // load) reports max_z=-DBL_MAX; the multi-part arm below would
+            // then "raise" the mesh by +DBL_MAX and teleport it outside the
+            // build volume. Treat an unusable range as "leave the mesh alone"
+            // — an object with no measurable extent cannot be sunk on purpose.
+            const bool z_range_usable = std::isfinite(min_z_before)
+                                     && std::isfinite(max_z_before)
+                                     && min_z_before <= max_z_before;
+            if (!z_range_usable)
+            {
+                BOOST_LOG_TRIVIAL(warning)
+                    << "bake_instance_z_into_mesh: object \"" << obj->name
+                    << "\" has an unusable z range [" << min_z_before << ", "
+                    << max_z_before << "] (non-finite or inverted); sinking rule skipped";
+                m_stats.issues.push_back(make_warning(
+                    -1, "OBJECT_Z_RANGE_INVALID",
+                    "Object \"" + obj->name + "\": bounding-box z range is non-finite or "
+                    "inverted ([" + std::to_string(min_z_before) + ", "
+                    + std::to_string(max_z_before) + "]); the on-bed placement rule was "
+                    "skipped for it. This usually accompanies degenerate or discarded "
+                    "geometry, or a corrupted instance transform.",
+                    obj->name,
+                    "Inspect the object in a desktop slicer; repair or remove it."));
+            }
+
             // Replicate ensure_on_bed(allow_negative_z=true):
             //   single-part: raise only if (min_z >= -0.001) or (max_z < 0).
             //                Straddling (min_z < 0 AND max_z >= 0) is left alone.
@@ -2129,12 +2194,12 @@ void SliceEngine::bake_instance_z_into_mesh()
             // sinking and are preserved exactly; the multi-part rule has no
             // such carve-out, only an absolute max_z cutoff.
             double z_shift = 0.0;
-            if (parts == 1)
+            if (z_range_usable && parts == 1)
             {
                 if (min_z_before >= kSinkingZThreshold || max_z_before < 0.0)
                     z_shift = -min_z_before;
             }
-            else
+            else if (z_range_usable)
             {
                 if (max_z_before < kSinkingMinZThreshold)
                     z_shift = kSinkingMinZThreshold - max_z_before;
