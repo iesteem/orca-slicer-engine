@@ -1281,3 +1281,71 @@ TEST_CASE("Validate-path error still collects config-check errors", "[integratio
         if (iss.level == IssueLevel::error) ++placeholder_errors;
     REQUIRE(placeholder_errors == 3);
 }
+
+// ============================================================================
+// Case 35/36 — P-37 Z-bake NaN guards (2026-11-04). Production context: a
+// Snapmaker_Orca-2.4.1 export serialized an instance translation as the
+// literal "-nan(ind)" (fe47c91147985294.3mf); glibc strtod parses it back to
+// NaN, which every magnitude guard and bbox merge in bake_instance_z_into_mesh
+// is blind to (NaN compares false), collapsing the object's z range and
+// flinging the mesh by ±DBL_MAX. Two guards landed in df0fc2f: Step 0 resets
+// non-finite offset components to 0 (INSTANCE_OFFSET_NON_FINITE) and an
+// unusable z range skips the sinking rule (OBJECT_Z_RANGE_INVALID).
+//
+// The two fixtures pin the two distinct outcomes:
+//   Case 35 — NaN on a HEALTHY object: the reset rescues the slice entirely
+//             (old code: no rc=0 was reachable — the mesh got flung out of
+//             the build volume by the collapsed z range).
+//   Case 36 — the production ORIGINAL: the guards do NOT flip it green. The
+//             residue object (parts=0 after its negative volumes were dropped
+//             at load) is Fully_Outside on its own empty bbox; the delivered
+//             fix repaired the FILE (object removed in three places), and
+//             "delete only the NaN" was proven insufficient. What the guards
+//             add here is diagnosis: both warnings must attribute the corrupt
+//             object instead of leaving the misleading build-volume error
+//             alone (old code reported exactly that, with nothing else).
+// ============================================================================
+
+TEST_CASE("NaN instance offset on healthy object is reset and slices", "[integration][slice][ok][nan_guard]")
+{
+    // geom_nan_offset_reset_ok.3mf = geom_above_bed_ok.3mf with the single
+    // build item's transform z replaced by the literal "-nan(ind)".
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/geom_nan_offset_reset_ok.3mf", "nan_offset_ok");
+
+    // The rescue path: offset z reset to 0, cube lands on the bed, full slice.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_OFFSET_NON_FINITE", IssueLevel::warning));
+
+    // Zero error-level issues at all (measured: only warnings, incl. the
+    // intentional below-bed note after the reset). Old code could not reach
+    // rc=0 on this input — the NaN-blind z range flung the mesh out of the
+    // build volume and condemned the plate.
+    for (const auto& iss : r->engine->stats().issues)
+        REQUIRE(iss.level != IssueLevel::error);
+}
+
+TEST_CASE("fe47 original: corrupt residue stays failed but diagnosable", "[integration][slice][fail][nan_guard]")
+{
+    // Production original (14M, md5 c6dd39b5a2c07f41a3a6092979488c01):
+    // NaN instance offset AND a negative-volume residue object whose volumes
+    // are all dropped at load (parts=0 → empty bbox). The plate legitimately
+    // fails — the guards must not mask a genuinely unprintable file — but the
+    // failure must carry the two guard warnings naming the corrupt object.
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/fe47c91147985294.3mf", "fe47_original");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // The genuinely-outside residue still reports the build-volume error.
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "BUILD_VOLUME_FULLY_OUTSIDE", IssueLevel::error));
+
+    // The diagnostic contract (old code: the error above was the ONLY signal):
+    // both guards fire and attribute the corrupt object.
+    REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_OFFSET_NON_FINITE", IssueLevel::warning));
+    REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_Z_RANGE_INVALID", IssueLevel::warning));
+}

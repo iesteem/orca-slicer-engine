@@ -33,6 +33,7 @@
 |---|---|---|---|
 | 2c242c10f0e4b521.3mf (1.04MB) | P-08 | `3dba3d258052e3d4503bd1514d15ce77` | 擦塔位置超界 0.21mm → exit 7 TOOLPATH_OUTSIDE（未修复，修复后应转绿） |
 | bc053c0feb92b10c.3mf (4.6MB) | P-36 | `c93791fc498cc0ac28d03d6c5f50cbed` | 新版桌面端写盘 setting_id/filament_id 数组化 → load_from_json type_error.302 整配置弃载 → 误报 rc=6 "Printer model is missing"（printer_model="Snapmaker U1" 实际完好）；两键降为数组首元素即 rc=0。2026-10-28 从回收站救回入库（Downloads 原件当日被清理） |
+| fe47c91147985294.3mf (14MB) | P-37 | `c6dd39b5a2c07f41a3a6092979488c01` | Snapmaker_Orca-2.4.1 导出，SkullClamp 对象实例平移含字面 `"-nan(ind)"`（glibc strtod→NaN）+ 负体积残渣 parts=0 空 bbox → 旧代码 ±DBL_MAX 甩出构建体积，误报 BUILD_VOLUME_FULLY_OUTSIDE rc=6。护栏（df0fc2f）不改判该文件（残渣本身 Fully_Outside，修复走改文件三处同步删），契约=诊断：INSTANCE_OFFSET_NON_FINITE + OBJECT_Z_RANGE_INVALID 两条 warning 必须归因该对象（Case 36）。2026-11-04 从 Downloads 原件入库 |
 
 ## In-repo fixtures（tests/fixtures/）
 
@@ -51,6 +52,7 @@
 | geom_defects_cabin.3mf | 几何缺陷全 warning 不阻断（SELF_INTERSECT 等） |
 | slice_oob_fail.3mf / slice_too_high_oob_fail.3mf | e2e 越界/超高失败路径 |
 | u1_preset_test.3mf | 单对象单实例，Z-bake 分支命中 |
+| geom_nan_offset_reset_ok.3mf | P-37 翻绿路径（geom_above_bed_ok.3mf 解包重打包，仅 build item transform z 改字面 `"-nan(ind)"`，其余逐字节保留）：护栏把非有限偏移分量归零 → 立方体落床全切 rc=0 + INSTANCE_OFFSET_NON_FINITE warning；旧代码 z 域塌缩甩出构建体积，rc=0 不可达（Case 35） |
 
 ### 配置/预设组
 
