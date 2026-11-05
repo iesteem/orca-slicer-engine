@@ -185,8 +185,15 @@ size_t normalize_filament_vectors_to_slot_count(DynamicPrintConfig& config)
     const auto& defaults = FullPrintConfig::defaults();
     for (const std::string& key : core_filament_keys)
     {
-        if (key == "filament_flow_support" || key == "filament_flow_step_size" ||
-            is_filament_flow_variant_option(key))
+        // Defense-in-depth only: core_filament_keys is disjoint from
+        // filament_flow_variant_options() by construction (the flow-variant
+        // segmented keys are deliberately kept out of this list — see the
+        // comment above). The predicate stays so a future variant key added
+        // to the list is skipped rather than mis-resized. The two literal
+        // keys this guard used to check (filament_flow_support /
+        // filament_flow_step_size) never appear in core_filament_keys — that
+        // skip is only live in the Preset::filament_options loop below.
+        if (is_filament_flow_variant_option(key))
             continue;
         auto* opt = config.option(key, false);
         if (opt != nullptr && opt->is_vector())
