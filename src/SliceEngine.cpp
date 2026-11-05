@@ -35,6 +35,7 @@
 #include "SlicingDeadline.hpp"
 #include "BuildVolumeClassify.hpp"
 #include "ValidateClassify.hpp"
+#include "FlushVolumes.hpp"
 
 using namespace Slic3r;
 
@@ -1077,7 +1078,10 @@ bool SliceEngine::apply_preset_substitution()
 // (libslic3r) hits its `filament_diameter.size() > sqrt(matrix.size())` guard,
 // skips wipe-tower/tool-ordering construction, and the subsequent skirt&brim
 // step dereferences an empty ToolOrdering -> SIGSEGV. Ported from
-// PresetBundle.cpp:3650-3675 (upstream OrcaSlicer).
+// PresetBundle.cpp:3650-3675 (upstream OrcaSlicer). The pad/shrink + rebuild
+// algorithm lives in orca::normalize_flush_volumes (FlushVolumes.hpp,
+// header-only pure-vector core) so the pair-count invariant is unit-testable
+// from engine-tests, which does not link libslic3r.
 static void normalize_flush_volumes_matrix(DynamicPrintConfig& config)
 {
     constexpr double kEps = 1e-4; // matches libslic3r EPSILON (libslic3r.h)
@@ -1093,31 +1097,9 @@ static void normalize_flush_volumes_matrix(DynamicPrintConfig& config)
     const size_t old_n = static_cast<size_t>(std::sqrt(static_cast<double>(old_matrix.size())) + kEps);
     if (num_filaments == old_n) return;
 
-    // Resize flush_volumes_vector to 2*num_filaments (default 140. per upstream).
     auto* v_opt = config.option<ConfigOptionFloats>("flush_volumes_vector");
     std::vector<double> filaments = v_opt ? v_opt->values : std::vector<double>{};
-    while (filaments.size() < 2 * num_filaments) {
-        filaments.push_back(filaments.size() > 1 ? filaments[0] : 140.);
-        filaments.push_back(filaments.size() > 1 ? filaments[1] : 140.);
-    }
-    while (filaments.size() > 2 * num_filaments) {
-        filaments.pop_back();
-        filaments.pop_back();
-    }
-
-    // Rebuild the matrix to num_filaments x num_filaments: copy old pairs that
-    // still fit, synthesise the rest (diagonal=0, off-diagonal=load+unload).
-    std::vector<double> new_matrix;
-    new_matrix.reserve(num_filaments * num_filaments);
-    for (size_t i = 0; i < num_filaments; ++i)
-        for (size_t j = 0; j < num_filaments; ++j) {
-            if (i < old_n && j < old_n)
-                new_matrix.push_back(old_matrix[i * old_n + j]);
-            else
-                new_matrix.push_back(i == j ? 0. : filaments[2 * i] + filaments[2 * j + 1]);
-        }
-
-    m_opt->values = std::move(new_matrix);
+    m_opt->values = orca::normalize_flush_volumes(filaments, old_matrix, num_filaments);
     if (v_opt) v_opt->values = std::move(filaments);
 }
 
