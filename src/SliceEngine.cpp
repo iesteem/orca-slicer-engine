@@ -3014,11 +3014,18 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
         auto* zht_opt = m_config.option<ConfigOptionEnumsGeneric>("z_hop_types");
         if (zht_opt)
         {
-            ConfigOption* effective = zht_opt->clone();
+            // Own the clone via unique_ptr: apply_override() throws on type
+            // mismatch / nullable reject and clone() can itself fail
+            // allocation — a raw pointer leaks on any of those paths (RAII
+            // harness, resource bound at acquisition). Deleting through the
+            // base pointer is well-defined: ConfigOption's destructor is
+            // virtual (Config.hpp), the same ownership fork's own
+            // ConfigOptionUniquePtr relies on.
+            std::unique_ptr<ConfigOption> effective(zht_opt->clone());
             const ConfigOption* fil_override = m_config.option("filament_z_hop_types");
             if (fil_override != nullptr && !fil_override->is_nil())
-                static_cast<ConfigOptionVectorBase*>(effective)->apply_override(fil_override);
-            for (int v : static_cast<ConfigOptionEnumsGeneric*>(effective)->values)
+                static_cast<ConfigOptionVectorBase*>(effective.get())->apply_override(fil_override);
+            for (int v : static_cast<ConfigOptionEnumsGeneric*>(effective.get())->values)
             {
                 if (v == static_cast<int>(ZHopType::zhtSpiral) || v == static_cast<int>(ZHopType::zhtAuto))
                 {
@@ -3026,7 +3033,6 @@ void SliceEngine::check_spiral_lift_near_boundary(int plate_id, const BuildVolum
                     break;
                 }
             }
-            delete effective;
         }
     }
     if (!spiral_lift_active || build_volume.type() != BuildVolume_Type::Rectangle)
