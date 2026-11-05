@@ -53,14 +53,17 @@ TEST_CASE("flush volumes shrink side normalizes pairs without reading them", "[f
 }
 
 TEST_CASE("flush volumes synthesized cells use pair sums", "[flush]") {
-    std::vector<double> filaments = {10., 20., 30., 40.}; // already 2n for n=2
+    // pair i = (load_i, unload_i) = (f[2i], f[2i+1]); cell (i,j) = load_i +
+    // unload_j = f[2i] + f[2j+1] (upstream semantics, transposition-visible
+    // values chosen so (0,1) and (1,0) differ).
+    std::vector<double> filaments = {10., 1., 2., 20.}; // already 2n for n=2
     auto matrix = normalize_flush_volumes(filaments, {}, 2);
-    // Everything synthesized: diagonal 0, (0,1)=f[0]+f[1]=30, (1,0)=f[2]+f[3]=70.
+    // Everything synthesized: diagonal 0, (0,1)=f[0]+f[3]=30, (1,0)=f[2]+f[1]=3.
     CHECK(matrix.size() == 4);
     CHECK(matrix[0] == 0.);
     CHECK(matrix[3] == 0.);
     CHECK(matrix[1] == 30.);
-    CHECK(matrix[2] == 70.);
+    CHECK(matrix[2] == 3.);
     CHECK(filaments.size() == 4); // already in range: untouched
 }
 
