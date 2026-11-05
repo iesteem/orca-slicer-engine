@@ -104,8 +104,8 @@ public:
     // checks, no slicing, no export. Intended for config-only inspection / cloud
     // preflight: after it returns, m_config holds the substitution result and is
     // readable via config(). Returns false on any failure in the prefix (same
-    // per-step error handling as run()). The call sequence MUST stay in sync
-    // with the prefix of run(); see SliceEngine.cpp.
+    // per-step error handling as run()). The config prefix is shared with run()
+    // and run_geometry_preprocess_only() via run_config_and_preset_prefix().
     bool run_preset_substitution_only();
 
     // Run the preset-substitution prefix AND the geometry-half preprocessing
@@ -116,8 +116,8 @@ public:
     // stages: after it returns, m_model holds the post-preprocessing geometry
     // (Z baked into mesh, arrange_order assigned) and is readable via model().
     // Returns false on any failure in the prefix (same per-step error handling
-    // as run()). The call sequence MUST stay in sync with run(); see
-    // SliceEngine.cpp.
+    // as run()). The config prefix is shared with run() and
+    // run_preset_substitution_only() via run_config_and_preset_prefix().
     bool run_geometry_preprocess_only();
 
     // Read-only access to the merged config (final after the
@@ -181,6 +181,17 @@ public:
 
 private:
     // --- Pipeline stages (in call order) ---
+
+    // Shared 7-step config/preset prefix of run() / run_preset_substitution_only()
+    // / run_geometry_preprocess_only(): load_3mf → validate_printer_model →
+    // collect_config_warnings → load_system_presets → ensure_presets_available →
+    // apply_preset_substitution → normalize_loaded_config. The three entry
+    // points previously duplicated this sequence verbatim ("MUST stay in
+    // sync" comments); it lives here once now. Failure contract: returns
+    // false WITHOUT stamping statistics — the entry points' exit contracts
+    // differ (rc / m_any_error), so each caller does
+    // `if (!run_config_and_preset_prefix()) { build_statistics(); return false; }`.
+    bool run_config_and_preset_prefix();
 
     // Load and validate the input .3mf file. Populates m_model, m_config, and
     // m_plate_data on success. Returns false if load or validation fails.

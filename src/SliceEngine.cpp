@@ -289,22 +289,19 @@ SliceEngine::~SliceEngine()
     release_PlateData_list(m_plate_data);
 }
 
-bool SliceEngine::run()
+// Shared 7-step config/preset prefix of the three entry points (contract on
+// the declaration in SliceEngine.hpp). Defined directly above run() so the
+// call order reads top-down alongside the stages it composes.
+bool SliceEngine::run_config_and_preset_prefix()
 {
     if (!load_3mf())
-    {
-        build_statistics();
         return false;
-    }
 
     // Block slicing if printer model is not Snapmaker U1.
     // Moved before preset loading to fail fast — this check reads only
     // m_config (populated during 3MF load) and has no preset dependency.
     if (!validate_printer_model())
-    {
-        build_statistics();
         return false;
-    }
 
     // Collect config warnings (never blocks the pipeline).
     collect_config_warnings();
@@ -316,20 +313,28 @@ bool SliceEngine::run()
     // Hard precondition (P-09): must abort before init_print dereferences
     // m_preset_bundle. See ensure_presets_available for the full contract.
     if (!ensure_presets_available())
-    {
-        build_statistics();
         return false;
-    }
 
     if (!apply_preset_substitution())
-    {
-        build_statistics();
         return false;
-    }
 
     // Runs after the substitution stages: both fixes guard against libslic3r
     // SEGVs and are independent of what substitution did.
     normalize_loaded_config();
+
+    return true;
+}
+
+bool SliceEngine::run()
+{
+    // Shared config/preset prefix with run_preset_substitution_only() /
+    // run_geometry_preprocess_only(); on failure only stamp JSON statistics
+    // and stop (each entry point owns its own build_statistics call).
+    if (!run_config_and_preset_prefix())
+    {
+        build_statistics();
+        return false;
+    }
 
     if (validate_input())
     {
@@ -420,40 +425,14 @@ bool SliceEngine::run_preset_substitution_only()
 {
     // Config-only prefix of run(): load the project, validate the printer
     // model, load system/project presets, and apply official substitution.
-    // No geometry checks, slicing, or export. The call sequence mirrors the
-    // prefix of run() (SliceEngine.cpp:146-183) and MUST stay in sync with it.
-    if (!load_3mf())
+    // No geometry checks, slicing, or export. The sequence itself lives in
+    // run_config_and_preset_prefix(), shared with run() and
+    // run_geometry_preprocess_only().
+    if (!run_config_and_preset_prefix())
     {
         build_statistics();
         return false;
     }
-
-    if (!validate_printer_model())
-    {
-        build_statistics();
-        return false;
-    }
-
-    // Collect config warnings (never blocks the pipeline).
-    collect_config_warnings();
-
-    // Load vendor presets so apply_*_official_preset can resolve.
-    load_system_presets();
-
-    // Hard precondition (P-09), mirroring run()'s prefix.
-    if (!ensure_presets_available())
-    {
-        build_statistics();
-        return false;
-    }
-
-    if (!apply_preset_substitution())
-    {
-        build_statistics();
-        return false;
-    }
-
-    normalize_loaded_config();
 
     // m_config now holds the substitution result; run()'s later stages do not
     // modify the preset keys, so callers can read it via config().
@@ -464,45 +443,20 @@ bool SliceEngine::run_preset_substitution_only()
 bool SliceEngine::run_geometry_preprocess_only()
 {
     // Config + geometry-preprocessing prefix of run(): everything in run() up to
-    // and including setup_extruder_params (SliceEngine.cpp:146-226), minus the
-    // per-plate slicing loop, package_output, and export. The geometry stages
-    // mutate m_model in place (Z baked into mesh, arrange_order stamped); after
-    // return it is readable via model(). No slicing, no export.
+    // and including setup_extruder_params, minus the per-plate slicing loop,
+    // package_output, and export. The geometry stages mutate m_model in place
+    // (Z baked into mesh, arrange_order stamped); after return it is readable
+    // via model(). No slicing, no export.
     //
-    // The call sequence mirrors the prefix of run() and MUST stay in sync.
-
-    // --- Config half (same prefix as run_preset_substitution_only) ---
-    if (!load_3mf())
+    // The config half lives in run_config_and_preset_prefix(), shared with
+    // run() and run_preset_substitution_only().
+    if (!run_config_and_preset_prefix())
     {
         build_statistics();
         return false;
     }
 
-    if (!validate_printer_model())
-    {
-        build_statistics();
-        return false;
-    }
-
-    collect_config_warnings();
-    load_system_presets();
-
-    // Hard precondition (P-09), mirroring run()'s prefix.
-    if (!ensure_presets_available())
-    {
-        build_statistics();
-        return false;
-    }
-
-    if (!apply_preset_substitution())
-    {
-        build_statistics();
-        return false;
-    }
-
-    normalize_loaded_config();
-
-    // --- Geometry-half preprocessing (mirrors run():185-226) ---
+    // --- Geometry-half preprocessing (mirrors run()) ---
     if (!validate_input())
     {
         build_statistics();
@@ -2141,6 +2095,10 @@ void SliceEngine::bake_instance_z_into_mesh()
         constexpr double kSinkingZThreshold     = -0.001;  // Model.hpp: SINKING_Z_THRESHOLD
         constexpr double kSinkingMinZThreshold   = 0.05;   // Model.hpp: SINKING_MIN_Z_THRESHOLD
         constexpr double kEpsilon                 = 1e-4;
+        // Log gate deliberately tighter than kEpsilon: a z_shift below
+        // kEpsilon changes nothing geometrically, but shifts as small as
+        // 1e-6 are still worth logging for the bake audit trail.
+        constexpr double kLogGateEps              = 1e-6;
 
         {
             obj->invalidate_bounding_box();
@@ -2202,7 +2160,7 @@ void SliceEngine::bake_instance_z_into_mesh()
             }
 
             obj->invalidate_bounding_box();
-            if (std::abs(z_shift) > 1e-6 || std::abs(min_z_before) > 1e-6)
+            if (std::abs(z_shift) > kLogGateEps || std::abs(min_z_before) > kLogGateEps)
             {
                 BOOST_LOG_TRIVIAL(info) << "bake_instance_z_into_mesh: object \"" << obj->name
                                         << "\" inst_z=" << inst_z
@@ -4001,7 +3959,14 @@ static bool all_gcode_layers_valid(const PlateSliceResult& slice_result)
 // free function: no member state.
 static void remove_unusable_gcode(int plate_id, PlateSliceResult& slice_result)
 {
-    boost::filesystem::remove(slice_result.gcode_path);
+    // error_code overload: never throws — the throwing overload would escalate
+    // a cleanup miss into an exception on a warning-level path.
+    boost::system::error_code ec;
+    boost::filesystem::remove(slice_result.gcode_path, ec);
+    if (ec)
+        BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
+                                   << ": failed to discard unusable G-code file ("
+                                   << ec.message() << ")";
     BOOST_LOG_TRIVIAL(warning) << "Plate " << (plate_id + 1)
                                << ": empty G-code layers, G-code file discarded";
 }
