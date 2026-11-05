@@ -456,6 +456,45 @@ TEST_CASE("Oversized per-filament vectors shrunk to slot count", "[integration][
         CHECK(m->values.size() == 16);
 }
 
+// Odd-length flush_volumes_vector parity repair (SliceEngine.cpp review
+// 2026-11-05; unit-level red→green in test_flush_volumes.cpp). A crafted 3MF
+// config block reaches normalize_flush_volumes_matrix with 13 entries: the
+// pre-fix pad/shrink loops step by two, so an odd length can never land on
+// the 2n invariant — it exits at 2n-1 and the matrix rebuild reads
+// filaments[2i+1] one past the end (UB). The guard drops the dangling
+// half-pair first. Fixture: u1_preset_test_oversized.3mf with only
+// flush_volumes_vector stretched to 13 entries (matrix stays 6x6).
+TEST_CASE("Odd-length flush_volumes_vector repaired to whole pairs", "[integration][preset]")
+{
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/flush_vector_odd_length.3mf";
+    cfg.temp_dir = "/tmp";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    REQUIRE(engine.run_preset_substitution_only());
+
+    const DynamicPrintConfig& mc = engine.config();
+
+    const auto* fsi = mc.option<ConfigOptionStrings>("filament_settings_id");
+    REQUIRE(fsi);
+    REQUIRE(fsi->values.size() == 4);
+
+    // The parity invariant: exactly 2*4 entries. Pre-fix this lands at 7
+    // (2n-1) and the rebuild reads filaments[7] out of bounds.
+    if (const auto* v = mc.option<Slic3r::ConfigOptionFloats>("flush_volumes_vector"))
+        CHECK(v->values.size() == 8);
+
+    // Matrix rebuilt to 4x4 from the old 6x6 top-left block (all cells come
+    // from the old matrix — old_n=6 > n=4 — so no synthesized reads needed,
+    // but the size proves the rebuild ran with the repaired vector).
+    if (const auto* m = mc.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix"))
+        CHECK(m->values.size() == 16);
+}
+
 TEST_CASE("Official preset key sets are mutually exclusive across categories", "[integration][preset][diag]")
 {
     // The three substitution stages run in order printer -> filament -> process
