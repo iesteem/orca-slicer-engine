@@ -22,13 +22,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify ENGINE_VERSION is defined exactly once
         run: |
-          defs=$(grep -rn 'ENGINE_VERSION="' CMakeLists.txt | wc -l)
+          # Anchor to the definition form (^set(ENGINE_VERSION ...)); the old
+          # pattern 'ENGINE_VERSION="' matched the *usage* line
+          # (ENGINE_VERSION="${ENGINE_VERSION}") instead, so the guard was a
+          # no-op that passed even with the definition missing.
+          defs=$(grep -c '^set(ENGINE_VERSION ' CMakeLists.txt)
           if [ "$defs" -ne 1 ]; then
             echo "::error::ENGINE_VERSION must be defined exactly once in CMakeLists.txt (found $defs)."
             echo "It is the single source of truth for the built version."
             exit 1
           fi
-          echo "OK: ENGINE_VERSION defined once -> $(grep -m1 'ENGINE_VERSION=' CMakeLists.txt)"
+          echo "OK: ENGINE_VERSION defined once -> $(grep -m1 '^set(ENGINE_VERSION ' CMakeLists.txt)"
 
   # ---------------------------------------------------------------------------
   # Full build + test of the ORCA_STATIC (Linux single static binary) target.
