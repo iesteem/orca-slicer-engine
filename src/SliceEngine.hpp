@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <map>
 #include <set>
 #include <string>
@@ -108,15 +109,16 @@ public:
     bool run_preset_substitution_only();
 
     // Run the preset-substitution prefix AND the geometry-half preprocessing
-    // prefix of run() (ensure_presets_available, validate_input, run_geometry_checks,
-    // bake_instance_z_into_mesh, assign_arrange_order, setup_extruder_params),
-    // then stop — no slicing, no
+    // prefix of run() (ensure_presets_available, validate_input, then
+    // run_geometry_prefix: run_geometry_checks, bake_instance_z_into_mesh,
+    // assign_arrange_order, setup_extruder_params), then stop — no slicing, no
     // export. Intended for integration testing the geometry preprocessing
     // stages: after it returns, m_model holds the post-preprocessing geometry
     // (Z baked into mesh, arrange_order assigned) and is readable via model().
     // Returns false on any failure in the prefix (same per-step error handling
     // as run()). The config prefix is shared with run() and
-    // run_preset_substitution_only() via run_config_and_preset_prefix().
+    // run_preset_substitution_only() via run_config_and_preset_prefix(); the
+    // geometry stages via run_geometry_prefix().
     bool run_geometry_preprocess_only();
 
     // Read-only access to the merged config (final after the
@@ -191,6 +193,24 @@ private:
     // differ (rc / m_any_error), so each caller does
     // `if (!run_config_and_preset_prefix()) { build_statistics(); return false; }`.
     bool run_config_and_preset_prefix();
+
+    // Shared geometry-half stages of run() / run_geometry_preprocess_only():
+    // run_geometry_checks → bake_instance_z_into_mesh → assign_arrange_order →
+    // setup_extruder_params. Mutates m_model in place and appends geometry
+    // issues to m_stats. Throws whatever the stages throw — each entry point
+    // catches and reports with its own stage wording (record_pipeline_exception
+    // below), so no catch lives here.
+    void run_geometry_prefix();
+
+    // Shared catch-path reporter for the pipeline entry points: log, set
+    // m_any_error + EXIT_SLICING_ERROR, and push INTERNAL_ERROR (e != nullptr,
+    // the catch(std::exception&) tier) or INTERNAL_FATAL (catch(...) tier).
+    // stage_log names the stage in log lines and the INTERNAL_FATAL message
+    // ("slicing pipeline" / "geometry preprocessing"); stage_msg is the
+    // fragment embedded in the INTERNAL_ERROR message ("slicing" /
+    // "geometry preprocessing"). Both texts are byte-identical to the
+    // pre-extraction catch blocks — they are JSON-visible; do not reword.
+    void record_pipeline_exception(const char* stage_log, const char* stage_msg, const std::exception* e);
 
     // Load and validate the input .3mf file. Populates m_model, m_config, and
     // m_plate_data on success. Returns false if load or validation fails.

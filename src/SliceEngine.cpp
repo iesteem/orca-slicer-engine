@@ -351,41 +351,14 @@ bool SliceEngine::run()
             // Runs after apply_preset_substitution() above so printable_area
             // is the official U1 value, and before process_plate — the first
             // membership consumer (mark_printable_instances). Ordering
-            // against bake_instance_z_into_mesh below is irrelevant: it only
-            // moves Z, and membership is decided by the XY intersection test.
+            // against bake_instance_z_into_mesh inside run_geometry_prefix
+            // below is irrelevant: it only moves Z, and membership is decided
+            // by the XY intersection test.
             rebuild_plate_membership();
 
-            // --- Geometry defect detection (once for entire model, before per-plate loop) ---
-            {
-                auto geom_issues = run_geometry_checks(m_model);
-                for (auto& issue : geom_issues)
-                {
-                    m_stats.issues.push_back(std::move(issue));
-                }
-            }
-
-            // Desktop parity: normalize each object's Z onto the bed exactly as opening
-            // the project in the desktop app would (ensure_on_bed with allow_negative_z,
-            // sinking preserved). Done once at load, before geometry checks and the
-            // per-plate loop, so every later stage sees the same coordinates the
-            // desktop would.
-            bake_instance_z_into_mesh();
-
-            // Assign a global, monotonic arrange_order to every instance once per
-            // task. This is model-wide (plate-agnostic), so it belongs here rather
-            // than inside the per-plate process_plate loop, where it was previously
-            // re-written with identical values N times. Note libslic3r re-derives
-            // the final ordering during Print::validate() / GCode export
-            // (sort_object_instances_by_model_order); this just seeds a non-zero
-            // value on m_model before any Print copies it.
-            assign_arrange_order();
-
-            // Populate Model::extruderParamsMap once per task. Config-only (reads
-            // m_config, which is final after apply_filament_official_preset in
-            // validate_input above), writes a static Model member, no Print or
-            // plate dependency -- so it belongs here, not in the per-plate loop
-            // where it was previously re-run with identical results N times.
-            setup_extruder_params();
+            // Geometry half (defect checks + Z-bake + arrange order + extruder
+            // params), shared with run_geometry_preprocess_only().
+            run_geometry_prefix();
 
             decode_plate_thumbnails();
 
@@ -397,20 +370,11 @@ bool SliceEngine::run()
         }
         catch (const std::exception& e)
         {
-            BOOST_LOG_TRIVIAL(error) << "Unhandled exception in slicing pipeline: " << e.what();
-            m_any_error = true;
-            set_error_type(EXIT_SLICING_ERROR);
-            m_stats.issues.push_back(make_error(
-                -1, "INTERNAL_ERROR",
-                "An unexpected internal error occurred during slicing. Please try again or contact support."));
+            record_pipeline_exception("slicing pipeline", "slicing", &e);
         }
         catch (...)
         {
-            BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in slicing pipeline";
-            m_any_error = true;
-            set_error_type(EXIT_SLICING_ERROR);
-            m_stats.issues.push_back(
-                make_error(-1, "INTERNAL_FATAL", "Unhandled unknown exception in slicing pipeline"));
+            record_pipeline_exception("slicing pipeline", "slicing", nullptr);
         }
     }
 
@@ -442,14 +406,14 @@ bool SliceEngine::run_preset_substitution_only()
 
 bool SliceEngine::run_geometry_preprocess_only()
 {
-    // Config + geometry-preprocessing prefix of run(): everything in run() up to
-    // and including setup_extruder_params, minus the per-plate slicing loop,
-    // package_output, and export. The geometry stages mutate m_model in place
-    // (Z baked into mesh, arrange_order stamped); after return it is readable
-    // via model(). No slicing, no export.
-    //
-    // The config half lives in run_config_and_preset_prefix(), shared with
-    // run() and run_preset_substitution_only().
+    // Config + geometry-preprocessing prefix of run(): everything in run() up
+    // to and including setup_extruder_params (via run_geometry_prefix), minus
+    // rebuild_plate_membership, decode_plate_thumbnails, resolve_output_path,
+    // the per-plate slicing loop, package_output, and export. The geometry
+    // stages mutate m_model in place (Z baked into mesh, arrange_order
+    // stamped); after return it is readable via model(). No slicing, no
+    // export. The config half lives in run_config_and_preset_prefix(),
+    // shared with run() and run_preset_substitution_only().
     if (!run_config_and_preset_prefix())
     {
         build_statistics();
@@ -465,44 +429,84 @@ bool SliceEngine::run_geometry_preprocess_only()
 
     try
     {
-        // Geometry defect detection (once for the whole model, before per-plate).
-        {
-            auto geom_issues = run_geometry_checks(m_model);
-            for (auto& issue : geom_issues)
-            {
-                m_stats.issues.push_back(std::move(issue));
-            }
-        }
-
-        // Bake instance Z into mesh + seat objects on bed (desktop parity).
-        bake_instance_z_into_mesh();
-
-        // Stamp a global, monotonic arrange_order on every instance.
-        assign_arrange_order();
-
-        // Populate Model::extruderParamsMap from the final config.
-        setup_extruder_params();
+        run_geometry_prefix();
     }
     catch (const std::exception& e)
     {
-        BOOST_LOG_TRIVIAL(error) << "Unhandled exception in geometry preprocessing: " << e.what();
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
-        m_stats.issues.push_back(make_error(
-            -1, "INTERNAL_ERROR",
-            "An unexpected internal error occurred during geometry preprocessing. Please try again or contact support."));
+        record_pipeline_exception("geometry preprocessing", "geometry preprocessing", &e);
     }
     catch (...)
     {
-        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in geometry preprocessing";
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
-        m_stats.issues.push_back(
-            make_error(-1, "INTERNAL_FATAL", "Unhandled unknown exception in geometry preprocessing"));
+        record_pipeline_exception("geometry preprocessing", "geometry preprocessing", nullptr);
     }
 
     build_statistics();
     return !m_any_error;
+}
+
+// ============================================================================
+// Shared geometry-half stages + shared pipeline catch reporter
+// (smell C1, 2026-11-06: the four geometry stages and the catch-pair were
+// duplicated verbatim between run() and run_geometry_preprocess_only())
+// ============================================================================
+
+void SliceEngine::run_geometry_prefix()
+{
+    // --- Geometry defect detection (once for entire model, before per-plate loop) ---
+    {
+        auto geom_issues = run_geometry_checks(m_model);
+        for (auto& issue : geom_issues)
+        {
+            m_stats.issues.push_back(std::move(issue));
+        }
+    }
+
+    // Desktop parity: normalize each object's Z onto the bed exactly as opening
+    // the project in the desktop app would (ensure_on_bed with allow_negative_z,
+    // sinking preserved). Done once at load, before geometry checks and the
+    // per-plate loop, so every later stage sees the same coordinates the
+    // desktop would.
+    bake_instance_z_into_mesh();
+
+    // Assign a global, monotonic arrange_order to every instance once per
+    // task. This is model-wide (plate-agnostic), so it belongs here rather
+    // than inside the per-plate process_plate loop, where it was previously
+    // re-written with identical values N times. Note libslic3r re-derives
+    // the final ordering during Print::validate() / GCode export
+    // (sort_object_instances_by_model_order); this just seeds a non-zero
+    // value on m_model before any Print copies it.
+    assign_arrange_order();
+
+    // Populate Model::extruderParamsMap once per task. Config-only (reads
+    // m_config, which is final after apply_filament_official_preset in
+    // validate_input), writes a static Model member, no Print or plate
+    // dependency -- so it belongs here, not in the per-plate loop where it
+    // was previously re-run with identical results N times.
+    setup_extruder_params();
+}
+
+void SliceEngine::record_pipeline_exception(const char* stage_log, const char* stage_msg, const std::exception* e)
+{
+    // Order (log → flags → issue push) matches the pre-extraction catch blocks
+    // exactly; the issue messages are byte-identical and JSON-visible.
+    if (e != nullptr)
+    {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled exception in " << stage_log << ": " << e->what();
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(
+            -1, "INTERNAL_ERROR",
+            std::string("An unexpected internal error occurred during ") + stage_msg +
+                ". Please try again or contact support."));
+    }
+    else
+    {
+        BOOST_LOG_TRIVIAL(error) << "Unhandled non-standard exception in " << stage_log;
+        m_any_error = true;
+        set_error_type(EXIT_SLICING_ERROR);
+        m_stats.issues.push_back(make_error(
+            -1, "INTERNAL_FATAL", std::string("Unhandled unknown exception in ") + stage_log));
+    }
 }
 
 // ============================================================================
