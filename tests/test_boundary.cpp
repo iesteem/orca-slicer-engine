@@ -56,7 +56,7 @@ bool has_issue(const SliceOutputStats& s, const std::string& code, IssueLevel le
     return false;
 }
 
-bool has_no_issue_starting_with(const SliceOutputStats& s, const std::string& prefix)
+bool has_issue_starting_with(const SliceOutputStats& s, const std::string& prefix)
 {
     for (const auto& iss : s.issues)
         if (iss.code.rfind(prefix, 0) == 0)
@@ -78,7 +78,7 @@ TEST_CASE("Nozzle=0 rejected: official preset not found", "[integration][boundar
     REQUIRE(e->exit_code() == EXIT_PREPROCESS_ERROR);
     REQUIRE(has_issue(e->stats(), "PRINTER_PRESET_LOAD_ERROR", IssueLevel::error));
     // Config-range warnings also fire but do not change the outcome.
-    REQUIRE(has_no_issue_starting_with(e->stats(), "CONFIG_INVALID_"));
+    REQUIRE(has_issue_starting_with(e->stats(), "CONFIG_INVALID_"));
 }
 
 TEST_CASE("Layer-height=0 warned but not blocked (filename divergence)", "[integration][boundary]")
@@ -105,5 +105,5 @@ TEST_CASE("Temperature=999 overwritten by filament preset, slices OK", "[integra
     REQUIRE(e->stats().success);
     REQUIRE(e->exit_code() == 0);
     // No config-range warning: the out-of-range 999 was replaced before slicing.
-    REQUIRE_FALSE(has_no_issue_starting_with(e->stats(), "CONFIG_INVALID_"));
+    REQUIRE_FALSE(has_issue_starting_with(e->stats(), "CONFIG_INVALID_"));
 }
