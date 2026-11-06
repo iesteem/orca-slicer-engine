@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # gen_static_libs.sh — 从 OrcaSlicer 的 build.ninja 提取 libslic3r 静态链接清单,
-# 生成 cmake/StaticLibs.cmake(定义 ORCA_STATIC_LIBS),供 ORCA_STATIC 构建模式使用。
+# 生成 cmake/StaticConfig.cmake(定义 ORCA_STATIC_LIBS),供 ORCA_STATIC 构建模式使用。
 #
 # 权威来源:OrcaSlicer build-engine 已成功链接出的 `src/snapmaker-orca` 可执行文件。
 # 它的 LINK_LIBRARIES 是「libslic3r + 全部依赖」的拓扑有序、已验证清单。
@@ -110,11 +110,6 @@ INC_RAW="$(awk '
             -I?*)     printf '  "%s"\n' "${1#-I}" ;;
         esac
         shift
-    done
-    # headless 专属:libslic3r TU 列表里没有(GUI 才用),但我们的 nanosvg.cpp 需要
-    for extra in deps_src/nanosvg; do
-        d="$ORCA_ROOT/$extra"
-        [ -d "$d" ] && printf '  "%s"\n' "$d"
     done
     echo ")"
 } > "$OUT"

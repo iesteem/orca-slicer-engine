@@ -32,16 +32,11 @@ struct SliceOutputStats
         std::string gcode_file;
 
         // Time statistics (in seconds)
-        float total_time = 0.0f;
-        float prepare_time = 0.0f;
         float print_time = 0.0f; // Actual print time (excluding prepare time)
 
         // Filament statistics
         double total_filament_m = 0.0; // Total filament in meters
         double total_filament_g = 0.0; // Total filament in grams
-        double model_filament_m = 0.0; // Model filament in meters
-        double model_filament_g = 0.0; // Model filament in grams
-        double total_cost = 0.0; // Total cost
 
         // Per-extruder filament usage
         std::map<int, double> filament_used_m; // Per extruder: meters

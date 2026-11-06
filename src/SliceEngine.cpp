@@ -240,7 +240,7 @@ size_t normalize_filament_vectors_to_slot_count(DynamicPrintConfig& config)
         ConfigOption* opt = config.option(key, true);
         if (!opt)
             continue;
-        if (opt && opt->is_vector())
+        if (opt->is_vector())
         {
             auto* vec = static_cast<ConfigOptionVectorBase*>(opt);
             const size_t want = is_filament_flow_variant_option(key) ? flow_count : n;
@@ -3651,7 +3651,6 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
             support_volume += vol;
         result.support_generated = support_volume > 0.0;
         result.total_used_filament = ps.total_used_filament;
-        result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
 
         capture_post_trim_config_snapshot(print, result);
@@ -4683,8 +4682,6 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 
     auto& modes = result.gcode_result.print_statistics.modes;
     auto& normal_mode = modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)];
-    plate_stats.total_time = normal_mode.time;
-    plate_stats.prepare_time = normal_mode.prepare_time;
     plate_stats.print_time = normal_mode.time - normal_mode.prepare_time;
     if (!std::isfinite(plate_stats.print_time))
     {
@@ -4695,7 +4692,6 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 
     plate_stats.total_filament_m = result.total_used_filament;
     plate_stats.total_filament_g = result.total_weight;
-    plate_stats.total_cost = result.total_cost;
     plate_stats.support_generated = result.support_generated;
 
     // Prefer the diameters/densities captured at slice time (result.filament_*), which
@@ -4734,33 +4730,6 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
         plate_stats.filament_used_m[extruder_id] = used_m;
         plate_stats.filament_used_g[extruder_id] = used_g;
     }
-
-    double total_support_m = 0.0, total_support_g = 0.0;
-    double total_flush_m = 0.0, total_flush_g = 0.0;
-    double total_wipe_tower_m = 0.0, total_wipe_tower_g = 0.0;
-
-    auto& ps = result.gcode_result.print_statistics;
-    auto accumulate = [&](const std::map<size_t, double>& volumes, double& m_acc, double& g_acc)
-    {
-        for (const auto& [extruder_id, volume] : volumes)
-        {
-            double diameter = diameter_of(extruder_id);
-            if (diameter <= 0.0)
-                continue;
-            double density = density_of(extruder_id);
-            double cross_section = M_PI * 0.25 * diameter * diameter;
-            m_acc += (volume / cross_section) * 0.001;
-            g_acc += volume * density * 0.001;
-        }
-    };
-    accumulate(ps.support_volumes_per_extruder, total_support_m, total_support_g);
-    accumulate(ps.wipe_tower_volumes_per_extruder, total_wipe_tower_m, total_wipe_tower_g);
-    accumulate(ps.flush_per_filament, total_flush_m, total_flush_g);
-
-    plate_stats.model_filament_m =
-        plate_stats.total_filament_m - total_support_m - total_flush_m - total_wipe_tower_m;
-    plate_stats.model_filament_g =
-        plate_stats.total_filament_g - total_support_g - total_flush_g - total_wipe_tower_g;
 
     // Prefer the nozzle diameters captured at slice time (the post-apply print.config()
     // values); fall back to the raw m_config (which still has N slots) for paths that

@@ -62,7 +62,6 @@ struct PlateSliceResult
     bool support_generated = false;
     bool has_postprocess_warning = false;
     double total_used_filament = 0.0;
-    double total_cost = 0.0;
     std::map<size_t, double> filament_volumes; // per extruder
     std::vector<std::string> filament_colours; // colours actually used (matches G-code header)
     std::vector<std::string> filament_types;   // types actually used (matches G-code header)
