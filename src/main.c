@@ -112,8 +112,15 @@ int main(int argc, char* argv[])
     const char* json_output = NULL;
     const char* format      = "gcode.3mf";
     int         verbose     = 0;
-    int         timeout_sec = 0;
-    int         max_size_mb = 0;
+    /* -1 = flag absent (key omitted from params_json, engine applies its
+     * defaults: 200 MB cap / no timeout). 0 = flag explicitly passed
+     * ("no limit" per -h) and MUST reach the engine — the old 0-init +
+     * "> 0" emit gates dropped an explicit --max-size 0, silently turning
+     * the documented "no limit" into the engine's 200 MB default cap
+     * (smell A1, 2026-11-06). parse_int_opt rejects negatives, so -1 can
+     * only mean "absent". */
+    int         timeout_sec = -1;
+    int         max_size_mb = -1;
     const char* cancel_file = NULL;
     int         keep_failed_gcode3mf = 0;
 
@@ -310,9 +317,12 @@ int main(int argc, char* argv[])
     if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), log_file);
     if (pos >= 0) pos = appendf(params, pos, sizeof(params), ",\"json_output_path\":");
     if (pos >= 0) pos = append_json_str(params, pos, sizeof(params), json_output);
-    if (pos >= 0 && timeout_sec > 0)
+    /* >= 0: an explicit 0 ("no limit") is a real value and must be emitted
+     * (see the sentinel comment above); absent flags stay -1 and omit the
+     * key so the engine defaults apply. */
+    if (pos >= 0 && timeout_sec >= 0)
         pos = appendf(params, pos, sizeof(params), ",\"timeout_seconds\":%d", timeout_sec);
-    if (pos >= 0 && max_size_mb > 0)
+    if (pos >= 0 && max_size_mb >= 0)
         pos = appendf(params, pos, sizeof(params), ",\"max_size_mb\":%d", max_size_mb);
     if (pos >= 0 && cancel_file && cancel_file[0])
     {
