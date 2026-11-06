@@ -25,7 +25,8 @@ set(ENGINE_VERSION "2.2.1")
 # ==================================================================
 # Static single-binary mode (Linux):
 #   Compile the engine C++ sources + main.c straight into ONE executable
-#   that statically links libslic3r.a and every dependency .a — no .so at all.
+#   that statically links libslic3r.a and every bundled dependency .a. Only the
+#   standard system runtime stays dynamic (libstdc++/libc/... per readelf -d).
 #
 #   The authoritative library list / include dirs / defines are extracted from
 #   an existing OrcaSlicer build by scripts/gen_static_libs.sh into

@@ -1,6 +1,6 @@
 # orca-slice-engine
 
-Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engine C++ sources into a single `orca-slice-engine` binary that **statically links libslic3r + all dependencies** (libslic3r, CGAL, OCCT, Boost, OpenCV, TBB) — no `.so`/`.dll` at runtime. Linux only.
+Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engine C++ sources into a single `orca-slice-engine` binary that **statically links libslic3r + all bundled dependencies** (CGAL, OCCT, Boost, OpenCV, TBB). At runtime only the standard system libraries remain dynamic (`readelf -d` → libstdc++, libexpat, libfontconfig, libz, libm, libgcc_s, libc, ld-linux); no project-specific `.so`/`.dll`. Linux only.
 
 ## Project documents
 
@@ -55,8 +55,10 @@ cmake -S . -B build-static -DORCA_STATIC=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-static -j
 ```
 
-Output: `build-static/orca-slice-engine` — a single static executable with no
-runtime `.so`/`.dll` dependencies beyond the system libc.
+Output: `build-static/orca-slice-engine` — a single static executable. All engine
+and third-party libraries are baked in; the only runtime `.so` dependencies are
+the standard system libraries (libstdc++, libgcc_s, libc, libm, libz, libexpat,
+libfontconfig, ld-linux — 8 `NEEDED` entries per `readelf -d`).
 
 ## Run
 
