@@ -22,6 +22,12 @@
 #   ├── engine-integration.junit.xml
 #   └── rc                # wrapped ctest exit code (0 = green)
 #
+# Stall sentinels (B1, 2026-11-06 — archives were once manually wiped and the
+# break went unnoticed for weeks; cron deaths write nothing):
+#   test-archives/_STATUS   # heartbeat, rewritten on every COMPLETED cycle
+#   test-archives/STALLED   # appended when a run starts ≥26h after the last
+#                           # completed cycle; removed only by a completed one
+#
 # Cron entry (registered 2026-10-12, remove with `crontab -e`):
 #   17 2 * * * /home/joyx/Desktop/code/orca-slice-engine/scripts/nightly_tests.sh \
 #     >> /home/joyx/Desktop/code/orca-slice-engine/test-archives/cron.log 2>&1
@@ -47,6 +53,24 @@ exec 9>"/tmp/orca-nightly-tests-$UID.lock"
 if ! flock -n 9; then
     echo "[nightly] previous run still active, exiting"
     exit 0
+fi
+
+# ---- stall detection (runs BEFORE the disk guard so the currently most
+# common death — the 3GiB abort — still leaves a trace): _STATUS is only
+# written by a COMPLETED archive cycle. A run dying later tonight (disk,
+# build, hang) updates nothing, and the next run that manages to start
+# finds a stale heartbeat and appends the evidence to STALLED. 26h = one
+# nightly cadence (24h) + the run's own duration and start-time drift. ----
+STATUS_FILE="$ARCHIVE_ROOT/_STATUS"
+STALLED_FILE="$ARCHIVE_ROOT/STALLED"
+if [ -f "$STATUS_FILE" ]; then
+    last="$(stat -c %Y "$STATUS_FILE")"
+    age_h=$(( ( $(date +%s) - last ) / 3600 ))
+    if [ "$age_h" -ge 26 ]; then
+        printf '%s no completed nightly for %dh (last completed %s)\n' \
+            "$(date -Is)" "$age_h" "$(date -Is -d "@$last")" >> "$STALLED_FILE"
+        echo "[nightly] STALL detected: no completed cycle for ${age_h}h — recorded in $STALLED_FILE"
+    fi
 fi
 
 # ---- disk pre-check: a full disk cascades into GCODE_EXPORT_ERROR and
@@ -90,6 +114,12 @@ echo "$rc" > "$dest/rc"
 for xml in "$dest"/*.junit.xml; do
     echo "$(basename "$xml"): $(grep -c '<testcase' "$xml") cases" >> "$dest/counts.txt"
 done
+
+# ---- heartbeat: this run COMPLETED a full archive cycle (green or red —
+# both are healthy observability). Only here may a previous stall clear. ----
+printf '%s rc=%s %s\n' "$(date -Is)" "$rc" \
+    "$(tr '\n' ' ' < "$dest/counts.txt" 2>/dev/null)" > "$STATUS_FILE"
+rm -f "$STALLED_FILE"
 
 # ---- rotation: keep only the last KEEP_DAYS days ----
 find "$ARCHIVE_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +"$KEEP_DAYS" -exec rm -rf {} +
