@@ -56,13 +56,10 @@ size_t cfg_len(const Slic3r::DynamicPrintConfig& c, const std::string& key)
     return opt ? opt->serialize().size() : 0;
 }
 
-bool has_issue(const SliceOutputStats& s, const std::string& code)
-{
-    for (const auto& iss : s.issues)
-        if (iss.code == code)
-            return true;
-    return false;
-}
+// (2026-11-06) a `has_issue(stats, code)` helper used to live here, copied
+// from test_file_validation.cpp but never referenced — dead on arrival and a
+// dormant instance of the file_validation/gcode_security same-name-opposite-
+// semantics trap (smell D3, batch 5 owns the file_validation side).
 
 std::string fixture(const char* name)
 {

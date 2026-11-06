@@ -23,6 +23,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(ENGINE_VERSION "2.2.1")
 
 # ==================================================================
+# Warning flags for OWN code (B6 P2, 2026-11-06). External headers (fork
+# libslic3r, boost, ...) are consumed through SYSTEM include dirs (see the
+# targets below) so their ~1.4k probe-measured warnings never mix in; what
+# remains under these flags is ours and must be zero.
+# P4 (-Werror) is deliberately NOT enabled yet: it needs a clean probe run
+# on every future compiler before it can act as a gate.
+# (Defined before first use — the engine target below calls it.)
+# ==================================================================
+function(orca_target_warnings target)
+    target_compile_options(${target} PRIVATE
+        -Wall -Wextra -Wformat=2
+        $<$<COMPILE_LANGUAGE:CXX>:-Wshadow;-Wnon-virtual-dtor;-Woverloaded-virtual>)
+endfunction()
+
+# ==================================================================
 # Static single-binary mode (Linux):
 #   Compile the engine C++ sources + main.c straight into ONE executable
 #   that statically links libslic3r.a and every bundled dependency .a. Only the
@@ -60,13 +75,16 @@ if(ORCA_STATIC)
     )
 
     # Drop include dirs that no longer exist (e.g. build-time symlinks src/eigen)
-    set(_inc_dirs "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    set(_ext_inc_dirs "")
     foreach(_d IN LISTS ORCA_STATIC_INCLUDES)
         if(EXISTS "${_d}")
-            list(APPEND _inc_dirs "${_d}")
+            list(APPEND _ext_inc_dirs "${_d}")
         endif()
     endforeach()
-    target_include_directories(orca-slice-engine PRIVATE ${_inc_dirs})
+    # Own src/ stays non-SYSTEM; every dependency header dir is SYSTEM so
+    # warnings in fork/boost headers stay out of our build output (B6 P1).
+    target_include_directories(orca-slice-engine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_include_directories(orca-slice-engine SYSTEM PRIVATE ${_ext_inc_dirs})
 
     target_compile_definitions(orca-slice-engine PRIVATE
         ${ORCA_STATIC_DEFINES}
@@ -76,11 +94,19 @@ if(ORCA_STATIC)
     # Match libslic3r's translation-unit flags so our sources agree with its headers.
     target_compile_options(orca-slice-engine PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-fext-numeric-literals;-fsigned-char>)
+    orca_target_warnings(orca-slice-engine)
     set_target_properties(orca-slice-engine PROPERTIES
         CXX_STANDARD 17 CXX_EXTENSIONS ON           # -std=gnu++17 (libslic3r uses GNU exts)
         POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(orca-slice-engine PRIVATE ${ORCA_STATIC_LIBS})
+
+    # The prebuilt archives carry LTO; at link time GCC then analyzes TBB's
+    # own compiled-in types and flags ODR violations inside fork/dependency
+    # code (-Wodr from dep_TBB Customize.h). SYSTEM include dirs cannot
+    # suppress link-time diagnostics, so silence the flag here — it is
+    # fork-side and not actionable from this repo (B6 P2).
+    target_link_options(orca-slice-engine PRIVATE -Wno-odr)
 
     # Extract the boost static archives from ORCA_STATIC_LIBS so the unit-test
     # target (which does NOT link the full engine) can reuse the same private

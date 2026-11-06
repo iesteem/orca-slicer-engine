@@ -45,8 +45,15 @@ add_executable(engine-tests
 target_compile_options(engine-tests PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(engine-tests PRIVATE -Wl,--gc-sections)
 
-target_include_directories(engine-tests PRIVATE
+# Vendored Catch2 amalgamation: third-party code — compile the .cpp with all
+# warnings silenced (last -w wins over the target's -Wall) and take its
+# headers via a SYSTEM include dir (B6 P1/P2).
+set_source_files_properties(catch2/catch_amalgamated.cpp PROPERTIES COMPILE_OPTIONS "-w")
+
+target_include_directories(engine-tests SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/catch2     # <catch_amalgamated.hpp>
+)
+target_include_directories(engine-tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}            # test_utils.hpp (if added later)
     ${CMAKE_SOURCE_DIR}/src                # Utils.hpp, Types.hpp
 )
@@ -57,8 +64,10 @@ target_include_directories(engine-tests PRIVATE
 # so the test target never hard-codes absolute paths. The project only supports
 # the ORCA_STATIC (single static binary) mode, so the static boost archives are
 # always used here.
-target_include_directories(engine-tests PRIVATE ${ORCA_STATIC_INCLUDES})
+target_include_directories(engine-tests SYSTEM PRIVATE ${ORCA_STATIC_INCLUDES})
 target_link_libraries(engine-tests PRIVATE ${ORCA_STATIC_BOOST_LIBS})
+
+orca_target_warnings(engine-tests)
 
 target_sources(engine-tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/Utils.cpp
@@ -115,17 +124,21 @@ if(ORCA_STATIC)
 
     # Reuse the exact include dirs / defines / flags / link list of the static
     # engine (see CMakeLists.txt:56-77). Drop non-existent include dirs.
-    # Also add tests/catch2 (for <catch_amalgamated.hpp>) and tests/ itself.
-    set(_int_inc_dirs
-        "${CMAKE_CURRENT_SOURCE_DIR}/catch2"
-        "${CMAKE_CURRENT_SOURCE_DIR}"
-        "${CMAKE_SOURCE_DIR}/src")
+    # Own dirs (tests/, src/) stay non-SYSTEM; vendored catch2 and every
+    # dependency header dir are SYSTEM (B6 P1) so their warnings stay out.
+    set_source_files_properties(catch2/catch_amalgamated.cpp PROPERTIES COMPILE_OPTIONS "-w")
+    set(_int_ext_inc_dirs "")
     foreach(_d IN LISTS ORCA_STATIC_INCLUDES)
         if(EXISTS "${_d}")
-            list(APPEND _int_inc_dirs "${_d}")
+            list(APPEND _int_ext_inc_dirs "${_d}")
         endif()
     endforeach()
-    target_include_directories(engine-integration PRIVATE ${_int_inc_dirs})
+    target_include_directories(engine-integration SYSTEM PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/catch2"
+        ${_int_ext_inc_dirs})
+    target_include_directories(engine-integration PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_SOURCE_DIR}/src")
 
     # test_cli.cpp shells out to the real executable; make sure it is built
     # first and pass its path in.
@@ -164,11 +177,14 @@ if(ORCA_STATIC)
 
     target_compile_options(engine-integration PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-fext-numeric-literals;-fsigned-char>)
+    orca_target_warnings(engine-integration)
     set_target_properties(engine-integration PROPERTIES
         CXX_STANDARD 17 CXX_EXTENSIONS ON
         POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(engine-integration PRIVATE ${ORCA_STATIC_LIBS})
+    # Same LTO -Wodr suppression as the engine target (fork-side TBB types).
+    target_link_options(engine-integration PRIVATE -Wno-odr)
 
     add_test(NAME engine-integration COMMAND engine-integration
         -r console

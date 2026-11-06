@@ -171,8 +171,7 @@ void check_multi_component(const Slic3r::ModelVolume& volume, const std::string&
     }
 }
 
-void check_inverted_normals(const Slic3r::ModelVolume& volume, double mesh_volume, const std::string& obj_name,
-                            int plate_id, std::vector<Issue>& out)
+void check_inverted_normals(double mesh_volume, const std::string& obj_name, int plate_id, std::vector<Issue>& out)
 {
     if (mesh_volume < 0.0)
     {
@@ -245,7 +244,7 @@ std::vector<Issue> run_geometry_checks(const Slic3r::Model& model, int plate_id)
             check_degenerate_faces(*vol, name, plate_id, issues);
             check_self_intersect(*vol, name, plate_id, issues);
             check_multi_component(*vol, name, plate_id, issues);
-            check_inverted_normals(*vol, mesh_volume, name, plate_id, issues);
+            check_inverted_normals(mesh_volume, name, plate_id, issues);
         }
     }
 

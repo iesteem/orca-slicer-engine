@@ -116,6 +116,23 @@ for xml in "$dest"/*.junit.xml; do
     echo "$(basename "$xml"): $(grep -c '<testcase' "$xml") cases" >> "$dest/counts.txt"
 done
 
+# ---- compiler-warning record (B6 P3-lite, 2026-11-06): own code builds
+# warning-clean under -Wall -Wextra (externals are SYSTEM includes), so any
+# 'warning:' in the build section is a regression worth eyeballing. The
+# lto-wrapper "serial compilation" notice is a -j 2 link artifact, not a
+# code warning — filtered. Recorded + soft-ratcheted against the previous
+# archive; a hard ratchet belongs to CI once a runner exists. ----
+grep 'warning:' "$dest/nightly.log" | grep -v 'lto-wrapper' > "$dest/warnings.txt" || true
+warn_count="$(wc -l < "$dest/warnings.txt")"
+echo "compiler warnings: $warn_count" >> "$dest/counts.txt"
+prev_day="$(find "$ARCHIVE_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' ! -path "$dest" -printf '%f\n' | sort | tail -1)"
+if [ -n "$prev_day" ] && [ -f "$ARCHIVE_ROOT/$prev_day/counts.txt" ]; then
+    prev_count="$(sed -n 's/^compiler warnings: //p' "$ARCHIVE_ROOT/$prev_day/counts.txt")"
+    if [ -n "$prev_count" ] && [ "$warn_count" -gt "$prev_count" ]; then
+        echo "[nightly] compiler warnings ROSE: $prev_count -> $warn_count (see $dest/warnings.txt)"
+    fi
+fi
+
 # ---- heartbeat: this run COMPLETED a full archive cycle (green or red —
 # both are healthy observability). Only here may a previous stall clear. ----
 printf '%s rc=%s %s\n' "$(date -Is)" "$rc" \
