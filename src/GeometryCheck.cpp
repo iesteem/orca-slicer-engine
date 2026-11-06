@@ -93,6 +93,13 @@ bool check_self_intersect(const Slic3r::ModelVolume& volume, const std::string& 
     {
         BOOST_LOG_TRIVIAL(warning) << "GeometryCheck: CGAL self-intersect check crashed (SEH) for \"" << obj_name
                                    << "\" — skipping";
+        // Check failure must reach the JSON report, not only the log —
+        // headless consumers read the report (smell E7, 2026-11-06).
+        out.push_back(make_warning(plate_id, "GEOM_SELF_INTERSECT_CHECK_FAILED",
+                                   "Self-intersection check crashed and could not complete", obj_name,
+                                   "The mesh may be too degenerate for the intersection test. Run a mesh "
+                                   "repair tool (Netfabb, Blender 3D Print Toolbox); if it reports the "
+                                   "model clean, this warning is benign."));
     }
     else if (self_intersects)
     {
@@ -123,11 +130,26 @@ bool check_self_intersect(const Slic3r::ModelVolume& volume, const std::string& 
     {
         BOOST_LOG_TRIVIAL(warning) << "GeometryCheck: CGAL self-intersect check failed for \"" << obj_name
                                    << "\": " << e.what();
+        // The check itself failed (CGAL predicate error, usually degenerate
+        // input): surface it in the JSON report, not only the log — headless
+        // consumers read the report and would otherwise see nothing (smell
+        // E7, 2026-11-06). Warning, not error: an advisory check failing to
+        // run does not invalidate the slice.
+        out.push_back(make_warning(plate_id, "GEOM_SELF_INTERSECT_CHECK_FAILED",
+                                   std::string("Self-intersection check could not run: ") + e.what(), obj_name,
+                                   "The mesh may be too degenerate for the intersection test. Run a mesh "
+                                   "repair tool (Netfabb, Blender 3D Print Toolbox); if it reports the "
+                                   "model clean, this warning is benign."));
     }
     catch (...)
     {
         BOOST_LOG_TRIVIAL(warning) << "GeometryCheck: CGAL self-intersect check failed for \"" << obj_name
                                    << "\" (unknown error)";
+        out.push_back(make_warning(plate_id, "GEOM_SELF_INTERSECT_CHECK_FAILED",
+                                   "Self-intersection check could not run (unknown error)", obj_name,
+                                   "The mesh may be too degenerate for the intersection test. Run a mesh "
+                                   "repair tool (Netfabb, Blender 3D Print Toolbox); if it reports the "
+                                   "model clean, this warning is benign."));
     }
     return false;
 #endif
@@ -149,14 +171,13 @@ void check_multi_component(const Slic3r::ModelVolume& volume, const std::string&
     }
 }
 
-void check_inverted_normals(const Slic3r::ModelVolume& volume, const std::string& obj_name, int plate_id,
-                            std::vector<Issue>& out)
+void check_inverted_normals(const Slic3r::ModelVolume& volume, double mesh_volume, const std::string& obj_name,
+                            int plate_id, std::vector<Issue>& out)
 {
-    double vol = Slic3r::its_volume(volume.mesh().its);
-    if (vol < 0.0)
+    if (mesh_volume < 0.0)
     {
         out.push_back(make_issue(plate_id, obj_name, "GEOM_INVERTED",
-                                 "Inverted normals: mesh volume is negative (" + std::to_string(vol) +
+                                 "Inverted normals: mesh volume is negative (" + std::to_string(mesh_volume) +
                                      " mm³). Face winding (inside/outside) "
                                      "may be reversed, causing incorrect perimeter generation.",
                                  "In most slicers: right-click the object and select 'Fix model' or "
@@ -178,15 +199,14 @@ void check_empty(const Slic3r::ModelVolume& volume, const std::string& obj_name,
     }
 }
 
-void check_zero_volume(const Slic3r::ModelVolume& volume, const std::string& obj_name, int plate_id,
-                       std::vector<Issue>& out)
+void check_zero_volume(const Slic3r::ModelVolume& volume, double mesh_volume, const std::string& obj_name,
+                       int plate_id, std::vector<Issue>& out)
 {
-    const double vol = Slic3r::its_volume(volume.mesh().its);
     // Threshold matching Model::removed_objects_with_zero_volume (1e-10)
-    if (!volume.mesh().its.indices.empty() && std::abs(vol) < 1e-10)
+    if (!volume.mesh().its.indices.empty() && std::abs(mesh_volume) < 1e-10)
     {
         out.push_back(make_issue(plate_id, obj_name, "GEOM_ZERO_VOLUME",
-                                 "Zero-volume mesh: the computed volume (" + std::to_string(vol) +
+                                 "Zero-volume mesh: the computed volume (" + std::to_string(mesh_volume) +
                                      " mm³) is effectively zero. "
                                      "This object cannot produce any extrusion.",
                                  "Verify the model is a solid 3D body, not a 2D surface or a single plane. "
@@ -216,13 +236,16 @@ std::vector<Issue> run_geometry_checks(const Slic3r::Model& model, int plate_id)
             if (obj->volumes.size() > 1)
                 name += "[" + std::to_string(vi) + "]";
 
+            // its_volume is a full O(triangles) pass and both zero-volume
+            // and inverted-normals need it — compute once, share (E7).
+            const double mesh_volume = Slic3r::its_volume(vol->mesh().its);
             check_empty(*vol, name, plate_id, issues);
-            check_zero_volume(*vol, name, plate_id, issues);
+            check_zero_volume(*vol, mesh_volume, name, plate_id, issues);
             check_non_manifold(*vol, name, plate_id, issues);
             check_degenerate_faces(*vol, name, plate_id, issues);
             check_self_intersect(*vol, name, plate_id, issues);
             check_multi_component(*vol, name, plate_id, issues);
-            check_inverted_normals(*vol, name, plate_id, issues);
+            check_inverted_normals(*vol, mesh_volume, name, plate_id, issues);
         }
     }
 
