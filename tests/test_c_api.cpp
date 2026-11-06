@@ -34,7 +34,9 @@
 
 #include "slic3r_c_api.h"
 
-#include "Types.hpp" // EXIT_PREPROCESS_ERROR
+#include "Types.hpp" // EXIT_PREPROCESS_ERROR / SliceOutputStats / Issue
+#include "JsonReport.hpp" // build_statistics_json (schema anchor test)
+#include "SliceEngine.hpp" // EngineConfig (A1 default anchor)
 
 static const char* kResources = ORCA_TEST_RESOURCES;
 // slic3r_create() expects the resources ROOT (it appends "/profiles"
@@ -945,4 +947,125 @@ TEST_CASE("C API: keep_failed_gcode3mf debug hatch packages rc-7 artifact, contr
     rm("/tmp/orca_capi_ec_keep.log");
     slic3r_destroy(ctx);
     restore_dirs();
+}
+
+// ============================================================================
+// JSON report schema field-name anchors (2026-11-06, smell batch 2 A2).
+// The slic3r_c_api.h doc block had rotted into a pre-2.2.0 draft (claimed
+// plates[].index / time.total / filament.total_m / issue fields "object"
+// and "msg" — none exist). The rewritten header points HERE as its live
+// anchor: a field rename in JsonReport.cpp must fail this case, not a
+// customer parser. Drives build_statistics_json directly (pure function,
+// no slice). Also pins the EngineConfig 200 MB default that the CLI's
+// explicit --max-size 0 path exists to override (A1 companion).
+// ============================================================================
+TEST_CASE("capi: JSON report schema field names (anti-drift for header doc)", "[integration][capi]")
+{
+    SliceOutputStats stats;
+    stats.success = false;
+    stats.exit_code = 6;
+    stats.issues.push_back(make_error(GLOBAL_ISSUE, "PRINTER_MODEL_MISSING", "config rejected"));
+    {
+        SliceOutputStats::PlateStats failed;
+        failed.plate_id = 0; // storage is 0-based; JSON emits +1
+        failed.success = false;
+        failed.issues.push_back(
+            make_warning(0, "GEOM_SELF_INTERSECT", "msg", "cube[0]", "repair it"));
+        stats.plates.push_back(failed);
+    }
+    {
+        SliceOutputStats::PlateStats ok;
+        ok.plate_id = 1;
+        ok.success = true;
+        ok.print_time = 1234.5f;
+        ok.total_filament_g = 12.5;
+        ok.total_filament_m = 4.2;
+        SliceOutputStats::FilamentDetail fd;
+        fd.id = 0; // 0-based extruder slot; JSON emits id 1
+        fd.type = "PLA";
+        fd.color = "#FFFFFF";
+        fd.used_g = 12.5;
+        fd.used_m = 4.2;
+        ok.filament_details.push_back(fd);
+        stats.plates.push_back(ok);
+    }
+
+    const std::string doc = build_statistics_json(stats, "/tmp/anchor_out.gcode.3mf");
+    const nlohmann::json j = nlohmann::json::parse(doc);
+
+    SECTION("top-level keys")
+    {
+        for (const char* k : {"success", "exit_code", "error_code", "engine_version",
+                              "print_info_total", "issues", "plates"})
+        {
+            CAPTURE(k);
+            CHECK(j.contains(k));
+        }
+        CHECK(j["exit_code"].get<int>() == 6);
+        // error_code: comma-joined codes of error/serious_warning issues
+        CHECK(j["error_code"].get<std::string>() == "PRINTER_MODEL_MISSING");
+        // failure => output_file is "", never absent
+        CHECK(j["print_info_total"]["output_file"].get<std::string>().empty());
+        // >= 1 plate was processed => mixed_filament_used present
+        CHECK(j["print_info_total"].contains("mixed_filament_used"));
+        // unreadable vendor version => key absent (MISSING = unknown)
+        CHECK_FALSE(j.contains("resources_version"));
+    }
+
+    SECTION("issue object field names")
+    {
+        // global error: level/plate_id/object_name/z_height/code/message are
+        // always emitted; suggestion and layer only when non-default (empty
+        // here => absent)
+        const auto& iss = j["issues"][0];
+        for (const char* k : {"level", "plate_id", "object_name", "z_height", "code", "message"})
+        {
+            CAPTURE(k);
+            CHECK(iss.contains(k));
+        }
+        CHECK_FALSE(iss.contains("suggestion"));
+        CHECK_FALSE(iss.contains("layer"));
+        CHECK(iss["level"].get<std::string>() == "error");
+        CHECK(iss["message"].get<std::string>() == "config rejected");
+        CHECK(iss["object_name"].get<std::string>().empty());
+        // global issue: plate_id stays -1 (not shifted)
+        CHECK(iss["plate_id"].get<int>() == -1);
+
+        // plate-scoped warning carries the optional fields
+        const auto& piss = j["plates"][0]["issues"][0];
+        CHECK(piss["object_name"].get<std::string>() == "cube[0]");
+        CHECK(piss["suggestion"].get<std::string>() == "repair it");
+        CHECK(piss["level"].get<std::string>() == "warning");
+    }
+
+    SECTION("plate objects")
+    {
+        CHECK(j["plates"][0]["plate_id"].get<int>() == 1); // 0-based slot 0 => 1
+        CHECK(j["plates"][0]["success"].get<bool>() == false);
+        // failed plate: no stats block, but its issues are attached
+        CHECK_FALSE(j["plates"][0].contains("print_time_seconds"));
+        CHECK(j["plates"][0]["issues"][0]["code"].get<std::string>() == "GEOM_SELF_INTERSECT");
+        // plate-scoped issue plate_id is shifted to 1-based
+        CHECK(j["plates"][0]["issues"][0]["plate_id"].get<int>() == 1);
+
+        CHECK(j["plates"][1]["plate_id"].get<int>() == 2);
+        CHECK(j["plates"][1]["filaments"][0]["id"].get<int>() == 1); // 0-based slot => 1
+        for (const char* k : {"print_time_seconds", "print_time_formatted", "total_weight_g",
+                              "filaments", "model_thumbnail", "long_retraction_when_cut",
+                              "support_free"})
+        {
+            CAPTURE(k);
+            CHECK(j["plates"][1].contains(k));
+        }
+        CHECK(j["plates"][1]["print_time_seconds"].get<double>() == 1234.5);
+    }
+
+    SECTION("EngineConfig default max_size_mb is the documented 200")
+    {
+        // A1 companion: explicit --max-size 0 exists to override this
+        // default. If the default ever changes, revisit the main.c sentinel
+        // comment and the header's "ABSENT key" note.
+        EngineConfig cfg;
+        CHECK(cfg.max_size_mb == 200);
+    }
 }

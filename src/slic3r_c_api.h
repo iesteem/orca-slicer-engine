@@ -72,37 +72,94 @@ typedef struct slic3r_ctx_s slic3r_ctx_t;
  * @param output_base   Output path WITHOUT extension (e.g. "result")
  * @param params_json   JSON parameters (see below). Null = defaults.
  * @param stats_out     Buffer for JSON statistics output. Null = skip.
+ *                      WARNING: the report is silently TRUNCATED to
+ *                      stats_size-1 bytes; use slic3r_get_last_stats()
+ *                      below for a complete, exact-size copy.
  * @param stats_size    Size of stats_out buffer (including null terminator)
  *
  * @return SLIC3R_OK on success, error code on failure.
  *
- * params_json format:
+ * params_json keys (all optional; unknown keys are ignored; validated
+ * in slic3r_c_api.cpp parse_params):
  * {
- *   "plate_id": 0,           // 0 = all plates, N = specific plate (1-based)
- *   "format": "gcode.3mf",   // "gcode" or "gcode.3mf"
- *   "timeout_seconds": 0,    // 0 = no timeout
- *   "max_size_mb": 200,      // max input file size, 0 = no limit
- *   "cancel_file": "",       // watchdog file for external cancellation
- *   "log_path": "",          // log file path (empty = no file logging)
- *   "json_output_path": ""   // JSON statistics output file path
+ *   "plate_id": 0,                // 0 = all plates, N = exactly plate N (1-based)
+ *   "format": "gcode.3mf",        // "gcode" | "gcode.3mf"; anything else is rejected
+ *   "timeout_seconds": 0,         // >= 0; 0 = no timeout
+ *   "max_size_mb": 0,             // >= 0; 0 = no limit. ABSENT key = engine
+ *                                 // default 200 MB cap (EngineConfig) — omitting
+ *                                 // the key is NOT "no limit"
+ *   "cancel_file": "",            // watchdog file: existence triggers cancellation
+ *   "log_path": "",               // "" = auto-derive from output path
+ *   "json_output_path": "",       // non-empty: report file written on EVERY
+ *                                 // engine-executed exit incl. early rc=3/6 (P-28)
+ *   "keep_failed_gcode3mf": false // debug hatch: also write gcode.3mf on rc=7
+ *                                 // (rc / JSON verdict unchanged)
  * }
  *
- * stats_json format (on success):
+ * Report schema summary — authoritative source is
+ * docs/requirements/json-output.md, builder is JsonReport.cpp
+ * build_statistics_json(), and tests/test_c_api.cpp ("JSON report schema
+ * field names") anchors the field names against drift:
  * {
- *   "success": true,
- *   "plates": [{
- *     "index": 1,
- *     "time": {"total": 123.4, "prepare": 12.3, "print": 111.1},
- *     "filament": {"total_m": 1.23, "total_g": 4.56, "cost": 0.12},
- *     "gcode_file": "result.gcode.3mf"
- *   }],
- *   "issues": [{"level":"warning","plate_id":1,"object":"cube","code":"X","msg":"..."},
- *              {"level":"serious_warning","plate_id":1,"object":"cube","code":"Y","msg":"..."},
- *              {"level":"error","plate_id":1,"object":"cube","code":"Z","msg":"..."}]
+ *   "success": bool,              // == (exit_code == 0) == (error_code empty)
+ *   "exit_code": int,             // verbatim process rc; {0,3,4,5,6,7} on
+ *                                 // report-emitting paths — rc 1/99 emit NO report
+ *   "error_code": "",             // comma-joined code of every error /
+ *                                 // serious_warning issue, issue-list order,
+ *                                 // NOT deduplicated
+ *   "engine_version": "",
+ *   "resources_version": "",      // optional; absent = unknown (never a version)
+ *   "print_info_total": {
+ *     "output_file": "",          // "" on failure
+ *     "print_time_seconds": 0.0, "print_time_formatted": "0:00:00",
+ *     "total_weight_g": 0.0, "total_length_mm": 0.0, "plate_count": 0,
+ *     "filaments": [ { "type","color","used_g","used_mm" } ], // dedup (type,color)
+ *     "support_free": bool,       // success runs only; gcode-actual, NOT config flag
+ *     "mixed_filament_used": bool // emitted when >= 1 plate was processed
+ *   },
+ *   "issues": [ {                 // global superset (plate issues funnel in here)
+ *     "level": "error|serious_warning|warning|tip",
+ *     "plate_id": -1,             // 1-based; -1 = global/not plate-specific
+ *     "object_name": "", "z_height": -1.0,
+ *     "layer": 0,                 // only emitted when >= 0
+ *     "code": "", "message": "",
+ *     "suggestion": ""            // only emitted when non-empty
+ *   } ],
+ *   "plates": [ {
+ *     "plate_id": 1,              // 1-based (storage is 0-based, +1 at emission)
+ *     "success": bool,
+ *     "issues": [ ... ],          // present when non-empty
+ *     // success plates additionally carry:
+ *     "print_time_seconds": 0.0, "print_time_formatted": "",
+ *     "total_weight_g": 0.0,
+ *     "filaments": [ { "id": 1, "type": "", "color": "", "used_g": 0.0,
+ *                      "used_mm": 0.0 } ],               // id 1-based
+ *     "model_thumbnail": "", "long_retraction_when_cut": false,
+ *     "support_free": bool        // gcode-actual, inverted at emission
+ *   } ]
  * }
+ *
+ * (This block replaced a pre-2.2.0 draft on 2026-11-06 — it described a
+ * schema that never shipped: plates[].index / time.total / prepare /
+ * filament.total_m / cost / gcode_file / issue fields "object" and
+ * "msg", none of which exist.)
  */
     SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char* output_base,
                                 const char* params_json, char* stats_out, size_t stats_size);
+
+    /* ---- Statistics retrieval ---- */
+
+    /** Copy the COMPLETE JSON statistics report produced by the last
+     *  slic3r_slice() call on this ctx (empty string before the first
+     *  call). Two-call pattern: probe with out=NULL (or size=0) to get the
+     *  required buffer size INCLUDING the NUL terminator, allocate that
+     *  much, call again — the full report is copied and the same size is
+     *  returned. If size < required, nothing is copied and the required
+     *  size is returned (caller retries with a bigger buffer). Returns 0
+     *  only when ctx is NULL. Unlike slic3r_slice()'s stats_out buffer,
+     *  this never truncates.
+     *  Added 2026-11-06 (smell batch 2 E3) — purely additive export. */
+    SLIC3R_API size_t slic3r_get_last_stats(slic3r_ctx_t* ctx, char* out, size_t size);
 
     /* ---- Error handling ---- */
 

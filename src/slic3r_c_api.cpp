@@ -41,6 +41,11 @@ struct slic3r_ctx_s
     std::string last_error;
     bool initialized = false;
 
+    // Complete statistics report from the last slic3r_slice() call, served
+    // whole by slic3r_get_last_stats (E3, 2026-11-06) — the stats_out
+    // buffer parameter truncates silently.
+    std::string last_stats_json;
+
     // Cancellation flag (checked by run loop, set by slic3r_cancel)
     std::atomic<bool> cancel_requested{false};
 };
@@ -253,6 +258,9 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
         // Serialize stats (unified JsonReport schema: base-1 plate/filament ids)
         const auto& stats = engine.stats();
         std::string json_str = build_statistics_json(stats, engine.output_path());
+        // Stash the complete report for slic3r_get_last_stats (E3): emitted
+        // on every engine-executed exit, failures included.
+        ctx->last_stats_json = json_str;
 
         // Write JSON statistics to file. A caller-supplied json_output_path
         // is honoured unconditionally — including early-failure exits (e.g.
@@ -306,6 +314,21 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
 SLIC3R_API const char* slic3r_get_error(slic3r_ctx_t* ctx)
 {
     return ctx ? ctx->last_error.c_str() : "NULL context";
+}
+
+// Two-call accessor over ctx->last_stats_json (E3, 2026-11-06). See header
+// for the exact contract: probe => required size incl. NUL; sufficient
+// buffer => full copy; insufficient => required size, nothing copied.
+SLIC3R_API size_t slic3r_get_last_stats(slic3r_ctx_t* ctx, char* out, size_t size)
+{
+    if (!ctx)
+        return 0;
+    const std::string& s = ctx->last_stats_json;
+    const size_t need = s.size() + 1;
+    if (!out || size < need)
+        return need;
+    memcpy(out, s.c_str(), need);
+    return need;
 }
 
 SLIC3R_API const char* slic3r_version(void)

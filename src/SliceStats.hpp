@@ -12,7 +12,7 @@ struct SliceOutputStats
     // Filament detail for each extruder
     struct FilamentDetail
     {
-        int id = -1; // Extruder slot, 1-based; -1 = unknown/unset
+        int id = -1; // 0-based extruder slot (JSON emits id+1); -1 = unknown/unset
         std::string type; // Filament type (e.g., "PLA", "ABS")
         std::string color; // Filament color (e.g., "#FF0000")
         double used_g = 0.0; // Used weight in grams
@@ -27,7 +27,7 @@ struct SliceOutputStats
         // assemble_plate_stats before most fields are assigned — without
         // defaults those fields hold indeterminate values that the JSON
         // aggregation would read.
-        int plate_id = -1; // 1-based plate index; -1 = unknown/unset
+        int plate_id = -1; // 0-based plate index (JSON emits plate_id+1); -1 = unknown/unset
         bool success = false;
         std::string gcode_file;
 

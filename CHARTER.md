@@ -31,7 +31,7 @@ OrcaSlicer **行为一致**的结果，而不是重新发明一个切片器。
 | all-or-nothing 打包 | 任一盘失败则不产出 gcode.3mf（即使 10/11 盘成功） | 用户确认保持现状（SliceEngine.cpp:224 附近） |
 | JSON 输出契约 | `plates[].filaments[].id`（非 `filament_id`）|
 | 单一构建模式 | 仅 ORCA_STATIC，静态链接全部依赖 | 
-| C ABI 边界 | 7 个纯 C 导出，零 C++ 类型泄漏 | 设计约束 |
+| C ABI 边界 | 8 个纯 C 导出，零 C++ 类型泄漏 | 设计约束 |
 
 ## 文档体系（灵魂层）
 

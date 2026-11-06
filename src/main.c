@@ -339,22 +339,34 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    /* Slice */
-    char stats[32768] = {0};
-    int rc = slic3r_slice(ctx, input_3mf, output, params, stats, sizeof(stats));
+    /* Slice. stats_out is NULL: the report is fetched whole below via the
+     * two-call slic3r_get_last_stats() accessor (smell batch 2 E3,
+     * 2026-11-06). The old fixed 32 KiB stack buffer was silently truncated
+     * by the C API (memcpy at stats_size-1, no marker) — multi-plate
+     * reports outgrow it. */
+    int rc = slic3r_slice(ctx, input_3mf, output, params, NULL, 0);
+
+    /* Exact-size heap buffer: probe, allocate, fetch. Empty report before
+     * the first slice yields need==1; malloc failure just skips the echo. */
+    size_t stats_need = slic3r_get_last_stats(ctx, NULL, 0);
+    char* stats = stats_need ? (char*)malloc(stats_need) : NULL;
+    if (stats)
+        slic3r_get_last_stats(ctx, stats, stats_need);
 
     if (rc != SLIC3R_OK)
     {
         fprintf(stderr, "Slice failed (code %d): %s\n", rc, slic3r_get_error(ctx));
+        free(stats);
         slic3r_destroy(ctx);
         return rc;
     }
 
-    if (verbose && stats[0])
+    if (verbose && stats && stats[0])
     {
         printf("Stats: %s\n", stats);
     }
 
+    free(stats);
     slic3r_destroy(ctx);
     return 0;
 }

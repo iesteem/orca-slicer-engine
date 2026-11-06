@@ -14,7 +14,7 @@ Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engi
 ```
 orca-slice-engine (single static binary, Linux)
   ├── main.c                 ← C CLI frontend (pure C, #include "slic3r_c_api.h")
-  ├── slic3r_c_api.{h,cpp}   ← ABI boundary: 7 pure-C exports, zero C++ type leakage
+  ├── slic3r_c_api.{h,cpp}   ← ABI boundary: 8 pure-C exports, zero C++ type leakage
   ├── SliceEngine.cpp + engine sources (JsonReport / GeometryCheck / Utils / PresetRollback)
   └── statically linked: libslic3r.a + CGAL + OCCT + Boost + OpenCV + TBB
 ```
@@ -99,7 +99,7 @@ runtime DLL to "swap":
 ```
 ┌────────────────────────────────────────────┐
 │  your repo (main.c + engine C++ sources)    │
-│  depends on: slic3r_c_api.h (7 C functions) │
+│  depends on: slic3r_c_api.h (8 C functions) │
 ├────────────────────────────────────────────┤
 │  slic3r_c_api.h   ← ABI boundary           │  ← if stable, no recompile needed
 ├────────────────────────────────────────────┤
@@ -140,6 +140,7 @@ The C API is designed to be ABI-stable, so most minor updates only need steps 1�
 | `slic3r_version()` | Version string |
 | `slic3r_cancel(ctx)` | Async cancellation |
 | `slic3r_is_cancelled(ctx)` | Check cancellation flag |
+| `slic3r_get_last_stats(ctx, out, size)` | Full (never-truncating) JSON stats from the last slice |
 
 See `src/slic3r_c_api.h` for full documentation.
 
