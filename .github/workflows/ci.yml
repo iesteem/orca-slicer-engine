@@ -82,7 +82,29 @@ jobs:
           fi
           echo "--- SDK layout (top) ---"
           ls -la sdk
-          test -f cmake/StaticConfig.cmake || echo "::warning::cmake/StaticConfig.cmake not found after extract"
+          # The SDK carries repo-relative pieces: cmake/StaticConfig.cmake and
+          # package/resources. Place them into the tree (B4, 2026-11-06) —
+          # previously nothing was copied out of sdk/, the missing
+          # StaticConfig only got a ::warning::, and configure died later
+          # with a less actionable message. Missing pieces now fail HERE.
+          for piece in cmake/StaticConfig.cmake package/resources; do
+            if [ -e "sdk/$piece" ]; then
+              mkdir -p "$(dirname "$piece")"
+              cp -a "sdk/$piece" "$piece"
+            else
+              # SDKs may zip contents at top level instead of under sdk/<root>
+              found=$(find sdk -path "*/$piece" -print -quit 2>/dev/null)
+              if [ -n "$found" ]; then
+                mkdir -p "$(dirname "$piece")"
+                cp -a "$found" "$piece"
+              else
+                echo "::error::SDK is missing $piece — the engine SDK must package it (see scripts/gen_static_libs.sh)."
+                exit 1
+              fi
+            fi
+          done
+          test -f cmake/StaticConfig.cmake
+          test -d package/resources/profiles
 
       - name: Configure (ORCA_STATIC)
         run: |
