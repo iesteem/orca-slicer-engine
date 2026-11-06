@@ -81,49 +81,50 @@ struct SliceOutputStats
     // Filament detail for each extruder
     struct FilamentDetail
     {
-        int id;
+        int id = -1; // Extruder slot, 1-based; -1 = unknown/unset
         std::string type; // Filament type (e.g., "PLA", "ABS")
         std::string color; // Filament color (e.g., "#FF0000")
-        double used_g; // Used weight in grams
-        double used_m; // Used length in meters
+        double used_g = 0.0; // Used weight in grams
+        double used_m = 0.0; // Used length in meters
     };
 
     // Per-plate statistics
     struct PlateStats
     {
-        int plate_id;
-        bool success;
+        // All scalar members carry in-class defaults: every construction site
+        // default-constructs the struct and failed plates return early from
+        // assemble_plate_stats before most fields are assigned — without
+        // defaults those fields hold indeterminate values that the JSON
+        // aggregation would read.
+        int plate_id = -1; // 1-based plate index; -1 = unknown/unset
+        bool success = false;
         std::string gcode_file;
 
         // Time statistics (in seconds)
-        float total_time;
-        float prepare_time;
-        float print_time; // Actual print time (excluding prepare time)
+        float total_time = 0.0f;
+        float prepare_time = 0.0f;
+        float print_time = 0.0f; // Actual print time (excluding prepare time)
 
         // Filament statistics
-        double total_filament_m; // Total filament in meters
-        double total_filament_g; // Total filament in grams
-        double model_filament_m; // Model filament in meters
-        double model_filament_g; // Model filament in grams
-        double total_cost; // Total cost
+        double total_filament_m = 0.0; // Total filament in meters
+        double total_filament_g = 0.0; // Total filament in grams
+        double model_filament_m = 0.0; // Model filament in meters
+        double model_filament_g = 0.0; // Model filament in grams
+        double total_cost = 0.0; // Total cost
 
         // Per-extruder filament usage
         std::map<int, double> filament_used_m; // Per extruder: meters
         std::map<int, double> filament_used_g; // Per extruder: grams
 
         // Additional info
-        // Initialised (= false): failed plates return early from
-        // assemble_plate_stats before support_generated is assigned, so
-        // without a default the field holds garbage that the JSON aggregation
-        // would read.
         // G-code actual layer: support extrusion volume > 0 (source
         // GCodeProcessor support_volumes_per_extruder), not the config flag.
         bool support_generated = false;
-        bool toolpath_outside;
+        bool toolpath_outside = false;
 
         // New fields for enhanced JSON output
         std::vector<double> nozzle_diameters; // Nozzle diameter for each extruder
-        int plate_count; // Total number of plates
+        int plate_count = 0; // Total number of plates
         std::vector<FilamentDetail> filament_details; // Detailed filament info per extruder
         std::string model_thumbnail; // Model thumbnail path within gcode.3mf (Metadata/plate_N.png)
         std::vector<Issue> issues; // Per-plate issues (errors/warnings/tips)
