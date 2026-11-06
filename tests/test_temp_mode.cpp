@@ -8,15 +8,12 @@
  *     rejected: FILAMENT_TEMP_MIXING error, exit 6 (preprocess).
  *   - A single-filament print with a specific chamber/fan mode (MODE=3 / 1)
  *     slices normally: exit 0.
- *   - [red] DESIRED-behaviour cases (2026-09-18): the ABS slot is referenced
- *     only by an object-level / part-level feature-filament key or a
- *     modifier's extruder. Desktop Plater.cpp:22250-22276 collects filament
- *     slots from plate config, object config AND all volumes (modifiers
- *     included); SliceEngine::check_filament_temp_mixing() only reads
- *     model-part extruders and global keys, so these mixings are real but
- *     currently waved through (review 2026-09-16, item C1). The [red] cases
- *     pin the desktop-parity contract and FAIL until the collector is
- *     aligned; run `engine-integration "~[red]"` for a green pass.
+ *   - Object-level / part-level feature-filament keys and modifier extruders
+ *     (desktop Plater.cpp:22250-22276 parity): also rejected with
+ *     FILAMENT_TEMP_MIXING, exit 6 (preprocess). These landed as [red]
+ *     desired-behaviour cases in the same commit window as the collector fix
+ *     (cd14768, 2026-09-18) and have been green ever since; they now pin the
+ *     parity contract as regression tests.
  * Tag: [integration][tempmode].
  */
 
@@ -104,14 +101,14 @@ TEST_CASE("PLA+ABS high-low-temp mix fails", "[integration][tempmode]")
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-// --- [red] Object-level feature-filament keys (desktop Plater source ②). ----
+// --- Object-level feature-filament keys (desktop Plater source ②). ---------
 // Common baseline: 2 slots (1=Generic PLA low-temp, 2=Generic ABS high-temp),
 // ALL global feature keys = slot 1, object extruder explicitly = 1. The only
 // ABS reference is the key under test, stored on <object> in
-// model_settings.config. Today the engine never reads it -> slices fine.
+// model_settings.config. Collected since cd14768 (Plater-parity collector).
 
-TEST_CASE("RED: object-level sparse-infill ABS + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Object-level sparse-infill ABS + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("obj_feature_sparse_infill_abs_fail.3mf"), "obj_sp");
     REQUIRE_FALSE(e->stats().success);
@@ -119,8 +116,8 @@ TEST_CASE("RED: object-level sparse-infill ABS + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-TEST_CASE("RED: object-level wall ABS + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Object-level wall ABS + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("obj_feature_wall_abs_fail.3mf"), "obj_wl");
     REQUIRE_FALSE(e->stats().success);
@@ -128,8 +125,8 @@ TEST_CASE("RED: object-level wall ABS + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-TEST_CASE("RED: object-level solid-infill ABS + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Object-level solid-infill ABS + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("obj_feature_solid_infill_abs_fail.3mf"), "obj_so");
     REQUIRE_FALSE(e->stats().success);
@@ -137,13 +134,12 @@ TEST_CASE("RED: object-level solid-infill ABS + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-// --- [red] Part-level feature-filament keys (desktop Plater source ③). ------
+// --- Part-level feature-filament keys (desktop Plater source ③). ------------
 // Same baseline, but the ABS-referencing key sits on a <part> (a MODEL_PART
-// volume). Desktop collects every volume's config; the engine only calls
-// get_extruders() on model parts, which never reads feature keys.
+// volume). Desktop collects every volume's config; collected since cd14768.
 
-TEST_CASE("RED: part-level sparse-infill ABS + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Part-level sparse-infill ABS + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("part_feature_sparse_infill_abs_fail.3mf"), "prt_sp");
     REQUIRE_FALSE(e->stats().success);
@@ -151,8 +147,8 @@ TEST_CASE("RED: part-level sparse-infill ABS + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-TEST_CASE("RED: part-level solid-infill ABS + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Part-level solid-infill ABS + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("part_feature_solid_infill_abs_fail.3mf"), "prt_so");
     REQUIRE_FALSE(e->stats().success);
@@ -160,8 +156,8 @@ TEST_CASE("RED: part-level solid-infill ABS + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-TEST_CASE("RED: part-level wall ABS + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Part-level wall ABS + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("part_feature_wall_abs_fail.3mf"), "prt_wl");
     REQUIRE_FALSE(e->stats().success);
@@ -169,13 +165,12 @@ TEST_CASE("RED: part-level wall ABS + PLA body must fail temp mix",
     REQUIRE(has_error_issue(e->stats(), "FILAMENT_TEMP_MIXING"));
 }
 
-// --- [red] Modifier volume (desktop Plater source ③, no is_model_part ------
-// filter). The modifier carries extruder=2: its overlapping region prints in
-// ABS while the body is PLA. The engine's collector skips non-model-part
-// volumes entirely.
+// --- Modifier volume (desktop Plater source ③, no is_model_part filter). ----
+// The modifier carries extruder=2: its overlapping region prints in ABS while
+// the body is PLA. Non-model-part volumes are collected since cd14768.
 
-TEST_CASE("RED: modifier-volume ABS extruder + PLA body must fail temp mix",
-          "[integration][tempmode][red]")
+TEST_CASE("Modifier-volume ABS extruder + PLA body must fail temp mix",
+          "[integration][tempmode]")
 {
     auto e = run_on(fixture("modifier_extruder_abs_fail.3mf"), "mod_ex");
     REQUIRE_FALSE(e->stats().success);
