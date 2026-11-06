@@ -107,10 +107,11 @@ rc=0
 cp "$BUILD_DIR"/tests/*.junit.xml "$dest/"
 echo "$rc" > "$dest/rc"
 
-# Case-count guard from the junit truncation trap: a report with far fewer
-# <testcase> entries than the current baseline (212 total) is a partial run,
-# not a green run. Record the counts next to the verdict so a human reading
-# the archive can spot it without re-parsing.
+# Counts are a human-readable record only (B5, 2026-11-06): the enforced
+# judgment — parse + name-subset vs --list-tests + report freshness + ctest
+# rc — lives in tests/run_tests.py, whose rc this script wraps above; any
+# trip fails the nightly rc. Do not "guard" on a hard-coded case count here:
+# counts legitimately drift as tests (and SECTION leaf expansions) are added.
 for xml in "$dest"/*.junit.xml; do
     echo "$(basename "$xml"): $(grep -c '<testcase' "$xml") cases" >> "$dest/counts.txt"
 done
