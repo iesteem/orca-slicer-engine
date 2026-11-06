@@ -533,6 +533,18 @@ void SliceEngine::record_stage_error(int exit_type, const std::string& code, con
     m_stats.issues.push_back(make_error(-1, code, msg));
 }
 
+void SliceEngine::mark_stage_failure(int exit_type)
+{
+    m_any_error = true;
+    set_error_type(exit_type);
+}
+
+void SliceEngine::record_stage_error(int exit_type, Issue issue)
+{
+    mark_stage_failure(exit_type);
+    m_stats.issues.push_back(std::move(issue));
+}
+
 bool SliceEngine::validate_input_file()
 {
     // Extension check (case-insensitive: .3mf, .3MF, .3Mf are all valid)
@@ -1463,8 +1475,7 @@ bool SliceEngine::apply_filament_official_preset()
 
     if (any_error)
     {
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
+        mark_stage_failure(EXIT_PREPROCESS_ERROR);
     }
     return !any_error;
 }
@@ -1965,8 +1976,10 @@ bool SliceEngine::validate_input()
                 }
                 BOOST_LOG_TRIVIAL(warning) << oss.str();
             }
-            m_any_error = true;
-            set_error_type(EXIT_PREPROCESS_ERROR);
+            // Not the global record_stage_error(code,msg) overload: this site
+            // logs at WARNING level and its JSON-visible error_message must
+            // stay site-specific — only the failure pair converges.
+            mark_stage_failure(EXIT_PREPROCESS_ERROR);
             m_stats.error_message = "Requested plate " + std::to_string(m_cfg.plate_id) + " not found in 3MF file";
             m_stats.issues.push_back(make_error(-1, "PLATE_NOT_FOUND", m_stats.error_message));
             return false;
@@ -2956,8 +2969,7 @@ bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& iden
     if (has_partly_outside)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " has objects outside build volume, skipping";
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
+        mark_stage_failure(EXIT_PREPROCESS_ERROR);
         return false;
     }
     return true;
@@ -3076,11 +3088,9 @@ bool SliceEngine::within_slicing_deadline(int plate_id)
         return true;
 
     BOOST_LOG_TRIVIAL(error) << "Slicing timed out for plate " << (plate_id + 1);
-    m_stats.issues.push_back(make_error(plate_id, "SLICING_TIMEOUT",
+    record_stage_error(EXIT_SLICING_ERROR, make_error(plate_id, "SLICING_TIMEOUT",
                                         "Slicing timed out. The model may be too complex. If you believe this is "
                                         "an error, please submit an appeal for review."));
-    m_any_error = true;
-    set_error_type(EXIT_SLICING_ERROR);
     return false;
 }
 
@@ -3286,8 +3296,7 @@ void SliceEngine::push_classified_issue(int plate_id, const orca::ExceptionClass
                       : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
                                                                                   : std::string{};
         m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
+        mark_stage_failure(EXIT_PREPROCESS_ERROR);
     }
     else
     {
@@ -3335,13 +3344,11 @@ bool SliceEngine::check_print_by_object(int plate_id, Print& print)
     if (print.config().print_sequence.value != PrintSequence::ByObject)
         return true;
 
-    m_stats.issues.push_back(make_error(
+    record_stage_error(EXIT_PREPROCESS_ERROR, make_error(
         plate_id, "PRINT_BY_OBJECT_CAUTION",
         "Print-by-object may cause the print head to collide with printed parts during switching.",
         "" /*object_name*/,
         "In Snapmaker Orca, switch to print-by-layer or ensure sufficient clearance between objects."));
-    m_any_error = true;
-    set_error_type(EXIT_PREPROCESS_ERROR);
     return false;
 }
 
@@ -3567,9 +3574,7 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
         "temperature together. Otherwise, the extruder and nozzle may be "
         "blocked or damaged during printing.";
     BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << msg;
-    m_stats.issues.push_back(make_error(plate_id, "FILAMENT_TEMP_MIXING", msg));
-    m_any_error = true;
-    set_error_type(EXIT_PREPROCESS_ERROR);
+    record_stage_error(EXIT_PREPROCESS_ERROR, make_error(plate_id, "FILAMENT_TEMP_MIXING", msg));
     return false;
 }
 
@@ -3590,40 +3595,32 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
             m_stats.issues.push_back(make_error(plate_id, "SLICING_ERROR",
                                                 "Slicing failed for this plate: " + msg));
         }
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
+        mark_stage_failure(EXIT_SLICING_ERROR);
         return false;
     }
     catch (const SlicingError& ex)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing error: " << ex.what();
-        m_stats.issues.push_back(make_error(
+        record_stage_error(EXIT_SLICING_ERROR, make_error(
             plate_id, "SLICING_FATAL_ERROR",
             "A fatal slicing error occurred while processing this plate. "
             "The model geometry or print settings may be incompatible with the selected configuration."));
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
         return false;
     }
     catch (const CanceledException&)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": Slicing was cancelled.";
-        m_stats.issues.push_back(make_error(plate_id, "SLICING_CANCELLED",
+        record_stage_error(EXIT_SLICING_ERROR, make_error(plate_id, "SLICING_CANCELLED",
                                             "Slicing was cancelled before completion. "
                                             "This may be caused by an external cancellation request or a resource limit."));
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
         return false;
     }
     catch (const std::exception& e)
     {
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << " slicing exception: " << e.what();
-        m_stats.issues.push_back(
-            make_error(plate_id, "SLICING_EXCEPTION",
+        record_stage_error(EXIT_SLICING_ERROR, make_error(plate_id, "SLICING_EXCEPTION",
                        "An unexpected internal error interrupted slicing for this plate. "
                        "This is not caused by the model — please try again or contact support."));
-        m_any_error = true;
-        set_error_type(EXIT_SLICING_ERROR);
         return false;
     }
 
@@ -3720,12 +3717,16 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         {
             BOOST_LOG_TRIVIAL(error) << "Failed to export G-code for plate " << plate_id << ": " << e.what();
         }
+        // Hand-written triplet, NOT record_stage_error(int, Issue): the issue
+        // goes to this plate's result list (consumed by the per-plate JSON
+        // report), not the global m_stats.issues list. Same for the other
+        // result.issues failure sites (postprocess empty-layers, toolpath
+        // conflict) — the helpers push globally.
         result.issues.push_back(
             make_error(plate_id, "GCODE_EXPORT_ERROR",
                        "Failed to write G-code output. "
                        "Check that the output directory exists and has sufficient disk space."));
-        m_any_error = true;
-        set_error_type(EXIT_EXPORT_ERROR);
+        mark_stage_failure(EXIT_EXPORT_ERROR);
         // Same visualization-data cleanup the normal path applies in
         // finalise_plate_result: a failed export can leave partial moves/
         // lines_ends in gcode_result, and copying them wholesale into
@@ -4246,8 +4247,7 @@ void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, cons
         m_any_postprocess_warning = true;
     if (has_postprocess_error)
     {
-        m_any_error = true;
-        set_error_type(EXIT_POSTPROCESS_ERROR);
+        mark_stage_failure(EXIT_POSTPROCESS_ERROR);
     }
 }
 
@@ -4367,6 +4367,11 @@ void SliceEngine::finalize_output()
 
     if (!has_output)
     {
+        // Hand-written pair, NOT mark_stage_failure: set_error_type is a
+        // NUMERIC ratchet and PREPROCESS(6) > SLICING(4)/EXPORT(5), so an
+        // unconditional call would overwrite the pipeline-semantic exit code
+        // of an earlier slicing/export failure. This gate only labels runs
+        // where nothing else went wrong.
         m_any_error = true;
         if (m_error_type == EXIT_OK)
             set_error_type(EXIT_PREPROCESS_ERROR);
@@ -4447,9 +4452,11 @@ void SliceEngine::package_output()
         bool success = store_bbs_3mf(params);
         if (!success)
         {
+            // Not the global record_stage_error(code,msg) overload: its
+            // unconditional error_message write would clobber an earlier,
+            // more specific message — this site only fills it when empty.
             BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package";
-            m_any_error = true;
-            set_error_type(EXIT_EXPORT_ERROR);
+            mark_stage_failure(EXIT_EXPORT_ERROR);
             std::string msg = "Failed to create output package. The slicing result could not be saved.";
             m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
             if (m_stats.error_message.empty())
@@ -4460,9 +4467,9 @@ void SliceEngine::package_output()
     }
     catch (const std::exception& e)
     {
+        // Same shape as the !success branch above (conditional error_message).
         BOOST_LOG_TRIVIAL(error) << "Failed to create gcode.3mf package: " << e.what();
-        m_any_error = true;
-        set_error_type(EXIT_EXPORT_ERROR);
+        mark_stage_failure(EXIT_EXPORT_ERROR);
         std::string msg = "Failed to create output package due to an internal error.";
         m_stats.issues.push_back(make_error(-1, "PACKAGE_EXPORT_ERROR", msg));
         if (m_stats.error_message.empty())
@@ -4714,8 +4721,7 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.success = !plate_has_error;
     if (plate_has_error)
     {
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
+        mark_stage_failure(EXIT_PREPROCESS_ERROR);
     }
     if (plate_has_warning || result.has_postprocess_warning)
         m_any_postprocess_warning = true;
@@ -4933,8 +4939,7 @@ void SliceEngine::finalise_statistics()
             if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
             {
                 m_stats.success = false;
-                m_any_error = true;
-                set_error_type(EXIT_PREPROCESS_ERROR);
+                mark_stage_failure(EXIT_PREPROCESS_ERROR);
                 break;
             }
         }

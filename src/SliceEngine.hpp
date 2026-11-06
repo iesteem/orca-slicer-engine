@@ -238,6 +238,18 @@ private:
     // to propagate via return false.
     void record_stage_error(int exit_type, const std::string& code, const std::string& msg);
 
+    // The bare failure pair shared by every error path (smell C2):
+    // m_any_error = true + numeric-ratchet set_error_type. Sites that must
+    // NOT escalate an already-set code still hand-write the guard (see
+    // finalize_output — PREPROCESS(6) numerically outranks SLICING(4)).
+    void mark_stage_failure(int exit_type);
+
+    // Plate-scoped triplet form: the site-specific log line stays at the call
+    // site, then mark_stage_failure + push to m_stats.issues. Deliberately
+    // does NOT write m_stats.error_message — only the global overload above
+    // owns that JSON-visible field.
+    void record_stage_error(int exit_type, Issue issue);
+
     // Check that the printer model in the config matches a supported Snapmaker
     // model. Returns false and sets an error if the model is unknown.
     bool validate_printer_model();
