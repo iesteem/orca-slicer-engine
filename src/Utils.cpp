@@ -53,12 +53,12 @@ void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Sli
         bool cancelled = false;
         if (cancel_file && !cancel_file->empty() && boost::filesystem::exists(*cancel_file))
         {
-            std::cout << "[Status] Cancellation requested via " << *cancel_file << std::endl;
+            BOOST_LOG_TRIVIAL(info) << "[Status] Cancellation requested via " << *cancel_file;
             cancelled = true;
         }
         else if (cancel_flag && cancel_flag->load())
         {
-            std::cout << "[Status] Cancellation requested programmatically (slic3r_cancel)" << std::endl;
+            BOOST_LOG_TRIVIAL(info) << "[Status] Cancellation requested programmatically (slic3r_cancel)";
             cancelled = true;
         }
         if (cancelled)
@@ -68,13 +68,20 @@ void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Sli
         }
     }
 
+    // Heartbeats go to the LOG only (2026-11-06, smell E5): stdout is
+    // reserved for the [anchor]-level slice-statistics summary
+    // (JsonReport::output_slice_statistics). Per-layer [Progress] lines on
+    // stdout polluted every pipeline that captures that summary. The Boost
+    // console sink (stderr) plus the info-level file sink keep full
+    // visibility for humans and log consumers; the [Progress]/[Status]
+    // prefixes are kept in the message for grep continuity.
     if (status.percent >= 0)
     {
-        std::cout << "[Progress] " << status.percent << "% - " << status.text << std::endl;
+        BOOST_LOG_TRIVIAL(info) << "[Progress] " << status.percent << "% - " << status.text;
     }
     else
     {
-        std::cout << "[Status] " << status.text << std::endl;
+        BOOST_LOG_TRIVIAL(info) << "[Status] " << status.text;
     }
 }
 
