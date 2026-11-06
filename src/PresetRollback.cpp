@@ -348,7 +348,8 @@ bool PresetRollback::rollback(DynamicPrintConfig& config, const PresetBundle* bu
     }
 
     // 1b. Read nozzle_diameter and printer_model (for compatible_printers → printer nozzle match)
-    double nozzle_diameter = DEFAULT_NOZZLE_DIAMETER;
+    constexpr double kDefaultNozzleDiameter = 0.4; // fallback when nozzle_diameter is absent
+    double nozzle_diameter = kDefaultNozzleDiameter;
     if (config.has("nozzle_diameter"))
     {
         auto* nozzle_opt = config.option<ConfigOptionFloats>("nozzle_diameter");
