@@ -89,7 +89,9 @@ inline constexpr const char* kBuildVolumeHeightSubstring =
 //                    false for emit_validate_warning (PRINT_VALIDATE_WARNING_* codes)
 //   message        : the exception's string; only consulted for type 0 (NOT_DEFINED)
 //                    substring matching on the error path.
-ExceptionClassification classify_validate_exception(
+// inline so the definition can live in a header shared across translation
+// units (same convention as PlateGrid.hpp).
+inline ExceptionClassification classify_validate_exception(
     int                exception_type,
     bool               is_error_path,
     const std::string& message)

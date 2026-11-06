@@ -985,6 +985,21 @@ const Preset* SliceEngine::find_official_by_name(const PresetCollection& collect
     return nullptr;
 }
 
+Preset* SliceEngine::find_project_preset(const std::string& name, Preset::Type type) const
+{
+    // Project-waypoint lookup shared by the filament (resolve_filament,
+    // TYPE_FILAMENT) and process (find_official_process_preset, TYPE_PRINT)
+    // official-substitution walks — each used to carry its own copy of this
+    // loop (smell C3, 2026-11-06). Returns a mutable Preset* (pointer copies
+    // out of a const method are fine); read-only callers assign to const.
+    for (auto* pp : m_project_presets)
+    {
+        if (pp && pp->name == name && pp->type == type)
+            return pp;
+    }
+    return nullptr;
+}
+
 // ============================================================================
 // Stage 1.4a: Printer preset substitution (official Snapmaker U1)
 // ============================================================================
@@ -1273,6 +1288,13 @@ bool SliceEngine::apply_printer_official_preset()
     // from nozzle diameter. Falls back to the nozzle-based name if the
     // field is absent, empty, or does not resolve to an official Snapmaker
     // printer preset.
+    //
+    // DO NOT "unify" with the process walk's inherits_group[0] below
+    // (apply_process_official_preset): the SAME array is read from OPPOSITE
+    // ends by design — printer parent = LAST element, process parent =
+    // FIRST element (commit 2febb622; verified against desktop export
+    // behavior). The index difference is semantics, not an isomorphic pair
+    // (smell C3 group b).
     std::string official_printer_name;
     if (auto* ig_opt = m_config.option<ConfigOptionStrings>("inherits_group"))
     {
@@ -1472,14 +1494,11 @@ bool SliceEngine::resolve_filament(int i, Slic3r::ConfigOptionStrings* filament_
         // renamed_from fallback (see find_official_by_name).
         return const_cast<Preset*>(SliceEngine::find_official_by_name(m_preset_bundle->filaments, name));
     };
+    // Project-waypoint lookup shared with the process walk
+    // (find_official_process_preset) via find_project_preset (smell C3).
     auto find_in_project = [this](const std::string& name) -> Preset*
     {
-        for (auto* pp : m_project_presets)
-        {
-            if (pp && pp->name == name && pp->type == Preset::TYPE_FILAMENT)
-                return pp;
-        }
-        return nullptr;
+        return find_project_preset(name, Preset::TYPE_FILAMENT);
     };
     // All non-official failure branches funnel through here: try PresetRollback
     // to fall back to a base category preset. On success, record for deduplicated
@@ -1698,6 +1717,12 @@ void SliceEngine::apply_process_official_preset()
     // preset that the user's process inherits from. Recorded by Orca desktop
     // at export time. Falls back to preset_name if the field is absent, empty,
     // or does not resolve to an official Snapmaker process preset.
+    //
+    // DO NOT "unify" with the printer walk's inherits_group.back() above
+    // (apply_printer_official_preset): the SAME array is read from OPPOSITE
+    // ends by design — process parent = FIRST element, printer parent = LAST
+    // element (commit 2febb622). The index difference is semantics, not an
+    // isomorphic pair (smell C3 group b).
     std::string process_system_name = preset_name;
     if (auto* ig_opt = m_config.option<ConfigOptionStrings>("inherits_group"))
     {
@@ -1824,12 +1849,9 @@ const Preset* SliceEngine::find_official_process_preset(const std::string& prese
 
     auto find_in_project = [this](const std::string& name) -> const Preset*
     {
-        for (auto* pp : m_project_presets)
-        {
-            if (pp && pp->name == name && pp->type == Preset::TYPE_PRINT)
-                return pp;
-        }
-        return nullptr;
+        // Shared with the filament walk (resolve_filament) via
+        // find_project_preset (smell C3).
+        return find_project_preset(name, Preset::TYPE_PRINT);
     };
 
     // Case 1: Direct system preset match
@@ -3247,22 +3269,22 @@ void SliceEngine::refine_bed_mismatch_message(StringObjectException& ex)
         + "bed temperature to non-zero.";
 }
 
-void SliceEngine::emit_validate_warning(int plate_id, const StringObjectException& warning)
+// Shared tail of emit_validate_warning / emit_validate_error (smell C3,
+// 2026-11-06): build the final message, fill the canned suggestion for the
+// two fixed-suggestion codes, push the Issue at the classified level, and set
+// the error flag + exit type when escalated. Byte-for-byte the logic both
+// functions used to duplicate; does NOT touch m_stats.error_message.
+void SliceEngine::push_classified_issue(int plate_id, const orca::ExceptionClassification& cls,
+                                         const std::string& raw_text, const std::string& obj_name,
+                                         const std::string& opt_hint)
 {
-    auto [obj_name, opt_hint] = format_exception_context(warning);
-    BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
-
-    // Pure classification (warning-path code table) lives in
-    // orca::classify_validate_exception (unit-tested). NOTE: the ORGANIC type
-    // escalates to error level on the warning path too.
-    auto cls = orca::classify_validate_exception(static_cast<int>(warning.type), /*is_error_path=*/false, warning.string);
-    std::string message = cls.fixed_message.empty() ? (warning.string + opt_hint) : cls.fixed_message;
+    std::string message = cls.fixed_message.empty() ? (raw_text + opt_hint) : cls.fixed_message;
 
     if (cls.level == IssueLevel::error)
     {
         std::string suggestion = cls.code == "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT" ? orca::kOrganicFixedSuggestion
-                          : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
-                                                                                      : std::string{};
+                      : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
+                                                                                  : std::string{};
         m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
         m_any_error = true;
         set_error_type(EXIT_PREPROCESS_ERROR);
@@ -3273,13 +3295,25 @@ void SliceEngine::emit_validate_warning(int plate_id, const StringObjectExceptio
     }
 }
 
+void SliceEngine::emit_validate_warning(int plate_id, const StringObjectException& warning)
+{
+    auto [obj_name, opt_hint] = format_exception_context(warning);
+    BOOST_LOG_TRIVIAL(warning) << "Plate " << plate_id << ": " << warning.string << obj_name << opt_hint;
+
+    // Pure classification (warning-path code table) lives in
+    // orca::classify_validate_exception (unit-tested). NOTE: the ORGANIC type
+    // escalates to error level on the warning path too.
+    auto cls = orca::classify_validate_exception(static_cast<int>(warning.type), /*is_error_path=*/false, warning.string);
+    push_classified_issue(plate_id, cls, warning.string, obj_name, opt_hint);
+}
+
 bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException& err)
 {
     auto [obj_name, opt_hint] = format_exception_context(err);
     // Pure classification (error-path code table, NOT_DEFINED substring match,
     // continue/abort contract) lives in orca::classify_validate_exception
-    // (unit-tested). This thin wrapper adds logging, Issue construction and the
-    // member side effects (m_any_error / set_error_type).
+    // (unit-tested). This thin wrapper adds the two-path logging; Issue
+    // construction and member side effects live in push_classified_issue.
     auto cls = orca::classify_validate_exception(static_cast<int>(err.type), /*is_error_path=*/true, err.string);
 
     // NOT_DEFINED (continue_slicing=true) is logged at warning level, matching
@@ -3290,20 +3324,7 @@ bool SliceEngine::emit_validate_error(int plate_id, const StringObjectException&
     else
         BOOST_LOG_TRIVIAL(error) << "Plate " << plate_id << ": " << err.string << obj_name << opt_hint;
 
-    std::string message = cls.fixed_message.empty() ? (err.string + opt_hint) : cls.fixed_message;
-    if (cls.level == IssueLevel::error)
-    {
-        std::string suggestion = cls.code == "ORGANIC_SUPPORT_VARIABLE_LAYER_HEIGHT" ? orca::kOrganicFixedSuggestion
-                          : cls.code == "PRIME_TOWER_VARIABLE_LAYER_HEIGHT"          ? orca::kPrimeTowerFixedSuggestion
-                                                                                      : std::string{};
-        m_stats.issues.push_back(make_error(plate_id, cls.code, message, obj_name, suggestion));
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-    }
-    else
-    {
-        m_stats.issues.push_back(make_warning(plate_id, cls.code, message, obj_name));
-    }
+    push_classified_issue(plate_id, cls, err.string, obj_name, opt_hint);
     return cls.continue_slicing;
 }
 
@@ -4458,25 +4479,9 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
     const ConfigOptionStrings* filament_ids =
         m_config.has("filament_ids") ? m_config.option<ConfigOptionStrings>("filament_ids") : nullptr;
 
-    // Fallback nozzle string from the raw m_config (N slots) for plates whose
-    // snapshot wasn't populated (e.g. failed before export_gcode).
-    std::string fallback_nozzle_str;
-    if (m_config.has("nozzle_diameter"))
-    {
-        auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
-        if (nozzle_opt && !nozzle_opt->values.empty())
-        {
-            std::ostringstream ss;
-            ss << std::fixed << std::setprecision(2);
-            for (size_t i = 0; i < nozzle_opt->values.size(); ++i)
-            {
-                if (i > 0) ss << ",";
-                ss << nozzle_opt->values[i];
-            }
-            fallback_nozzle_str = ss.str();
-        }
-    }
-
+    // Shared nozzle-diameter join ("0.4" / "0.4,0.4"): the fallback below and
+    // the per-plate snapshot path used to hand-roll the same loop twice
+    // (smell C3 group d, 2026-11-06).
     auto join_nozzles = [](const std::vector<double>& vals) {
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(2);
@@ -4487,6 +4492,18 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
         }
         return ss.str();
     };
+
+    // Fallback nozzle string from the raw m_config (N slots) for plates whose
+    // snapshot wasn't populated (e.g. failed before export_gcode).
+    std::string fallback_nozzle_str;
+    if (m_config.has("nozzle_diameter"))
+    {
+        auto nozzle_opt = m_config.option<ConfigOptionFloats>("nozzle_diameter");
+        if (nozzle_opt && !nozzle_opt->values.empty())
+        {
+            fallback_nozzle_str = join_nozzles(nozzle_opt->values);
+        }
+    }
 
     for (auto& pd : m_plate_data)
     {

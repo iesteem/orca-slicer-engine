@@ -18,6 +18,7 @@
 #include "libslic3r/Semver.hpp"
 
 #include "Types.hpp"
+#include "ValidateClassify.hpp"
 
 struct EngineConfig
 {
@@ -267,6 +268,25 @@ private:
     // rename map is not populated on the engine's preset-load path).
     static const Slic3r::Preset* find_official_by_name(const Slic3r::PresetCollection& collection,
                                                        const std::string& name);
+
+    // Project-waypoint lookup: exact-name match in the 3MF-embedded preset
+    // list (m_project_presets) restricted to one preset type. The "project"
+    // half of the official-substitution walks — resolve_filament
+    // (TYPE_FILAMENT) and find_official_process_preset (TYPE_PRINT) each
+    // carried their own copy of this loop until it landed here (smell C3,
+    // 2026-11-06). Embedded presets are chain waypoints only, never applied
+    // wholesale. Returns a mutable Preset* — pointer copies out of a const
+    // method are fine; read-only callers assign straight to const Preset*.
+    Slic3r::Preset* find_project_preset(const std::string& name, Slic3r::Preset::Type type) const;
+
+    // Shared tail of emit_validate_warning / emit_validate_error (smell C3):
+    // build the final message (cls.fixed_message verbatim when set, else
+    // raw_text + opt_hint), fill the canned suggestion for the two
+    // fixed-suggestion codes, push the Issue at the classified level, and set
+    // m_any_error + exit type when escalated to error. Does NOT touch
+    // m_stats.error_message — neither did the duplicated tails it replaced.
+    void push_classified_issue(int plate_id, const orca::ExceptionClassification& cls, const std::string& raw_text,
+                               const std::string& obj_name, const std::string& opt_hint);
 
     // Strip all user-supplied content from m_config: G-code keys (machine +
     // process + filament level), user-authored text (printer_notes /
