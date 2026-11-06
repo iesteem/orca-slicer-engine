@@ -85,6 +85,73 @@ std::string extract_3mf_text(const std::string& gcode_3mf_path, const std::strin
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
+// Slice one CSV field (index-th) out of a "; key = a,b,c" G-code header
+// echo line. Returns "" when the key or the index is absent — callers
+// CHECK against the expected literal, so a missing line fails loudly.
+std::string header_csv_field(const std::string &gcode, const std::string &key, size_t index)
+{
+    const std::string marker = "; " + key + " = ";
+    const size_t pos = gcode.find(marker);
+    if (pos == std::string::npos)
+        return "";
+    const size_t begin = pos + marker.size();
+    const size_t end = gcode.find('\n', begin);
+    const std::string line = gcode.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+    size_t field = 0;
+    size_t start = 0;
+    while (start <= line.size())
+    {
+        const size_t comma = line.find(',', start);
+        std::string tok = line.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (field == index)
+        {
+            const size_t b = tok.find_first_not_of(" \t");
+            const size_t e = tok.find_last_not_of(" \t\r");
+            return b == std::string::npos ? "" : tok.substr(b, e - b + 1);
+        }
+        ++field;
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    return "";
+}
+
+// One slot's flow state in the packaged project_settings.config: the
+// declaration (filament_volume_type[slot]) plus the slot's segments of
+// filament_flow_support / filament_max_volumetric_speed, sliced by the
+// packaged filament_flow_step_size layout. Same shell-out rationale as
+// extract_gcode / extract_3mf_text.
+struct ConfigSlotFlowState
+{
+    std::string declared;
+    std::string support_segment; // comma-joined
+    std::string fmvs_segment;    // comma-joined
+};
+ConfigSlotFlowState read_config_slot_flow_state(const std::string &gcode_3mf_path, size_t slot)
+{
+    const std::string tmp = "/tmp/orca_test_hf_slot_state.txt";
+    boost::filesystem::remove(tmp);
+    const std::string cmd =
+        "python3 -c \"import zipfile,json;"
+        "z=zipfile.ZipFile('" + gcode_3mf_path + "');"
+        "d=json.loads(z.read('Metadata/project_settings.config'));"
+        "st=[int(x) for x in d['filament_flow_step_size']];"
+        "s=sum(st[:" + std::to_string(slot) + "]);n=st[" + std::to_string(slot) + "];"
+        "print(d['filament_volume_type'][" + std::to_string(slot) + "]);"
+        "print(','.join(d['filament_flow_support'][s:s+n]));"
+        "print(','.join(d['filament_max_volumetric_speed'][s:s+n]))\" > '" + tmp + "'";
+    const int rc = std::system(cmd.c_str());
+    REQUIRE(rc == 0);
+    std::ifstream f(tmp);
+    REQUIRE(f.good());
+    ConfigSlotFlowState state;
+    std::getline(f, state.declared);
+    std::getline(f, state.support_segment);
+    std::getline(f, state.fmvs_segment);
+    return state;
+}
+
 // Per-extruder maximum print (non-travel) feedrate in mm/s. Feedrates in the
 // G-code are mm/min (G1 F...). Travel moves on this printer run at
 // F30000 = 500 mm/s which coincides with the high-flow outer wall cap, so
@@ -287,6 +354,90 @@ TEST_CASE("Nozzle volume type survives printer preset substitution", "[integrati
     boost::system::error_code ec;
     boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+}
+
+TEST_CASE("Single-tier official preset silently collapses project high_flow tier (tier-collapse fixture)",
+          "[integration][highflow]")
+{
+    // Fixture high_flow_tier_collapse.3mf (constructed 2026-11-06 from
+    // high_flow_whitelist.3mf): slot 1 (Generic PLA-CF — official preset
+    // declares one variant) carries a project-level two-tier segment:
+    //   filament_flow_support          slot 1 = ["standard","high_flow"]
+    //   filament_max_volumetric_speed  slot 1 = ["12","33"]
+    // with all 19 flow-variant keys re-laid out consistently and
+    // filament_flow_step_size slot 1 grown 1→2, while filament_volume_type
+    // stays high_flow on every slot.
+    //
+    // Pinned behavior (intentional, S2 lineage —
+    // PresetRollback::overwrite_flow_variant_segment, PresetRollback.cpp):
+    // substituting the official single-tier preset rewrites slot 1's segment
+    // to the preset's single declared variant, silently dropping the
+    // project's high_flow tier (33), while the packaged
+    // filament_volume_type keeps declaring high_flow. The declaration layer
+    // alone is therefore not proof of effect — the segment storage and the
+    // per-slot G-code header echo reveal the fallback. The JSON issues stay
+    // generic (FILAMENT_SUBSTITUTED); no flow-specific warning exists. If
+    // product later decides to surface the tier loss (P-15 lineage), the
+    // no-FLOW-issue CHECK below fails on purpose — update it together with
+    // that decision.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_tier_collapse.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_hf_trap";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+
+    // Pre-run cleanup: stale-artifact relocation trap (see the nvt test
+    // above for the mechanism).
+    boost::filesystem::remove("/tmp/orca_test_hf_trap.gcode.3mf");
+
+    engine.run();
+
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    // The pinned collapse only happens through preset substitution — without
+    // it the fixture would slice on its own two-tier values and the test
+    // would be vacuous.
+    bool any_filament_substituted = false;
+    for (const auto &iss : engine.stats().issues)
+        if (iss.code == "FILAMENT_SUBSTITUTED" || iss.code == "FILAMENT_ROLLED_BACK")
+            any_filament_substituted = true;
+    REQUIRE(any_filament_substituted);
+
+    // Packaged project_settings.config — declaration vs segment storage.
+    const ConfigSlotFlowState cfg_state = read_config_slot_flow_state("/tmp/orca_test_hf_trap.gcode.3mf", 1);
+    // Declaration layer: still high_flow — pure pass-through, untouched.
+    CHECK(cfg_state.declared == "high_flow");
+    // Segment storage: the official single-tier preset collapsed the
+    // project's ["standard","high_flow"] back to ["standard"] …
+    CHECK(cfg_state.support_segment == "standard");
+    // … and the project's high_flow tier value 33 is gone (slot keeps 12).
+    CHECK(cfg_state.fmvs_segment == "12");
+
+    // G-code header echo — per-slot resolved values. Slot 1 resolves to the
+    // standard tier despite the high_flow declaration, while slot 2
+    // (official two-tier SnapSpeed preset, same declaration) resolves its
+    // high tier — the contrast that makes the fallback visible.
+    const std::string gcode = extract_gcode("/tmp/orca_test_hf_trap.gcode.3mf");
+    CHECK(header_csv_field(gcode, "filament_volume_type", 1) == "high_flow");
+    CHECK(header_csv_field(gcode, "filament_max_volumetric_speed", 1) == "12");
+    CHECK(header_csv_field(gcode, "filament_max_volumetric_speed", 2) == "40");
+
+    // Silence pin: the tier loss rides the generic FILAMENT_SUBSTITUTED
+    // message; no flow-specific issue code exists today.
+    for (const auto &iss : engine.stats().issues)
+        CHECK(iss.code.find("FLOW") == std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_hf_trap.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_slot_state.txt", ec);
 }
 
 TEST_CASE("Wipe tower rotation angle survives process preset substitution", "[integration][highflow]")
