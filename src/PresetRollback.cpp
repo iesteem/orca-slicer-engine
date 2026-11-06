@@ -356,6 +356,13 @@ bool PresetRollback::rollback(DynamicPrintConfig& config, const PresetBundle* bu
             nozzle_diameter = nozzle_opt->values[extruder_idx];
     }
 
+    // Fallback constant, not a policy choice: by the time rollback runs,
+    // SliceEngine::validate_printer_model() (Stage 1.1, invoked before any
+    // preset loading) has already rejected every model other than
+    // "Snapmaker U1", so a config printer_model — when present — always
+    // matches this constant. It only materialises on the config-missing
+    // path, as defense-in-depth. Do NOT extend it into a generic default
+    // for other printer families.
     std::string printer_model = DEFAULT_PRINTER_MODEL;
 
     // 2. Find base category preset
