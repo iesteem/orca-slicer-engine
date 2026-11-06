@@ -29,7 +29,8 @@ extern "C"
 typedef struct slic3r_ctx_s slic3r_ctx_t;
 
 /* ---- Status codes ----
- * Values 0-7 match the C++ EXIT_* constants in Types.hpp exactly;
+ * SINGLE SOURCE: Types.hpp defines the C++ EXIT_* constants as aliases of
+ * these SLIC3R_* macros, so the C and C++ families cannot drift.
  * slic3r_slice() returns engine.exit_code() directly without translation.
  *
  *   0  SLIC3R_OK              Success
