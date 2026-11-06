@@ -240,24 +240,27 @@ TEST_CASE("CLI: removed -p/--plate rejected with exit 1", "[integration][cli][de
 }
 
 // ============================================================================
-// Deprecated --skip-preset-substitution flag — removed 2026-09-29. main.c
-// silently ignores unknown options, so callers still passing the flag must get
-// a normal slice (exit 0, output produced): the flag is dead weight, never an
-// error. Official preset substitution runs as always.
+// Unknown options are rejected with exit 1 (2026-11-06, smell batch 2 A3).
+// Until now main.c silently ignored unknown dash-options, so callers passing
+// removed flags (e.g. --skip-preset-substitution, removed 2026-09-29) or
+// typos got a normal all-plates slice with exit 0 and never noticed. Every
+// option must now be known — breaking for callers relying on silent
+// tolerance. (Pre-A3 this test pinned the opposite contract: silent ignore,
+// exit 0, artifact produced.)
 // ============================================================================
 
-TEST_CASE("CLI: deprecated --skip-preset-substitution silently ignored, slice proceeds", "[integration][cli][deprecated]")
+TEST_CASE("CLI: unknown option rejected with exit 1 (no silent ignore)", "[integration][cli]")
 {
     CliResult r = run_cli(std::string("\"") + ORCA_TEST_FIXTURE + "\" -r \"" ORCA_TEST_RESOURCES_ROOT
                           + "\" -o /tmp/orca_cli_dep --skip-preset-substitution");
     INFO(r.out);
     REQUIRE(r.exited);
-    REQUIRE(r.exit_code == 0);
-    REQUIRE(boost::filesystem::exists("/tmp/orca_cli_dep.gcode.3mf"));
+    REQUIRE(r.exit_code == 1);
+    REQUIRE(r.out.find("unknown option") != std::string::npos);
+    REQUIRE(r.out.find("--skip-preset-substitution") != std::string::npos);
+    // Rejected at parse time, before any slicing or output
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_cli_dep.gcode.3mf"));
 
-    rm("/tmp/orca_cli_dep.gcode.3mf");
-    rm("/tmp/orca_cli_dep.json");
-    rm("/tmp/orca_cli_dep.log");
     rm("/tmp/orca_cli_capture.txt");
 }
 

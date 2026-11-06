@@ -186,9 +186,9 @@ int main(int argc, char* argv[])
         }
         else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--plate"))
         {
-            /* Removed 2026-09-30: the CLI always slices all plates. Unlike
-             * other unknown options (silently ignored), -p is rejected
-             * explicitly: honoring-by-ignoring would silently widen a
+            /* Removed 2026-09-30: the CLI always slices all plates. Rejected
+             * explicitly (as every unknown option has been since 2026-11-06,
+             * smell batch 2 A3): honoring-by-ignoring would silently widen a
              * single-plate request to all plates (10x work, different
              * artifact name and exit code). Plate selection remains
              * available via the C API params_json "plate_id" key. */
@@ -223,6 +223,19 @@ int main(int argc, char* argv[])
              * "Default: auto-derived" (aligned 2026-10-19, P-28). */
             if (i + 1 < argc && argv[i+1][0] != '-')
                 json_output = argv[++i];
+        }
+        else if (argv[i][0] == '-')
+        {
+            /* Unknown option: reject (2026-11-06, smell batch 2 A3). The old
+             * fall-through silently ignored unknown flags, so callers passing
+             * removed options (e.g. --skip-preset-substitution, removed
+             * 2026-09-29) or typos got a normal all-plates slice with exit 0
+             * and never noticed. Breaking change for callers that relied on
+             * silent tolerance — every option must now be known. Non-dash
+             * arguments without a .3mf extension are still ignored; input
+             * selection is unchanged. */
+            fprintf(stderr, "Error: unknown option '%s'. Use -h for help.\n", argv[i]);
+            return 1;
         }
         else if (argv[i][0] != '-')
         {
