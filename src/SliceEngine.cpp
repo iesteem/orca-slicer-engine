@@ -3609,6 +3609,26 @@ bool SliceEngine::run_slicing(int plate_id, Print& print)
     return true;
 }
 
+// Free the G-code visualization data the cloud engine never uses.
+// GCodeProcessorResult::moves (MoveVertex) and lines_ends (size_t) store
+// every G-code move vertex for the desktop GUI — hundreds of MB per plate
+// (see finalise_plate_result for the bad_alloc precedent). Shared by the
+// normal path and export_gcode's catch (smell C5, 2026-11-06: the error
+// path used to copy the whole result into m_plate_results WITHOUT this
+// cleanup, so a failed plate retained its moves vectors until process exit
+// — the exact memory pattern the normal path's cleanup exists to prevent).
+// Safe inside a catch handler: clear() on vectors of trivially destructible
+// elements cannot throw, and shrink_to_fit() on the now-empty vector only
+// deallocates (no allocation, no bad_alloc escape).
+// File-local free function: no member state.
+static void clear_intermediate(PlateSliceResult& result)
+{
+    result.gcode_result.moves.clear();
+    result.gcode_result.moves.shrink_to_fit();
+    result.gcode_result.lines_ends.clear();
+    result.gcode_result.lines_ends.shrink_to_fit();
+}
+
 bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& result)
 {
     std::string gcode_output;
@@ -3685,6 +3705,12 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
                        "Check that the output directory exists and has sufficient disk space."));
         m_any_error = true;
         set_error_type(EXIT_EXPORT_ERROR);
+        // Same visualization-data cleanup the normal path applies in
+        // finalise_plate_result: a failed export can leave partial moves/
+        // lines_ends in gcode_result, and copying them wholesale into
+        // m_plate_results would retain hundreds of MB until process exit
+        // (smell C5 — this catch used to bypass the cleanup).
+        clear_intermediate(result);
         m_plate_results[plate_id] = result;
         return false;
     }
@@ -4212,10 +4238,8 @@ void SliceEngine::finalise_plate_result(int plate_id, PlateSliceResult& result)
     // them across plates causes std::bad_alloc on complex multi-plate
     // projects (e.g. Mochi Makes plate 3 with 10 instances after plates
     // 1+2 already consumed 500+ MB for their moves vectors).
-    result.gcode_result.moves.clear();
-    result.gcode_result.moves.shrink_to_fit();
-    result.gcode_result.lines_ends.clear();
-    result.gcode_result.lines_ends.shrink_to_fit();
+    // Shared with export_gcode's catch via clear_intermediate (smell C5).
+    clear_intermediate(result);
 
     m_plate_results[plate_id] = result;
 }
@@ -4306,10 +4330,18 @@ void SliceEngine::finalize_output()
         package_output();
 
     // For single-plate GCODE mode, the file is written directly to m_output_path
-    // during export_gcode. Remove it if errors occurred.
+    // during export_gcode. Remove it if errors occurred. error_code overload:
+    // never throws — the throwing overload would escalate a cleanup miss into
+    // an exception escaping finalize_output, flipping the run into
+    // EXIT_SLICING_ERROR/INTERNAL_ERROR over a file that merely failed to
+    // delete (smell C5; same idiom as remove_unusable_gcode).
     if (m_any_error && !keep_failed_package && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
     {
-        boost::filesystem::remove(m_output_path);
+        boost::system::error_code ec;
+        boost::filesystem::remove(m_output_path, ec);
+        if (ec)
+            BOOST_LOG_TRIVIAL(warning) << "Failed to remove failed-run output " << m_output_path
+                                       << " (" << ec.message() << ")";
     }
 
     if (!has_output)
