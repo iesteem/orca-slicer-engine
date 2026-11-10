@@ -146,21 +146,20 @@ if(ORCA_STATIC)
 
     # Test resources root (B4, 2026-11-06): the integration tests drive
     # slic3r_create()/CLI -r against real presets under <root>/profiles.
-    # Cache variable so an SDK layout (CI) or out-of-tree resources can
-    # point elsewhere with -DORCA_TEST_RESOURCES_ROOT=<path> instead of
-    # editing this file; configure fails fast with guidance when wrong —
-    # a missing-resources failure otherwise surfaces only mid-suite as
-    # PRESETS_MISSING test errors.
-    set(ORCA_TEST_RESOURCES_ROOT "${CMAKE_SOURCE_DIR}/package/resources"
+    # Default = the repo's resources/profiles submodule (snapmaker-profiles);
+    # an SDK layout (CI) or out-of-tree resources can point elsewhere with
+    # -DORCA_TEST_RESOURCES_ROOT=<path> instead of editing this file;
+    # configure fails fast with guidance when wrong — a missing-resources
+    # failure otherwise surfaces only mid-suite as PRESETS_MISSING test errors.
+    set(ORCA_TEST_RESOURCES_ROOT "${CMAKE_SOURCE_DIR}/resources"
         CACHE PATH "Resources root containing profiles/ for engine-integration tests")
     if(NOT EXISTS "${ORCA_TEST_RESOURCES_ROOT}"
        OR NOT EXISTS "${ORCA_TEST_RESOURCES_ROOT}/profiles")
         message(FATAL_ERROR
             "ORCA_TEST_RESOURCES_ROOT='${ORCA_TEST_RESOURCES_ROOT}' does not contain profiles/.\n"
             "The integration tests consume real presets via slic3r_create()/CLI -r.\n"
-            "Fix: -DORCA_TEST_RESOURCES_ROOT=<resources root containing profiles/>\n"
-            "(in-repo default: <repo>/package/resources; on CI it is restored from the\n"
-            "engine SDK — see the extract step in .github/workflows/ci.yml).")
+            "Fix: git submodule update --init   (default layout <repo>/resources)\n"
+            "or:  -DORCA_TEST_RESOURCES_ROOT=<resources root containing profiles/>")
     endif()
 
     target_compile_definitions(engine-integration PRIVATE

@@ -55,7 +55,7 @@ typedef struct slic3r_ctx_s slic3r_ctx_t;
 
     /* ---- Lifecycle ---- */
 
-    /** Create a slicer context. resources_dir points to OrcaSlicer/resources/.
+    /** Create a slicer context. resources_dir points to a resources root that contains profiles.
  *  Returns NULL on failure. */
     SLIC3R_API slic3r_ctx_t* slic3r_create(const char* resources_dir);
 

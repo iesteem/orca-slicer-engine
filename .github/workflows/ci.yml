@@ -41,9 +41,10 @@ jobs:
   # They are produced by an internal pipeline that runs scripts/gen_static_libs.sh
   # against a *pinned* OrcaSlicer commit, then packages:
   #   - cmake/StaticConfig.cmake      (captured include/lib paths)
-  #   - package/resources/profiles    (printer/filament/process presets)
   #   - the static archives + includes at the absolute paths recorded in StaticConfig
   # into one tarball/zip and publishes it (GitHub Release / internal storage).
+  # Presets are NOT part of the SDK — they come from the resources/ submodule,
+  # fetched at checkout (submodules: recursive below).
   #
   # NOTE: a fully reproducible clean-clone build (gap A6) is still TODO; until
   # then this job depends on the ORCA_SDK_URL secret being published.
@@ -54,6 +55,8 @@ jobs:
     needs: version-source-check
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install system dependencies
         run: |

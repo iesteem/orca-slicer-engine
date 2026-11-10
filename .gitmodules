@@ -1,0 +1,4 @@
+[submodule "resources/profiles"]
+	path = resources/profiles
+	url = https://github.com/Snapmaker/snapmaker-profiles
+	branch = main
