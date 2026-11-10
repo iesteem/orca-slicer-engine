@@ -3,7 +3,10 @@
 #include <string>
 
 // Sentinel plate_id for issues not associated with a specific plate (global errors/warnings)
-constexpr int GLOBAL_ISSUE = -1;
+// inline constexpr (R2, 2026-11-10): namespace-scope constexpr defaults to internal
+// linkage (per-TU copies; see 头文件规则 §1 问2). Not odr-used today, but the
+// rest of the repo (PlateGrid/ValidateClassify) already uses inline constexpr.
+inline constexpr int GLOBAL_ISSUE = -1;
 
 // Issue severity levels — ordinal defines sort / display order (high to low)
 enum class IssueLevel
@@ -17,10 +20,15 @@ enum class IssueLevel
 // Structured issue for error/warning/tip collection
 struct Issue
 {
-    IssueLevel level;
-    int plate_id; // plate index, -1 for global
+    // NSDMI on every scalar (R1, 2026-11-10): production code constructs Issue
+    // exclusively through the make_* factories below, which fully initialise
+    // via aggregate init — but a bare `Issue iss;` left level/plate_id/
+    // z_height as indeterminate values. C++17 keeps this an aggregate, so
+    // the factory call sites are unaffected.
+    IssueLevel level = IssueLevel::warning;
+    int plate_id = GLOBAL_ISSUE; // plate index, -1 for global
     std::string object_name; // related object, empty if N/A
-    double z_height; // Z-level in mm, -1 if N/A
+    double z_height = -1.0; // Z-level in mm, -1 if N/A
     std::string code; // error code (e.g. from SliceWarning), empty if N/A
     std::string message; // human-readable description
     std::string suggestion; // actionable repair suggestion, empty if N/A

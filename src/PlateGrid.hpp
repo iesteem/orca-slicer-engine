@@ -28,10 +28,13 @@ inline int compute_column_count(int count)
 }
 
 // Grid cell position for a plate in a row-major layout.
+// NSDMI (R1, 2026-11-10): zero-init only — production values always come
+// from plate_grid_cell(); the defaults just keep a default-constructed
+// cell from reading indeterminate ints.
 struct PlateCell
 {
-    int row;
-    int col;
+    int row = 0;
+    int col = 0;
 };
 
 inline PlateCell plate_grid_cell(int plate_id, int total_plates)
@@ -41,10 +44,12 @@ inline PlateCell plate_grid_cell(int plate_id, int total_plates)
 }
 
 // Plate origin in global space, X/Y only (Z is always 0).
+// NSDMI (R1, 2026-11-10): (0,0) matches the documented degenerate-size
+// origin; real values come from compute_plate_origin().
 struct PlateOrigin
 {
-    double x;
-    double y;
+    double x = 0.0;
+    double y = 0.0;
 };
 
 // Compute the global coordinate origin for a plate in the row-major grid
@@ -75,10 +80,13 @@ inline PlateOrigin compute_plate_origin(int plate_id, int total_plates,
 // engine plate shares the same z-range, so XY alone discriminates membership.
 struct PlateBox2D
 {
-    double xmin;
-    double ymin;
-    double xmax;
-    double ymax;
+    // NSDMI (R1, 2026-11-10): zero-init guard against indeterminate reads on
+    // a default-constructed box; membership tests always receive a box fully
+    // built by plate_footprint_box().
+    double xmin = 0.0;
+    double ymin = 0.0;
+    double xmax = 0.0;
+    double ymax = 0.0;
 };
 
 // Pure companion of compute_plate_origin for P-23 geometric membership

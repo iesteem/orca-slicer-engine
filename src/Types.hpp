@@ -18,7 +18,7 @@
 // by the Stage 1.1 gate (SliceEngine::validate_printer_model) and, as a
 // provably-redundant fallback, by PresetRollback (see the invariant note
 // there). Do NOT extend into a generic default for other printer families.
-constexpr const char* DEFAULT_PRINTER_MODEL = "Snapmaker U1";
+inline constexpr const char* DEFAULT_PRINTER_MODEL = "Snapmaker U1";
 
 // Output format enum
 enum class OutputFormat
