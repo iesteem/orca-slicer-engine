@@ -506,7 +506,23 @@ TEST_CASE("Official preset key sets are mutually exclusive across categories", "
     // overlap in a way that would let that happen.
     auto bundle = load_official_bundle();
     const Preset* prn = bundle->printers.find_preset("Snapmaker U1 (0.4 nozzle)", false);
-    const Preset* fil = bundle->filaments.find_preset("Generic PLA", false);
+    // Filament lookup must be version-tolerant: the flat "Generic PLA" system
+    // preset was restructured by the 02.03.06.00 bundle into "@U1 base" +
+    // per-nozzle instantiations (hardcoding the old name made this test red
+    // on the presets bump). The base variant carries instantiation:"false"
+    // and never enters the loaded collection — pick the 0.4-nozzle
+    // instantiation instead (matches the fixture machine; its config is what
+    // the engine's filament stage reads). Mirrors find_process() below.
+    auto find_filament = [&]() -> const Preset* {
+        for (auto it = bundle->filaments.cbegin(); it != bundle->filaments.cend(); ++it) {
+            if (!it->is_system || !it->vendor || it->vendor->name != PresetBundle::SM_BUNDLE)
+                continue;
+            if (it->name.rfind("Generic PLA @U1 0.4 nozzle", 0) == 0)
+                return &*it;
+        }
+        return nullptr;
+    };
+    const Preset* fil = find_filament();
     // Use the same process name the engine resolved for the fixture (inherits[0]).
     REQUIRE(prn); REQUIRE(fil);
 
