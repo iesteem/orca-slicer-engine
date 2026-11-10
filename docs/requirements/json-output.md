@@ -116,8 +116,16 @@
   "print_time_formatted": "20h34m",
   "total_weight_g": 5.92,
   "filaments": [
-    { "id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
+    { "id": 1, "type": "PLA", "volume_type": "standard", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
   ],
+  // ↑ filaments[] 每条：id = 1-based 耗材槽号（gcode T 编号 +1，仅列该盘实际
+  // 挤出的槽）；volume_type = 该槽流量类型声明，值域严格 {"standard",
+  // "high_flow"}，恒输出（缺失/越界槽在装配层已坍缩为 "standard"）。取值源 =
+  // post-apply print.config() 快照（capture_post_trim_config_snapshot）——
+  // 与 gcode 头回显 "; filament_volume_type" 同源同值。**声明层语义**：
+  // 它是驱动切片的声明，不是"高档实际生效"的证据——官方单档预设替换可把
+  // 档位段塌缩回 standard 而声明仍是 high_flow（test_high_flow 塌缩用例
+  // 钉死此行为）；生效判定须走 gcode 体四层法。App 一键打印按槽读此字段。
   "model_thumbnail": "<base64 PNG>",  // 可为空串
   "long_retraction_when_cut": false,
   "support_free": true                // gcode 实际层：该盘支撑挤出体积为 0（含配置
@@ -129,6 +137,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.1 (2026-11-10 新增) | `plates[].filaments[]` 条目内新增 **`volume_type`**（string，恒输出，值域 `{"standard","high_flow"}`，位于 `type` 之后）：该槽流量类型声明，取值源 = post-apply `print.config()` 快照（与 gcode 头回显同源；装配层对缺失/越界槽坍缩为 `"standard"`）。**声明层语义**——非"高档实际生效"证据（档位塌缩场景声明仍 high_flow），生效判定走 gcode 体。`print_info_total.filaments` 因 (type,color) 跨盘去重合并不加此字段（同组不同槽流量类型可不同）。App 一键打印契约字段 |
 | 2.2.0 (2026-10-23 追加 P-35) | `SPIRAL_LIFT_NEAR_BOUNDARY` 触发条件精度化：判定源从机器域 `z_hop_types` 平键改为**有效值**（机器键 clone 后 `apply_override` 组合 `filament_z_hop_types`，镜像 PrintApply 合并语义）。code/level/消息不变，仅消除耗材覆盖已关掉螺旋时的误报（SnapSpeed Slope × 机器 Auto 基值场景实测两条误报→0） |
 | 2.2.0 (2026-10-19 修订) | **`error_message` → `error_code` 原地改名**（同日二次修订，2.2.0 未发布，support_free 改名先例）：内容从"与 slic3r_get_error 同串的人类可读摘要"改为"全部 error / serious_warning issue 的 code 英文逗号拼接（issues 列表序，不去重）"——旧摘要在 rc=6/7 恰好为空或泛化，聚合 code 精确归因。不变式改述为 success ⟺ exit_code==0 ⟺ error_code==""（全路径审计：所有 rc≠0 的 run() 出口均伴随 error/serious_warning issue，P-23 NO_PLATES_PRODUCED 已封掉最后一个无 issue 缺口）。C API `slic3r_get_error` 通道**不变**（仍返回结构体 error_message 摘要），JSON 不再镜像该串 |
 | 2.2.0 (2026-10-19 追加 P-28) | **文件通道**：显式 json_output_path 无条件落盘（含 rc=3/6 早期失败；CLI 因 main.c 预填而恒落盘）；2026-10-13 防垃圾文件决策收窄至"未传路径的 C API 直调方失败运行"。裸 `-j` 对齐为预填 `<output>.json`（原发空路径=只打印不落盘，与帮助文本矛盾）。报告字段与不变式不变 |

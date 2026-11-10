@@ -70,6 +70,9 @@ struct PlateSliceResult
     std::vector<double> nozzle_diameters;      // nozzle diameters actually used (matches what slicer used)
     std::vector<double> filament_diameters;    // filament diameters actually used (matches G-code generation)
     std::vector<double> filament_densities;    // filament densities actually used (matches G-code generation)
+    std::vector<int> filament_volume_types;    // per-slot flow type declaration (FilamentVolumeType raw
+                                               // ints, post-apply print.config(); same value get_config_idx
+                                               // reads and the "; filament_volume_type" header echoes)
     std::vector<Issue> issues; // collected issues for this plate
 };
 

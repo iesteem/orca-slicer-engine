@@ -3985,6 +3985,17 @@ void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResu
         const auto* fden = print.config().option<ConfigOptionFloats>("filament_density");
         if (fden) result.filament_densities = fden->values;
     }
+    // Per-slot flow type declaration (FilamentVolumeType raw ints). Snapshot
+    // for the same reason as colours/types: this is the value get_config_idx
+    // reads when resolving flow-variant keys AND the value the
+    // "; filament_volume_type" gcode header echoes. No runtime writer touches
+    // the key anywhere in the fork (GCode.cpp echo is read-only; PresetBundle
+    // setters are desktop GUI-side), so snapshot == echo == the declaration
+    // that actually drove slicing.
+    if (print.config().has("filament_volume_type")) {
+        const auto* fvt = print.config().option<ConfigOptionEnumsGeneric>("filament_volume_type");
+        if (fvt) result.filament_volume_types = fvt->values;
+    }
 }
 
 // Guard: returns true when every G-code layer is valid, i.e. export_gcode
@@ -4844,6 +4855,16 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
             detail.color = fcolors->values[ext_sz];
         else
             detail.color = "#000000";
+
+        // Flow type declaration, joined in the same extruder_id index space
+        // as type/colour above. Deliberately NO m_config fallback: the value
+        // domain has two members, so "standard" (the in-class default) IS the
+        // fallback, and m_config's index space can differ from the post-apply
+        // one under the single-extruder remap (see the colours comment).
+        // to_string() is bounds-checked — a raw int outside the enum renders
+        // as "standard".
+        if (ext_sz < result.filament_volume_types.size())
+            detail.volume_type = to_string(FilamentVolumeType(result.filament_volume_types[ext_sz]));
 
         plate_stats.filament_details.push_back(detail);
     }

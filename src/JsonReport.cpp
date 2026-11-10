@@ -223,6 +223,11 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
                 ordered_json fdj;
                 fdj["id"] = detail.id + 1;
                 fdj["type"] = detail.type;
+                // Flow type declaration ("standard" / "high_flow"), inserted
+                // right after type per the App contract. Always present on
+                // success — missing/out-of-range snapshots already collapsed
+                // to "standard" at the assembly site (SliceEngine.cpp join).
+                fdj["volume_type"] = detail.volume_type;
                 fdj["color"] = detail.color;
                 fdj["used_g"] = round2(detail.used_g);
                 fdj["used_mm"] = round2(detail.used_m * 1000.0);

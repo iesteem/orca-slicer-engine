@@ -37,9 +37,11 @@
 #include <vector>
 
 #include <boost/filesystem.hpp>
+#include <nlohmann/json.hpp>
 
 #include "libslic3r/Utils.hpp"   // set_data_dir / set_resources_dir
 
+#include "JsonReport.hpp"
 #include "SliceEngine.hpp"
 
 static const char* kResources = ORCA_TEST_RESOURCES;
@@ -210,6 +212,24 @@ TEST_CASE("High-flow variant reaches G-code feedrates (whitelist fixture)", "[in
     // rather than silently passing.
     REQUIRE(engine.stats().success);
     REQUIRE(engine.exit_code() == 0);
+
+    // JSON declaration layer (2.2.1): every used slot's filament detail
+    // carries the post-apply flow type declaration. All 8 slots are active
+    // in this project; details are ordered by slot id (std::map key).
+    const auto& wl_plate = engine.stats().plates.at(0);
+    REQUIRE(wl_plate.filament_details.size() == 8);
+    for (const auto& d : wl_plate.filament_details)
+        CHECK(d.volume_type == "high_flow");
+    // Emission: the field rides inside plates[].filaments[] entries.
+    {
+        const auto j = nlohmann::json::parse(build_statistics_json(
+            engine.stats(), "/tmp/orca_test_hf_whitelist.gcode.3mf"));
+        for (const auto& fj : j["plates"].at(0)["filaments"])
+        {
+            INFO("filaments entry " << fj.dump());
+            CHECK(fj["volume_type"] == "high_flow");
+        }
+    }
 
     const std::string gcode = extract_gcode("/tmp/orca_test_hf_whitelist.gcode.3mf");
 
@@ -429,6 +449,16 @@ TEST_CASE("Single-tier official preset silently collapses project high_flow tier
     CHECK(header_csv_field(gcode, "filament_max_volumetric_speed", 1) == "12");
     CHECK(header_csv_field(gcode, "filament_max_volumetric_speed", 2) == "40");
 
+    // JSON declaration layer (2.2.1): slot 1's entry mirrors the packaged
+    // DECLARATION (high_flow), not the collapsed segment — the field is the
+    // declaration that drove slicing, never proof the high tier took effect
+    // (contract: docs/requirements/json-output.md 2.2.1 row).
+    {
+        const auto& tc_plate = engine.stats().plates.at(0);
+        REQUIRE(tc_plate.filament_details.size() == 8);
+        CHECK(tc_plate.filament_details.at(1).volume_type == "high_flow");
+    }
+
     // Silence pin: the tier loss rides the generic FILAMENT_SUBSTITUTED
     // message; no flow-specific issue code exists today.
     for (const auto &iss : engine.stats().issues)
@@ -438,6 +468,51 @@ TEST_CASE("Single-tier official preset silently collapses project high_flow tier
     boost::filesystem::remove("/tmp/orca_test_hf_trap.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_slot_state.txt", ec);
+}
+
+TEST_CASE("filaments[].volume_type collapses to standard when project declares no flow type",
+          "[integration][highflow]")
+{
+    // geom_above_bed_ok.3mf carries no filament_volume_type: the config
+    // backfill creates the key with the fvtStandard default, and the join
+    // must render "standard" for the used slot. Pins the missing/empty →
+    // standard contract the App one-key print flow relies on (the App-side
+    // fallback and the engine-side collapse must agree on one value domain).
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/geom_above_bed_ok.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_hf_std";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+
+    // Stale-artifact relocation trap — same pre-run cleanup as the cases
+    // above (an existing file at the output path silently relocates output).
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_hf_std.gcode.3mf", ec);
+
+    engine.run();
+
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const auto& plate = engine.stats().plates.at(0);
+    REQUIRE(plate.filament_details.size() == 1);
+    CHECK(plate.filament_details.at(0).volume_type == "standard");
+
+    // Emission: parsed report carries the field inside plates[].filaments[]
+    // with the collapsed default.
+    {
+        const auto j = nlohmann::json::parse(
+            build_statistics_json(engine.stats(), "/tmp/orca_test_hf_std.gcode.3mf"));
+        CHECK(j["plates"].at(0)["filaments"].at(0)["volume_type"] == "standard");
+    }
+
+    boost::filesystem::remove("/tmp/orca_test_hf_std.gcode.3mf", ec);
 }
 
 TEST_CASE("Wipe tower rotation angle survives process preset substitution", "[integration][highflow]")

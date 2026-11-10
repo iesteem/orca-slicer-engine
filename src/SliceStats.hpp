@@ -14,6 +14,8 @@ struct SliceOutputStats
     {
         int id = -1; // 0-based extruder slot (JSON emits id+1); -1 = unknown/unset
         std::string type; // Filament type (e.g., "PLA", "ABS")
+        std::string volume_type = "standard"; // Flow type declaration ("standard" / "high_flow"), joined
+                                              // in the same post-apply snapshot + index space as type/color
         std::string color; // Filament color (e.g., "#FF0000")
         double used_g = 0.0; // Used weight in grams
         double used_m = 0.0; // Used length in meters
