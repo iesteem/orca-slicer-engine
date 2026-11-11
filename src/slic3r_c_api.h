@@ -82,7 +82,10 @@ typedef struct slic3r_ctx_s slic3r_ctx_t;
  * params_json keys (all optional; unknown keys are ignored; validated
  * in slic3r_c_api.cpp parse_params):
  * {
- *   "plate_id": 0,                // 0 = all plates, N = exactly plate N (1-based)
+ *   "plate_id": 0,                // 0 = all plates; > 0 rejected (plate
+ *                                 // selection removed 2026-11-11 — the engine
+ *                                 // always slices all plates, mirroring the
+ *                                 // removed CLI -p/--plate)
  *   "format": "gcode.3mf",        // "gcode" | "gcode.3mf"; anything else is rejected
  *   "timeout_seconds": 0,         // >= 0; 0 = no timeout
  *   "max_size_mb": 0,             // >= 0; 0 = no limit. ABSENT key = engine

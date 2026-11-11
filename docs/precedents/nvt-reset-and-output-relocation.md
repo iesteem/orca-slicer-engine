@@ -95,7 +95,8 @@ standard。实际打印运动无影响（37/37 与基线运动学等价，报告
 `generate_output_path`（`src/Utils.cpp:145-151`）：目标已存在 → 追加
 时间戳后缀，注释标明 "Prevent multi-process collision"（init 仓库即有；
 服务场景含 single_plate + output_base 时任意 plate_id 生成同一路径的
-per-plate 并行）。JSON 其实**一直上报真实路径**
+per-plate 并行；**历史注**：盘选择已于 2026-11-11 移除，该 single_plate
+场景不复存在，碰撞仅剩同路径全切并行）。JSON 其实**一直上报真实路径**
 （`print_info_total.output_file` ← `engine.output_path()`；顶层与 plates[]
  无此字段，勿 probe 错层级），但除日志外无任何换名信号。
 

@@ -73,13 +73,24 @@ static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& e
         json j = json::parse(json_str);
         if (j.contains("plate_id"))
         {
+            // Plate selection removed (2026-11-11): the engine always slices
+            // all plates, mirroring the CLI's removed -p/--plate. Rejecting
+            // the request outright — rather than honoring-by-ignoring —
+            // avoids silently widening a single-plate request to all plates
+            // (10x work, different artifacts and exit code). 0 stays valid
+            // (explicit all-plates, the historical default value).
             int pid = j["plate_id"].get<int>();
             if (pid < 0)
             {
                 err_out = "plate_id must be >= 0 (0 = all plates)";
                 return false;
             }
-            cfg.plate_id = pid;
+            if (pid > 0)
+            {
+                err_out = "plate_id plate selection has been removed; "
+                          "the engine always slices all plates (plate_id must be 0)";
+                return false;
+            }
         }
         if (j.contains("timeout_seconds"))
         {
@@ -123,9 +134,6 @@ static bool parse_params(const char* json_str, EngineConfig& cfg, std::string& e
         if (j.contains("keep_failed_gcode3mf"))
             cfg.keep_failed_gcode3mf = j["keep_failed_gcode3mf"].get<bool>();
 
-        // plate_id N > 0 selects exactly one plate (1-based); the engine's
-        // single_plate mode drives output naming and per-plate processing.
-        cfg.single_plate = (cfg.plate_id > 0);
         return true;
     }
     catch (const std::exception& e)
@@ -235,9 +243,7 @@ SLIC3R_API int slic3r_slice(slic3r_ctx_t* ctx, const char* input_3mf, const char
             if (log_path.empty())
             {
                 // Auto-derive from output: <output_stem>.log
-                std::string out = generate_output_path(cfg.input_file, cfg.output_base,
-                                                       cfg.plate_id, cfg.format,
-                                                       cfg.plate_id > 0);
+                std::string out = generate_output_path(cfg.input_file, cfg.output_base);
                 boost::filesystem::path out_p(out);
                 log_path = (out_p.parent_path() / out_p.stem().stem()).string() + ".log";
             }

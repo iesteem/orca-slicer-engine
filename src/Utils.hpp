@@ -30,13 +30,14 @@ void default_status_callback(const Slic3r::PrintBase::SlicingStatus& status, Sli
 // Format time in seconds as HH:MM:SS
 std::string format_time_hhmmss(float seconds);
 
-// Generate output filename based on parameters.
+// Generate output filename based on parameters. Always the all-plates
+// .gcode.3mf package name (plate selection removed 2026-11-11).
 // When the target file already exists, a timestamp suffix is appended
 // (multi-process collision protection) and *relocated (if non-null) is set
 // so callers can surface that the artifact will NOT land on the requested
 // path.
-std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
-                                 OutputFormat format, bool single_plate, bool* relocated = nullptr);
+std::string generate_output_path(const std::string& input_file, const std::string& output_base,
+                                 bool* relocated = nullptr);
 
 // Ensure a path ends with the given extension (e.g. ".json", ".log").
 // If the path already has that extension, it is returned unchanged.

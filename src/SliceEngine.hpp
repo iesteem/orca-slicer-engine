@@ -24,9 +24,7 @@ struct EngineConfig
 {
     std::string input_file;
     std::string output_base; // -o value, empty = auto-derive from input name
-    int plate_id = 0; // 0 = all plates
     OutputFormat format = OutputFormat::GCODE_3MF;
-    bool single_plate = false;
     std::string temp_dir; // temp directory for intermediate gcode files
     int timeout_seconds = 0; // 0 = no timeout; cloud service sets based on file size
     int max_size_mb = 200; // 0 = no limit; max input file size in megabytes
@@ -458,10 +456,9 @@ private:
     // per-plate loop.
     void resolve_output_path();
 
-    // Drive the per-plate slicing loop over the requested plate set:
-    // single-plate mode (CLI plate_id) processes exactly that plate,
-    // otherwise every plate in the 3MF. Results accumulate in
-    // m_plate_results via process_plate.
+    // Drive the per-plate slicing loop over every plate in the 3MF (plate
+    // selection removed 2026-11-11; the engine always slices all plates).
+    // Results accumulate in m_plate_results via process_plate.
     void process_requested_plates();
 
     // Run the full slicing pipeline for a single plate: filter instances, check

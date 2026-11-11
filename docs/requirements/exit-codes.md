@@ -59,7 +59,7 @@
 
 | Code | Level | 说明 |
 |---|---|---|
-| PLATE_NOT_FOUND | error | 指定盘不存在（validate_input 盘选择校验，plate_id=-1）→ **exit 6**。2026-10-10 修正：本行曾误归"输入/加载（→ exit 3）"组，实测发射点设 EXIT_PREPROCESS_ERROR（SliceEngine.cpp:1953，e2e Case 6 锚定） |
+| ~~PLATE_NOT_FOUND~~ | ~~error~~ | **已移除（2026-11-11）**：盘选择随 C API `plate_id` 参数一并移除（引擎恒全切，与 CLI `-p` 移除对齐），`plate_id > 0` 在 C API 边界即拒绝（SLIC3R_ERR_ARGS），本 issue code 不再可达。历史行为：指定盘不存在（validate_input 盘选择校验，plate_id=-1）→ exit 6（e2e Case 6 曾锚定，已删） |
 | NO_PLATES_PRODUCED | error | 零产物兜底观测：所有请求盘被跳过/失败且无任何产物时发（run() 末尾，plate_id=-1）→ exit 6；已有 error/serious_warning 级 issue 时**抑制**（保持单一归因，P-23 Fix B） |
 | PLATE_MEMBERSHIP_REBUILT | tip | 3MF 盘元数据与几何不符，实例归属已按桌面语义几何重排（P-24 always-rebuild，plate_id=-1，message 含 reassigned/dropped 计数）；仅在归属实际变化时发，一致文件零噪音 |
 | INSTANCE_NOT_ON_ANY_PLATE | warning | 实例不与任何盘相交，被丢弃不打印（plate_id=-1，带 object_name 与 suggestion）。桌面 parity：完全出界不阻断切片其余盘（GLCanvas3D 仅 partly-outside 走 build-volume 阻断；P-24） |

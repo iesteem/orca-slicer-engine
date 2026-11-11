@@ -112,8 +112,7 @@ std::string ensure_extension(const std::string& path, const std::string& ext)
     return path + ext;
 }
 
-std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
-                                 OutputFormat format, bool single_plate, bool* relocated)
+std::string generate_output_path(const std::string& input_file, const std::string& output_base, bool* relocated)
 {
     boost::filesystem::path input_path(input_file);
     std::string base_name;
@@ -130,24 +129,10 @@ std::string generate_output_path(const std::string& input_file, const std::strin
         base_name = (parent / input_path.stem()).string();
     }
 
-    std::string extension = (format == OutputFormat::GCODE_3MF) ? ".gcode.3mf" : ".gcode";
-
-    std::string path;
-    if (single_plate)
-    {
-        if (output_base.empty())
-        {
-            path = base_name + "-p" + std::to_string(plate_id) + extension;
-        }
-        else
-        {
-            path = base_name + extension;
-        }
-    }
-    else
-    {
-        path = base_name + ".gcode.3mf";
-    }
+    // All-plates mode only (single-plate selection removed 2026-11-11): the
+    // artifact is always the multi-plate .gcode.3mf package — packaging
+    // embeds per-plate gcode regardless of the format hint.
+    std::string path = base_name + ".gcode.3mf";
 
     // Prevent multi-process collision: append unique suffix if output file already exists
     if (boost::filesystem::exists(path))

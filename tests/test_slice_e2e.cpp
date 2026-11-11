@@ -74,37 +74,9 @@ std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag)
     return r;
 }
 
-// Variant of run_full that overrides the output format / single-plate / plate-id
-// (the 2-arg overload above hardcodes format=GCODE_3MF, single_plate=false).
-// The output_file extension mirrors generate_output_path() in Utils.cpp so
-// PathCleanup removes the file run() actually produced: single-plate GCODE
-// writes a ".gcode" file directly (SliceEngine.cpp:2733); every other combo
-// packages a ".gcode.3mf". Getting this wrong leaks a temp file and, via the
-// collision-suffix logic in Utils.cpp, mangles the path on the next run.
-std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag,
-                                   OutputFormat format, bool single_plate, int plate_id)
-{
-    Slic3r::set_resources_dir(kResources);
-    Slic3r::set_data_dir(kResources);
-
-    auto r = std::make_unique<SliceRun>();
-    std::string base = std::string("/tmp/orca_test_") + tag;
-    const bool single_gcode = (single_plate && format == OutputFormat::GCODE);
-    r->output_file = base + (single_gcode ? ".gcode" : ".gcode.3mf");
-    r->cleanup = PathCleanup(r->output_file);
-
-    EngineConfig cfg;
-    cfg.input_file = fixture_path;
-    cfg.max_size_mb = 0;
-    cfg.temp_dir = "/tmp";
-    cfg.output_base = base;
-    cfg.format = format;
-    cfg.single_plate = single_plate;
-    cfg.plate_id = plate_id;
-    r->engine = std::make_unique<SliceEngine>(cfg, r->temp_files);
-    r->engine->run();
-    return r;
-}
+// (A format/single-plate override overload of run_full lived here until plate
+// selection was removed on 2026-11-11 — the engine now always slices all
+// plates; the 2-arg overload above covers every case.)
 
 // Does the global issues list contain a given code at a given level?
 bool has_global_issue(const SliceOutputStats& s, const std::string& code, IssueLevel level)
@@ -238,86 +210,11 @@ TEST_CASE("Fully-below-bed model is auto-raised with an adjusted warning", "[int
 }
 
 // ============================================================================
-// Case 5 — Single-plate GCODE mode (run() lines 235-261). With single_plate=
-// true + format=GCODE, run() processes exactly one plate (plates_to_process =
-// [plate_id-1]), writes the G-code directly to m_output_path (a ".gcode" file,
-// NOT a ".gcode.3mf" package), and the package_output() gate at line 253
-// (which requires format==GCODE_3MF for single_plate) never fires. Verifies
-// the single-plate output path end-to-end, complementing the pure-function
-// generate_output_path unit tests in test_utils.cpp.
+// (Cases 5 and 6 covered single-plate GCODE mode and PLATE_NOT_FOUND until
+// plate selection was removed on 2026-11-11: the C API now rejects
+// plate_id > 0 (see test_c_api.cpp) and the engine always slices all plates.
+// Case numbers are anchors, not positions — the gap is intentional.)
 // ============================================================================
-TEST_CASE("Single-plate GCODE mode writes one .gcode, no .gcode.3mf", "[integration][slice][ok][single_plate]")
-{
-    // distinct_per_plate.3mf has 4 plates; requesting plate 1 (internal 0)
-    // genuinely differs from all-plates mode. Plate 0 is a clean single-extruder
-    // slice (see test_filament_count.cpp "distinct filament per plate").
-    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf",
-                      "single_plate_gcode", OutputFormat::GCODE, /*single_plate=*/true, /*plate_id=*/1);
-
-    REQUIRE(r->engine->stats().success);
-    // Only the requested plate was processed.
-    REQUIRE(r->engine->stats().plates.size() == 1);
-    const auto& plate = r->engine->stats().plates.front();
-    REQUIRE(plate.success);
-    // gcode_file mirrors m_output_path (assemble_plate_stats, SliceEngine.cpp:3378),
-    // which is the .gcode path, not a .gcode.3mf path.
-    REQUIRE(plate.gcode_file == "/tmp/orca_test_single_plate_gcode.gcode");
-
-    // Real slicing produced real filament/time (sign invariants only).
-    REQUIRE(plate.total_filament_g > 0.0);
-    REQUIRE(plate.print_time > 0.0f);
-
-    REQUIRE(!r->engine->any_error());
-    REQUIRE(r->engine->exit_code() == 0);
-
-    // The .gcode file is written directly by export_gcode (SliceEngine.cpp:2733).
-    const std::string gcode_path = "/tmp/orca_test_single_plate_gcode.gcode";
-    REQUIRE(boost::filesystem::exists(gcode_path));
-    REQUIRE(boost::filesystem::file_size(gcode_path) > 1000);
-
-    // No .gcode.3mf package: format != GCODE_3MF, so the package_output() gate
-    // at SliceEngine.cpp:253 does not fire for single_plate mode.
-    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_single_plate_gcode.gcode.3mf"));
-
-    // m_output_path was assigned inside the validate_input() block.
-    REQUIRE(r->engine->output_path() == gcode_path);
-}
-
-// ============================================================================
-// Case 6 — PLATE_NOT_FOUND early failure (run() lines 185-186 → validate_input
-// at 1490-1523). Requesting a plate_id beyond the fixture's plate count fails
-// BEFORE the slicing try-block: run() returns false at line 186, m_output_path
-// is never assigned (it lives at line 230, inside the try), and the
-// PLATE_NOT_FOUND issue is global (plate_id=-1) so patch_orphan_plate_issues
-// skips it (SliceEngine.cpp:3540 < 0 guard) — stats.plates stays EMPTY.
-// ============================================================================
-TEST_CASE("Out-of-range plate_id fails with PLATE_NOT_FOUND before slicing", "[integration][slice][fail][validation]")
-{
-    // 4-plate fixture; request plate 99 (well beyond range).
-    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf",
-                      "plate_not_found", OutputFormat::GCODE, /*single_plate=*/true, /*plate_id=*/99);
-
-    REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->any_error());
-    REQUIRE(r->engine->exit_code() == 6);  // EXIT_PREPROCESS_ERROR (Types.hpp:16)
-
-    // No plate was processed — the issue is global (plate_id=-1), so no
-    // placeholder plate is created. Indexing stats.plates would be UB.
-    REQUIRE(r->engine->stats().plates.empty());
-
-    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_NOT_FOUND", IssueLevel::error));
-
-    // error_message embeds the plate number; match by substring, not exact equal.
-    REQUIRE(r->engine->stats().error_message.find("not found") != std::string::npos);
-
-    // Slicing never ran → no output of either kind.
-    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_plate_not_found.gcode"));
-    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_test_plate_not_found.gcode.3mf"));
-
-    // m_output_path is assigned at SliceEngine.cpp:230, inside the try-block
-    // that validate_input()'s failure skips — so output_path() is still empty.
-    REQUIRE(r->engine->output_path().empty());
-}
 
 // ============================================================================
 // Case 7 — All-or-nothing packaging suppression (run() lines 252-254). When a
@@ -774,47 +671,19 @@ TEST_CASE("Multi-plate with one empty plate: benign skip, partial success", "[in
 }
 
 // ============================================================================
-// Case 16 — Single-plate mode requesting the EMPTY plate (plate_id=2 of
-// slice_empty_plate_skip.3mf). Pre-fix this was the C2 false-success: rc=0
-// with zero artifacts, no flag anywhere. Post-fix contract: run() returns
-// false, exit_code()=6 (zero-product guard in run(), placed after the
-// packaging gate so it never suppresses partial output), stats.success=false
-// with the canonical no-plates message, and the EMPTY_PLATE warning still
-// attributes the skip to the requested plate. No placeholder plate is
-// fabricated for the warning — the failure classification comes from the
-// zero-plate-results rule in finalise_statistics, not from the benign skip.
+// (Case 16 covered single-plate selection of an empty plate until plate
+// selection was removed on 2026-11-11. Its zero-product / EMPTY_PLATE
+// assertions live on in Case 15 (benign skip, all-plates) and Case 17
+// (all plates empty, zero-product exit 6).)
 // ============================================================================
-TEST_CASE("Requesting an empty plate: zero product fails with exit 6", "[integration][slice][fail][empty_plate]")
-{
-    // Pre-clean (stale-artifact trap): a leftover file would flip the
-    // exists() assertion below without this run producing anything.
-    boost::system::error_code ec;
-    boost::filesystem::remove("/tmp/orca_test_empty_plate_requested.gcode.3mf", ec);
-
-    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_empty_plate_skip.3mf", "empty_plate_requested",
-                      OutputFormat::GCODE_3MF, /*single_plate=*/true, /*plate_id=*/2);
-
-    REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->any_error());
-    REQUIRE(r->engine->exit_code() == 6);  // EXIT_PREPROCESS_ERROR (Types.hpp:16)
-    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
-
-    // The skip is attributed to the requested plate (0-based id 1).
-    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
-
-    // Warning-level orphan issues do not fabricate plate entries; the empty
-    // stats.plates is what drives error_message in finalise_statistics.
-    REQUIRE(r->engine->stats().plates.empty());
-    REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
-}
 
 // ============================================================================
 // Case 17 — Multi-plate, ALL plates empty (slice_all_plates_empty_fail.3mf:
 // both <plate> blocks lack model_instance references AND the build item is
 // printable="0" — regenerated 2026-10-08, see P-23: with the geometric
 // membership rebuild live, a printable="1" cube would be enrolled onto plate
-// 1 and this case would flip to success). Same zero-product contract as
-// Case 16, plus per-plate attribution of every skip.
+// 1 and this case would flip to success). Same zero-product contract as the
+// removed Case 16, plus per-plate attribution of every skip.
 // ============================================================================
 TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visible", "[integration][slice][fail][empty_plate]")
 {

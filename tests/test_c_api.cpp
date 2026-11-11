@@ -4,7 +4,9 @@
  * (slic3r_c_api.h) — the layer the published CLI exe actually drives.
  *
  * Covers defects found in the 2026-09-16 full review:
- *   - #18  single_plate never wired: plate_id in params_json was ignored
+ *   - #18  single_plate wiring (historical): plate_id > 0 selected exactly
+ *          one plate until plate selection was REMOVED on 2026-11-11 — the
+ *          engine always slices all plates and plate_id > 0 is rejected
  *   - (N3) missing presets must fail cleanly, never SIGSEGV (P-09); the
  *          deprecated skip_preset_substitution JSON key must be ignored
  *   - (C)  parse_params accepted negative plate_id / timeout / max_size_mb
@@ -94,11 +96,10 @@ std::string extract_3mf_text(const std::string& gcode_3mf_path, const std::strin
 } // namespace
 
 // ============================================================================
-// #18 single_plate wiring — plate_id > 0 in params_json must select exactly
-// one plate (engine-internal single_plate=true) and, with format "gcode",
-// write a single .gcode file instead of packaging every plate into one
-// .gcode.3mf. distinct_per_plate.3mf has 4 plates, so plate 1 genuinely
-// differs from all-plates mode.
+// #18 (historical) single_plate wiring — until 2026-11-11, plate_id > 0 in
+// params_json selected exactly one plate and, with format "gcode", wrote a
+// single .gcode file. Plate selection was removed that day (parity with the
+// CLI's removed -p/--plate): the test below now pins the rejection contract.
 // ============================================================================
 
 // ============================================================================
@@ -144,53 +145,37 @@ TEST_CASE("C API: resources_version echoes vendor profile version on failure exi
     restore_dirs();
 }
 
-TEST_CASE("C API: plate_id=1 + format=gcode slices one plate into a .gcode file", "[integration][capi][single_plate]")
+// Plate selection removed (2026-11-11): the engine always slices all plates,
+// mirroring the CLI's removed -p/--plate. The C API rejects plate_id > 0
+// outright (SLIC3R_ERR_ARGS) rather than honoring-by-ignoring — silently
+// widening a single-plate request to all plates would 10x the work and
+// change the artifact name and exit code. Until the removal, two tests here
+// pinned plate_id=1/2 single-plate slicing (and e2e Cases 5/6/16 the engine
+// side); the all-plates contract itself is pinned by the full-slice tests.
+TEST_CASE("C API: plate_id > 0 rejected — engine always slices all plates", "[integration][capi][validation]")
 {
     slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
     REQUIRE(ctx != nullptr);
 
-    const char* params = R"({"plate_id":1,"format":"gcode","log_path":"/tmp/orca_capi_p1.log"})";
+    const char* params = R"({"plate_id":1,"format":"gcode"})";
     char stats[32768] = {0};
     int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf",
                           "/tmp/orca_capi_p1", params, stats, sizeof(stats));
 
-    REQUIRE(rc == SLIC3R_OK);
+    REQUIRE(rc == SLIC3R_ERR_ARGS);
 
-    // Exactly one plate in the stats output.
-    auto j = nlohmann::json::parse(stats);
-    REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["id"].get<int>() == 1);
+    // Rejection names the removal and the all-plates rule (mirrors the CLI
+    // -p message wording, test_cli.cpp).
+    std::string err = slic3r_get_error(ctx);
+    REQUIRE(err.find("removed") != std::string::npos);
+    REQUIRE(err.find("all plates") != std::string::npos);
 
-    // A .gcode file was written; no all-plates .gcode.3mf package.
-    REQUIRE(boost::filesystem::exists("/tmp/orca_capi_p1.gcode"));
-    REQUIRE(boost::filesystem::file_size("/tmp/orca_capi_p1.gcode") > 1000);
+    // Rejected before the engine ran: no stats JSON and no artifacts (the
+    // log sink is wired after parse_params, so no log either).
+    REQUIRE(stats[0] == '\0');
+    REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_p1.gcode"));
     REQUIRE_FALSE(boost::filesystem::exists("/tmp/orca_capi_p1.gcode.3mf"));
 
-    rm("/tmp/orca_capi_p1.gcode");
-    rm("/tmp/orca_capi_p1.json");
-    rm("/tmp/orca_capi_p1.log");
-    slic3r_destroy(ctx);
-    restore_dirs();
-}
-
-TEST_CASE("C API: plate_id=2 selects plate 2, not plate 1", "[integration][capi][single_plate]")
-{
-    slic3r_ctx_t* ctx = slic3r_create(kResourcesRoot);
-    REQUIRE(ctx != nullptr);
-
-    const char* params = R"({"plate_id":2,"format":"gcode","log_path":"/tmp/orca_capi_p2.log"})";
-    char stats[32768] = {0};
-    int rc = slic3r_slice(ctx, ORCA_TEST_FIXTURE_DIR "/filement_count/distinct_per_plate.3mf",
-                          "/tmp/orca_capi_p2", params, stats, sizeof(stats));
-
-    REQUIRE(rc == SLIC3R_OK);
-    auto j = nlohmann::json::parse(stats);
-    REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["id"].get<int>() == 2);
-
-    rm("/tmp/orca_capi_p2.gcode");
-    rm("/tmp/orca_capi_p2.json");
-    rm("/tmp/orca_capi_p2.log");
     slic3r_destroy(ctx);
     restore_dirs();
 }

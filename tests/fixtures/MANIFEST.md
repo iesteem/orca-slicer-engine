@@ -125,7 +125,7 @@ multi_error/ 用例在 test_slice_e2e.cpp Case 33/34 [collect_all]），
 
 | fixture | 盘构成 | 预期 |
 |---|---|---|
-| slice_empty_plate_skip.3mf | 盘1=立方体，盘2=空 | 多盘：rc=0、success=true、EMPTY_PLATE warning（归因盘2）、好盘正常打包；单盘（C API plate_id=2）：rc=6、success=false、零产物（Case 15/16） |
+| slice_empty_plate_skip.3mf | 盘1=立方体，盘2=空 | 多盘：rc=0、success=true、EMPTY_PLATE warning（归因盘2）、好盘正常打包（Case 15）。~~单盘（C API plate_id=2）：rc=6、success=false、零产物~~（2026-11-11 盘选择移除，Case 16 随之删除；零产物契约由 slice_all_plates_empty_fail.3mf / Case 17 承接） |
 | slice_all_plates_empty_fail.3mf | 两盘皆空 | rc=6、success=false、两条 EMPTY_PLATE 各归因其盘、零产物 + NO_PLATES_PRODUCED error（Case 17；P-23 Fix B）；2026-10-08 重生成（md5 `22b628d983847e41fe5aef2e7e602f8d`，build item 改 `printable="0"`）——P-23 几何重建上线后 printable="1" 立方体会被 enroll 进盘 1 翻绿，重生成保持零产物契约 |
 
 ### 盘成员缺失组（P-23 几何重建，2026-10-08）

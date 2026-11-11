@@ -91,43 +91,21 @@ TEST_CASE("compute_column_count: non-perfect squares", "[utils][grid]") {
 }
 
 // ============================================================================
-// generate_output_path
+// generate_output_path — all-plates naming only (plate selection removed
+// 2026-11-11; the -p<N> single-plate variants died with it)
 // ============================================================================
 
-TEST_CASE("generate_output_path: single plate auto-derived path", "[utils][path]") {
+TEST_CASE("generate_output_path: auto-derived path is always .gcode.3mf", "[utils][path]") {
     // Use a non-existent path to avoid collision-suffix interference.
     std::string input = "/tmp/orca-test-nonexistent-dir/model.3mf";
-    std::string path  = generate_output_path(input, "", 1, OutputFormat::GCODE_3MF, true);
-    // Single-plate auto-derived path: <dirname>/<stem>-p<id>.gcode.3mf
-    CHECK(path.find("-p1.gcode.3mf") != std::string::npos);
+    std::string path  = generate_output_path(input, "");
+    CHECK(path.find(".gcode.3mf") != std::string::npos);
     CHECK(path.find("model") != std::string::npos);
-}
-
-TEST_CASE("generate_output_path: single plate gcode format", "[utils][path]") {
-    std::string input = "/tmp/orca-test-nonexistent-dir/model.3mf";
-    std::string path  = generate_output_path(input, "", 1, OutputFormat::GCODE, true);
-    CHECK(path.find("-p1.gcode") != std::string::npos);
-    CHECK(path.find(".gcode.3mf") == std::string::npos);
 }
 
 TEST_CASE("generate_output_path: custom output base", "[utils][path]") {
     std::string input  = "/tmp/orca-test-nonexistent-dir/model.3mf";
-    std::string base   = "/tmp/orca-test-nonexistent-dir/my_output";
-    std::string path   = generate_output_path(input, base, 1, OutputFormat::GCODE, true);
-    CHECK(path.find("my_output.gcode") != std::string::npos);
-    CHECK(path.find("model") == std::string::npos);
-}
-
-TEST_CASE("generate_output_path: all plates always uses gcode.3mf", "[utils][path]") {
-    std::string input = "/tmp/orca-test-nonexistent-dir/model.3mf";
-    std::string path  = generate_output_path(input, "", 0, OutputFormat::GCODE, false);
-    // All-plates mode ignores format param and always produces .gcode.3mf
-    CHECK(path.find(".gcode.3mf") != std::string::npos);
-}
-
-TEST_CASE("generate_output_path: all plates with custom base", "[utils][path]") {
-    std::string input  = "/tmp/orca-test-nonexistent-dir/model.3mf";
     std::string base   = "/tmp/orca-test-nonexistent-dir/all_result";
-    std::string path   = generate_output_path(input, base, 0, OutputFormat::GCODE_3MF, false);
+    std::string path   = generate_output_path(input, base);
     CHECK(path.find("all_result.gcode.3mf") != std::string::npos);
 }

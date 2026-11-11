@@ -190,12 +190,13 @@ int main(int argc, char* argv[])
              * explicitly (as every unknown option has been since 2026-11-06,
              * smell batch 2 A3): honoring-by-ignoring would silently widen a
              * single-plate request to all plates (10x work, different
-             * artifact name and exit code). Plate selection remains
-             * available via the C API params_json "plate_id" key. */
+             * artifact name and exit code). The C API params_json "plate_id"
+             * key followed suit on 2026-11-11 (values > 0 rejected) — plate
+             * selection no longer exists on any entry point. */
             fprintf(stderr, "Error: option -p/--plate has been removed; "
                             "the engine always slices all plates "
-                            "(plate selection remains available via the "
-                            "C API params_json \"plate_id\" key)\n");
+                            "(the C API params_json \"plate_id\" key is "
+                            "likewise restricted to 0 = all plates)\n");
             return 1;
         }
         else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--format"))

@@ -95,13 +95,12 @@ def audit_params_json(doc, where, out):
                 "Omit the key or pass 0 for all plates."))
         elif pid > 0:
             out.append(Finding(
-                "CR6", "SEMANTIC CHANGE", where,
-                f"plate_id={pid} > 0 — now HONORED. In 06 the C API never "
-                "forwarded it (every request silently sliced ALL plates)",
-                "Output now contains exactly one plate; out-of-range/empty "
-                "target plate now returns rc=6 (PLATE_NOT_FOUND / "
-                "EMPTY_PLATE). Verify the caller reads plates[]/rc for the "
-                "single-plate shape."))
+                "CR6", "BREAK (rc=1)", where,
+                f"plate_id={pid} > 0 — plate selection REMOVED (2026-11-11): "
+                "the engine always slices all plates; the C API rejects the "
+                "request with SLIC3R_ERR_ARGS (mirrors the removed CLI "
+                "-p/--plate)",
+                "Omit the key or pass 0; re-issue as an all-plates request."))
     for key in ("timeout_seconds", "max_size_mb"):
         v = doc.get(key)
         if isinstance(v, int) and v < 0:

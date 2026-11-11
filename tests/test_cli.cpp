@@ -217,9 +217,9 @@ TEST_CASE("CLI: bare --log keeps optional-value semantics and proceeds", "[integ
 // flag test below), -p is REJECTED: honoring-by-ignoring would silently widen
 // a single-plate request to all plates (N x work, different artifact name
 // "-p<N>" suffix gone, different exit-code semantics). This is the one
-// documented exception to ignore-unknown-options. Plate selection lives on
-// via the C API params_json "plate_id" key (test_c_api.cpp) and engine-level
-// single_plate (test_slice_e2e.cpp Cases 5/6/16).
+// documented exception to ignore-unknown-options. Plate selection followed
+// on the C API side on 2026-11-11: params_json "plate_id" > 0 is likewise
+// rejected (test_c_api.cpp); it no longer exists on any entry point.
 // ============================================================================
 
 TEST_CASE("CLI: removed -p/--plate rejected with exit 1", "[integration][cli][deprecated]")

@@ -1949,43 +1949,6 @@ bool SliceEngine::validate_input()
         return false;
     }
 
-    // Validate requested plate exists
-    if (m_cfg.single_plate)
-    {
-        // Internal plate_index is 0-based (from 3MF import), CLI plate_id is 1-based
-        bool plate_found = false;
-        for (const auto& pd : m_plate_data)
-        {
-            if (pd->plate_index + 1 == m_cfg.plate_id)
-            {
-                plate_found = true;
-                break;
-            }
-        }
-        if (!plate_found)
-        {
-            BOOST_LOG_TRIVIAL(error) << "Plate " << m_cfg.plate_id << " not found in 3MF file";
-            {
-                std::ostringstream oss;
-                oss << "Available plates: ";
-                for (size_t i = 0; i < m_plate_data.size(); ++i)
-                {
-                    if (i > 0)
-                        oss << ", ";
-                    oss << m_plate_data[i]->plate_index + 1;
-                }
-                BOOST_LOG_TRIVIAL(warning) << oss.str();
-            }
-            // Not the global record_stage_error(code,msg) overload: this site
-            // logs at WARNING level and its JSON-visible error_message must
-            // stay site-specific — only the failure pair converges.
-            mark_stage_failure(EXIT_PREPROCESS_ERROR);
-            m_stats.error_message = "Requested plate " + std::to_string(m_cfg.plate_id) + " not found in 3MF file";
-            m_stats.issues.push_back(make_error(-1, "PLATE_NOT_FOUND", m_stats.error_message));
-            return false;
-        }
-    }
-
     return true;
 }
 
@@ -2467,8 +2430,7 @@ static void decode_one_plate_thumbnail(PlateData& pd)
 void SliceEngine::resolve_output_path()
 {
     bool output_relocated = false;
-    m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
-                                         m_cfg.single_plate, &output_relocated);
+    m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, &output_relocated);
     if (output_relocated)
         m_stats.issues.push_back(make_warning(-1, "OUTPUT_PATH_RELOCATED",
                                               "Output path already exists; artifact written to \"" + m_output_path + "\""));
@@ -3649,16 +3611,11 @@ static void clear_intermediate(PlateSliceResult& result)
 
 bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& result)
 {
-    std::string gcode_output;
-    if (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate)
-    {
-        gcode_output = m_cfg.temp_dir + "/plate_" + std::to_string(plate_id) + ".gcode";
-        m_temp_files.push_back(gcode_output);
-    }
-    else
-    {
-        gcode_output = m_output_path;
-    }
+    // All-plates mode only (plate selection removed 2026-11-11): every
+    // plate's gcode goes to a temp file that packaging later embeds into
+    // the .gcode.3mf package.
+    std::string gcode_output = m_cfg.temp_dir + "/plate_" + std::to_string(plate_id) + ".gcode";
+    m_temp_files.push_back(gcode_output);
 
     BOOST_LOG_TRIVIAL(info) << "Exporting G-code for plate " << plate_id << "...";
 
@@ -4405,21 +4362,14 @@ void SliceEngine::finalise_plate_result(int plate_id, PlateSliceResult& result)
 }
 
 // Stage 4 driver: run the per-plate slicing loop over the requested plate
-// set. Single-plate mode (CLI plate_id) processes exactly that plate;
-// otherwise every plate in the 3MF. Results accumulate in m_plate_results.
+// set. Every plate in the 3MF is processed (plate selection removed
+// 2026-11-11). Results accumulate in m_plate_results.
 void SliceEngine::process_requested_plates()
 {
     // Collect plates to process (internal plate_index is 0-based)
     std::vector<int> plates_to_process;
-    if (m_cfg.single_plate)
-    {
-        plates_to_process.push_back(m_cfg.plate_id - 1); // CLI 1-based → internal 0-based
-    }
-    else
-    {
-        for (const auto& pd : m_plate_data)
-            plates_to_process.push_back(pd->plate_index);
-    }
+    for (const auto& pd : m_plate_data)
+        plates_to_process.push_back(pd->plate_index);
 
     // Process each plate
     for (int plate_id : plates_to_process)
@@ -4484,25 +4434,11 @@ void SliceEngine::finalize_output()
                "despite rc=7 (postprocess failure) for inspection — exit code "
                "and JSON report are unchanged";
 
-    // Package output — only if no errors occurred
-    if (has_output && (!m_any_error || keep_failed_package) &&
-        (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
+    // Package output — only if no errors occurred. The gate is format-blind
+    // since plate selection was removed (2026-11-11): packaging is the only
+    // output path, and keep-failed semantics live on the GCODE_3MF side.
+    if (has_output && (!m_any_error || keep_failed_package))
         package_output();
-
-    // For single-plate GCODE mode, the file is written directly to m_output_path
-    // during export_gcode. Remove it if errors occurred. error_code overload:
-    // never throws — the throwing overload would escalate a cleanup miss into
-    // an exception escaping finalize_output, flipping the run into
-    // EXIT_SLICING_ERROR/INTERNAL_ERROR over a file that merely failed to
-    // delete (smell C5; same idiom as remove_unusable_gcode).
-    if (m_any_error && !keep_failed_package && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
-    {
-        boost::system::error_code ec;
-        boost::filesystem::remove(m_output_path, ec);
-        if (ec)
-            BOOST_LOG_TRIVIAL(warning) << "Failed to remove failed-run output " << m_output_path
-                                       << " (" << ec.message() << ")";
-    }
 
     if (!has_output)
     {
@@ -4534,10 +4470,8 @@ void SliceEngine::package_output()
     params.config = &m_config;
     params.project_presets = m_project_presets;
 
-    if (m_cfg.single_plate)
-        params.export_plate_idx = m_cfg.plate_id - 1;
-    else
-        params.export_plate_idx = -1;
+    // Export every plate (single-plate selection removed 2026-11-11).
+    params.export_plate_idx = -1;
 
     params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel |
                       SaveStrategy::WithGcode | SaveStrategy::SkipModel |
