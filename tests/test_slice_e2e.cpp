@@ -484,6 +484,39 @@ TEST_CASE("Toolpath outside: object-owned skirt attributed to the object name", 
 }
 
 // ============================================================================
+// Case 11c — TOOLPATH_OUTSIDE object attribution on the UNMODIFIED user 3mf
+// (left-edge variant, 2026-11-11). The original 立方体 project as delivered:
+// the cube sits at X[6.6,33.6] against the LEFT bed edge (X min 0.5) and its
+// own 10-loop skirt extrudes to X=-1.90 — 2.4mm outside. Byte-identical user
+// file (md5-verified against the source), zero repack — paired with 11b
+// (transform-only repack of the same model against the right edge) this also
+// guards the attribution path against repack-only artifacts. Gcode-body
+// verified during the package-2.2.1 delivery smoke run.
+// ============================================================================
+TEST_CASE("Toolpath outside: as-delivered user cube attributes object name (left edge)", "[integration][slice][fail][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolpath_outside_object_skirt_left.3mf", "outside_object_left");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE(r->engine->stats().exit_code == 7);
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE_FALSE(p.success);
+    REQUIRE(p.toolpath_outside);
+
+    int outside_issues = 0;
+    for (const auto& iss : p.issues)
+        if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+        {
+            ++outside_issues;
+            REQUIRE(iss.object_name == "立方体");
+        }
+    REQUIRE(outside_issues == 1);
+}
+
+// ============================================================================
 // Case 12 — missing-PrintConfig-key model (10632 / historical 44ae crash).
 // The 3MF omits keys (seam_slope_type, thumbnails, ...) that libslic3r
 // dereferences without null checks; without the FullPrintConfig::defaults()
