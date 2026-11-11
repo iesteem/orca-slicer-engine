@@ -429,13 +429,58 @@ TEST_CASE("Toolpath outside on 2-plate project: only offending plate flagged", "
     for (const auto& p : r->engine->stats().plates) {
         bool has_outside = false;
         for (const auto& iss : p.issues)
-            if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+            if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error) {
                 has_outside = true;
+                // 2026-11-11 attribution (gcode-body verified): this fixture's
+                // offender is the wipe tower — Prime tower extrusions reach
+                // Y=275.2 vs bed Y max 271, while object extrusions stay
+                // inside (X<=215<270.5, Y<=196.5<271). Synthetic name: the
+                // tower is not a model object.
+                REQUIRE(iss.object_name == "wipe_tower");
+            }
         REQUIRE(p.toolpath_outside == has_outside);
         REQUIRE(p.success == !has_outside);
         if (has_outside) ++flagged;
     }
     REQUIRE(flagged == 1);
+}
+
+// ============================================================================
+// Case 11b — TOOLPATH_OUTSIDE with OBJECT attribution (立方体 skirt fixture).
+// Derived from a user-supplied single-cube U1 project (2026-11-11): the only
+// object "立方体" sits with its bbox INSIDE the bed (X[241,268] vs 270.5, so
+// the pre-slice build-volume check passes) while its 10-loop skirt extrudes
+// to X=274.67 — 4.2mm past the edge. Single extruder, no wipe tower: the
+// issue's object_name must come from the nearest-object attribution path,
+// not the erWipeTower role channel (which Case 11 above covers). Gcode-body
+// verified: skirt is the sole offender (brim_ears maxes at 270.39, walls at
+// 267.89). Fixture is transform-only repack of the original 3mf (inner mesh
+// path 立方体_1.model kept verbatim — BBS .rels chain references it).
+// ============================================================================
+TEST_CASE("Toolpath outside: object-owned skirt attributed to the object name", "[integration][slice][fail][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/toolpath_outside_object_skirt.3mf", "outside_object");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE(r->engine->stats().exit_code == 7);
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE_FALSE(p.success);
+    REQUIRE(p.toolpath_outside);
+
+    int outside_issues = 0;
+    for (const auto& iss : p.issues)
+        if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
+        {
+            ++outside_issues;
+            // Object attribution path: nearest object bbox names the owner
+            // of the offending skirt. One issue per plate is a contract
+            // invariant (error_code aggregation counts occurrences).
+            REQUIRE(iss.object_name == "立方体");
+        }
+    REQUIRE(outside_issues == 1);
 }
 
 // ============================================================================
