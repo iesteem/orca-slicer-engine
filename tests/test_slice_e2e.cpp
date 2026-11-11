@@ -1296,3 +1296,74 @@ TEST_CASE("fe47 original: corrupt residue stays failed but diagnosable", "[integ
     REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_OFFSET_NON_FINITE", IssueLevel::warning));
     REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_Z_RANGE_INVALID", IssueLevel::warning));
 }
+
+// ============================================================================
+// Case 37 — TOOL_HEIGHT_OUTSIDE triggered via a custom G-code marker
+// (2026-11-11). Height violations normally never reach the post-processing
+// gate: three earlier layers absorb them —
+//   1. pre-process build-volume check (model bbox over printable_height ->
+//      BUILD_VOLUME_TOO_HIGH, named, plate condemned at exit 6),
+//   2. Print::validate (top slicing plane vs printable_height + 1e-4),
+//   3. z-hop is capped below the printable height on U1 official presets
+//      (retract_lift_below=269 gates every lift: hop tops out at 269.4 vs
+//      printable_height 270.05; GCodeWriter.cpp lift gate).
+// Config-key injection (z_hop / machine G-code / process keys) is equally
+// dead: the 3mf plate block is a 6-key whitelist and printer/process values
+// are wholesale-replaced by presets. What DOES reach the gate: model-level
+// custom G-code markers (Metadata/custom_gcode_per_layer.xml, type=4
+// Custom) — parsed at bbs_3mf.cpp, copied per plate at PrintApply.cpp:1503
+// and spliced verbatim into the layer change (GCode.cpp ";CUSTOM_CODE").
+//
+// tool_height_custom_gcode_above.3mf = geom_above_bed_ok.3mf repacked with
+// one marker: top_z=10 executes `G1 Z271.5 F600` -> moves max_z = 271.5 vs
+// printable_height 270.05 (1.45mm margin, preset-drift proof). gcode-body
+// verified: the move lands under ";CUSTOM_GCODE" right before the next
+// object segment.
+//
+// The attribution contract under test (this commit): the violation is
+// carried by a NON-extrusion, erCustom-tagged move — the h1 policy feeds
+// only extrusion moves to the attribution core, so object_name must stay
+// EMPTY (an honest "no object's extrusion is too tall" instead of naming
+// the nearest innocent object). z_height carries the measured max_z. And
+// the bed-outside gate must NOT fire: the move is Z-only, XY stays inside
+// the bed — locking the move-filter separation between the two checks.
+//
+// Repack note: python zipfile whole-archive copy (inner mesh path
+// 立方体_2.model verbatim — BBS .rels Target chain), one entry ADDED.
+// ============================================================================
+TEST_CASE("Tool-height outside via custom G-code: unattributable, single issue", "[integration][slice][fail][toolheight]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/tool_height_custom_gcode_above.3mf", "tool_height_custom");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE(r->engine->stats().exit_code == 7);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE_FALSE(p.success);
+
+    int height_issues = 0;
+    for (const auto& iss : p.issues)
+    {
+        if (iss.code == "TOOL_HEIGHT_OUTSIDE" && iss.level == IssueLevel::error)
+        {
+            ++height_issues;
+            // Custom-G-code trigger: no object's EXTRUSION is too tall, so
+            // the attribution stays empty rather than guessing (h1 policy).
+            // One issue per plate is a contract invariant (error_code
+            // aggregation counts occurrences).
+            REQUIRE(iss.object_name.empty());
+            // 271.5 is exactly representable in float (the measured max_z
+            // type) and in double, so an exact compare is safe here.
+            REQUIRE(iss.z_height == 271.5);
+            REQUIRE(iss.message == "A G-code path goes beyond the max print height. "
+                                    "The object may not print correctly.");
+        }
+        // The move is Z-only: the bed-outside gate must not fire — locks the
+        // separation between the two post-processing checks.
+        REQUIRE(iss.code != "TOOLPATH_OUTSIDE");
+    }
+    REQUIRE(height_issues == 1);
+}

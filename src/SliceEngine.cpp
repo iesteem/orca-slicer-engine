@@ -4160,6 +4160,60 @@ static std::string attribute_outside_toolpath(const GCodeProcessorResult& gcode_
     return collector.join();
 }
 
+// Attribute above-printable-height extrusion moves to their sources so the
+// TOOL_HEIGHT_OUTSIDE issue can name the culprit in object_name — the same
+// two channels (erWipeTower -> "wipe_tower", else nearest plate-local object
+// bbox) and the same core (OutsideAttribution.hpp) as the bed-outside
+// attribution above. Same h1 point policy: only EXTRUSION moves are fed to
+// the collector, so a height violation carried purely by travel moves
+// (z-hop) or custom G-code stays honestly unattributed (empty name) — those
+// moves' XY positions have no reliable object ownership.
+//
+// Reachability note (verified 2026-11-11): three earlier gates normally
+// absorb height violations — the pre-process build-volume check
+// (BUILD_VOLUME_TOO_HIGH, model bbox, blocks the plate), Print::validate
+// (top slicing plane vs printable_height + EPSILON=1e-4) and, on U1
+// presets, retract_lift_below capping z-hop tops below the printable
+// height. What realistically reaches THIS check: custom G-code markers
+// (custom_gcode_per_layer.xml, erCustom, unattributed) and the
+// validate(1e-4)-vs-here(1e-6) epsilon seam on extrusion tops.
+//
+// The gate stays the do_postprocessing max_z comparison; this attribution is
+// diagnostic only. gcode_result.moves are already plate-local here
+// (compute_toolpath_outside shifted them in place). plate_instance_ids is
+// required non-empty by every caller path (the plate would have no object
+// and no gcode moves at all otherwise), so no early return mirrors the
+// outside variant's empty-ids guard.
+static std::string attribute_outside_height(const GCodeProcessorResult& gcode_result,
+                                            const Model& model, const std::set<int>& plate_instance_ids,
+                                            const Vec2d& plate_origin)
+{
+    const float printable_height = gcode_result.printable_height;
+    orca::OutsideAttributionCollector collector(
+        collect_attribution_sources(model, plate_instance_ids, plate_origin));
+    for (const auto& move : gcode_result.moves)
+    {
+        // Same validity filter as attribute_outside_toolpath: extrusion
+        // moves only, no custom G-code, non-degenerate width/height.
+        if (move.type == EMoveType::Extrude && move.extrusion_role != erCustom &&
+            move.width != 0.0f && move.height != 0.0f)
+        {
+            // Same threshold as the do_postprocessing gate (>= 1e-6 above
+            // printable_height, float arithmetic promoted to double), not
+            // the bed-outside k_bed_epsilon: this attribution must agree
+            // with the gate it explains.
+            const bool tower = move.extrusion_role == erWipeTower;
+            if (move.position.z() - printable_height >= 1e-6)
+                collector.add(move.position.x(), move.position.y(), tower);
+            if (move.is_arc_move_with_interpolation_points())
+                for (const auto& ip : move.interpolation_points)
+                    if (ip.z() - printable_height >= 1e-6)
+                        collector.add(ip.x(), ip.y(), tower);
+        }
+    }
+    return collector.join();
+}
+
 void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, const Slic3r::Vec2d& plate_origin)
 {
     bool has_postprocess_error = false;
@@ -4198,14 +4252,28 @@ void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, cons
                 max_z = move.position.z();
         if (max_z - result.gcode_result.printable_height >= 1e-6)
         {
+            // Name the offending source(s) — "wipe_tower" or the object
+            // name(s) — in object_name; empty when attribution is impossible
+            // (height carried only by travel/custom moves; see
+            // attribute_outside_height). Exactly ONE issue per plate stays a
+            // contract invariant (error_code aggregation counts occurrences).
+            const std::string sources = attribute_outside_height(
+                result.gcode_result, m_model, collect_plate_instance_ids(plate_id), plate_origin);
+            const std::string log_msg = sources.empty()
+                                            ? std::string("A G-code path goes beyond the max print height.")
+                                            : "G-code paths of \"" + sources +
+                                                  "\" go beyond the max print height.";
+            const std::string issue_msg = sources.empty()
+                                              ? std::string("A G-code path goes beyond the max print height. "
+                                                            "The object may not print correctly.")
+                                              : "G-code paths of \"" + sources +
+                                                    "\" go beyond the max print height. "
+                                                    "The object may not print correctly.";
             // Desktop shows this as ErrorType::SLICING_ERROR
             // (GLCanvas3D.cpp:9858), blocking the print dialog.
-            log_plate_message("[Post-processing]", "ERROR", plate_id,
-                              "A G-code path goes beyond the max print height.");
+            log_plate_message("[Post-processing]", "ERROR", plate_id, log_msg);
             has_postprocess_error = true;
-            Issue h = make_error(plate_id, "TOOL_HEIGHT_OUTSIDE",
-                                   "A G-code path goes beyond the max print height. "
-                                   "The object may not print correctly.");
+            Issue h = make_error(plate_id, "TOOL_HEIGHT_OUTSIDE", issue_msg, sources);
             h.z_height = static_cast<double>(max_z);
             result.issues.push_back(h);
         }

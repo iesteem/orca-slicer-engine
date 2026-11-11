@@ -98,10 +98,13 @@
 {
   "level": "error|serious_warning|warning|tip",
   "plate_id": 1,                      // 1-based；全局级为 -1（保持原值，不 +1）
-  "object_name": "Body1",             // 可为空串；TOOLPATH_OUTSIDE 语义特殊：归因
-                                      // 到的越界源——"wipe_tower"（合成名，塔不是
-                                      // 模型对象）或对象名，多源英文逗号连接，
-                                      // 空串=无法归因（如 bed_exclude_area 触发）
+  "object_name": "Body1",             // 可为空串；TOOLPATH_OUTSIDE / TOOL_HEIGHT_OUTSIDE
+                                      // 语义特殊：归因到的违规源——"wipe_tower"（合成
+                                      // 名，塔不是模型对象）或对象名，多源英文逗号
+                                      // 连接，空串=无法归因（TOOLPATH_OUTSIDE 如
+                                      // bed_exclude_area 触发；TOOL_HEIGHT_OUTSIDE 如
+                                      // 违规仅由 travel/z-hop 或自定义 G-code 承载——
+                                      // 归因只喂挤出 move，非挤出 move 无对象归属）
   "z_height": 27.0,
   "layer": 42,                        // 仅 >=0 时输出（可选字段）
   "code": "TOOLPATH_OUTSIDE",         // 见 exit-codes.md 的 code 表
@@ -146,6 +149,7 @@
 |---|---|
 | 2.2.1 (2026-11-11 追加) | **入参（破坏性，A3）**：C API params_json `"plate_id"` 仅接受 `0`（全切）；`> 0` 显式拒绝（SLIC3R_ERR_ARGS，消息含 "removed"/"all plates"，镜像 CLI `-p` 拒绝措辞）。盘选择在所有入口移除（引擎 single_plate 机制删除、`PLATE_NOT_FOUND` issue code 不再可达），引擎恒全切。输出侧不受影响（`plates[].id` / `issues[].plate_id` 为输出字段，照旧）。调用方通报由平台侧执行 |
 | 2.2.1 (2026-11-11 追加) | **`TOOLPATH_OUTSIDE` 的 `object_name` 从恒空串改为归因越界源**：`"wipe_tower"`（erWipeTower 角色走，gcode 文本段名 "Prime tower"）或最近对象包围盒归因出的对象名，多源逗号连接；空串=无法归因（bed_exclude_area 触发等）。message 同步个性化（`Toolpaths of "X" extend...`）。**每盘仍恒一条 issue**（error_code 聚合按条数计数不变） |
+| 2.2.1 (2026-11-11 追加) | **`TOOL_HEIGHT_OUTSIDE` 的 `object_name` 从恒空串改为归因超高源**：与 TOOLPATH_OUTSIDE 同核（`"wipe_tower"` 或最近对象名，多源逗号连接，归因只喂超高**挤出** move）；空串=违规仅由 travel/z-hop 或自定义 G-code（erCustom）承载。message 同步个性化（`G-code paths of "X" go beyond...`）。z_height 仍报实测 max_z。每盘恒一条 issue 不变。可达面注：模型超高主路径已被预处理 `BUILD_VOLUME_TOO_HIGH`（带名、阻断）覆盖，本条现实触发源以自定义 G-code 为主（Case 37 fixture 即此构造） |
 | 2.2.1 (2026-11-11) | **`plates[].plate_id` → `id` 原地改名**（1-based 盘号，值域不变；filaments[].id 同名先例 v02.01.10）：对齐 filaments[].id 的元素标识命名。**同名不同义注意**：`plates[].id`=盘号、`plates[].filaments[].id`=耗材槽号，解析勿混淆。`issues[].plate_id`（全局 issues[] 与 plates[].issues[] 均含）**不改**——它是所属盘外键而非元素标识，保留描述性键名（-1=全局级）。C API 入参 params_json 的 `"plate_id"` 键不变（**后变更**：2026-11-11 追加行收紧为仅接受 0） |
 | 2.2.1 (2026-11-10 新增) | `plates[].filaments[]` 条目内新增 **`volume_type`**（string，恒输出，值域 `{"standard","high_flow"}`，位于 `type` 之后）：该槽流量类型声明，取值源 = post-apply `print.config()` 快照（与 gcode 头回显同源；装配层对缺失/越界槽坍缩为 `"standard"`）。**声明层语义**——非"高档实际生效"证据（档位塌缩场景声明仍 high_flow），生效判定走 gcode 体。`print_info_total.filaments` 因 (type,color) 跨盘去重合并不加此字段（同组不同槽流量类型可不同）。App 一键打印契约字段 |
 | 2.2.0 (2026-10-23 追加 P-35) | `SPIRAL_LIFT_NEAR_BOUNDARY` 触发条件精度化：判定源从机器域 `z_hop_types` 平键改为**有效值**（机器键 clone 后 `apply_override` 组合 `filament_z_hop_types`，镜像 PrintApply 合并语义）。code/level/消息不变，仅消除耗材覆盖已关掉螺旋时的误报（SnapSpeed Slope × 机器 Auto 基值场景实测两条误报→0） |
