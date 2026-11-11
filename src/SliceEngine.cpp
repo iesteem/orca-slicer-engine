@@ -36,6 +36,7 @@
 #include "BuildVolumeClassify.hpp"
 #include "ValidateClassify.hpp"
 #include "FlushVolumes.hpp"
+#include "OutsideAttribution.hpp"
 
 using namespace Slic3r;
 
@@ -4073,6 +4074,30 @@ static void compute_toolpath_outside(GCodeProcessorResult& gcode_result, const D
     }
 }
 
+// Display-ready (name, plate-local 2D bbox) of this plate's instances,
+// shared by the TOOLPATH_OUTSIDE and TOOL_HEIGHT_OUTSIDE attributions.
+// Instance bboxes carry the global grid offset at the call site
+// (run_build_volume_check restores it after its temporary shift), so
+// translate by -plate_origin into the same plate-local space as the moves
+// (gcode_result.moves were shifted in place by compute_toolpath_outside).
+// Empty object names map to the shared "unnamed object" placeholder here so
+// the pure collector stays display-ready in, display-ready out.
+static std::vector<orca::OutsideAttributionSource> collect_attribution_sources(
+    const Model& model, const std::set<int>& plate_instance_ids, const Vec2d& plate_origin)
+{
+    std::vector<orca::OutsideAttributionSource> sources;
+    for (const ModelObject* obj : model.objects)
+        for (const ModelInstance* inst : obj->instances)
+            if (plate_instance_ids.count(static_cast<int>(inst->loaded_id)))
+            {
+                BoundingBoxf3 bb = obj->instance_bounding_box(*inst);
+                bb.translate(Vec3d(-plate_origin.x(), -plate_origin.y(), 0.0));
+                sources.push_back({obj->name.empty() ? "unnamed object" : obj->name,
+                                   bb.min.x(), bb.min.y(), bb.max.x(), bb.max.y()});
+            }
+    return sources;
+}
+
 // Attribute out-of-bed extrusion moves to their sources so the
 // TOOLPATH_OUTSIDE issue can name the culprit in object_name. Two channels:
 //  - wipe tower moves carry the erWipeTower role (GCodeProcessor sets it on
@@ -4094,7 +4119,8 @@ static void compute_toolpath_outside(GCodeProcessorResult& gcode_result, const D
 // (BuildVolume::BedEpsilon is private), so points inside the gate's
 // forgiveness band may over-attribute to the adjacent near-boundary object.
 // gcode_result.moves are already plate-local here (compute_toolpath_outside
-// shifted them in place).
+// shifted them in place). The name resolution itself lives in
+// OutsideAttribution.hpp (unit-tested there, shared with the height check).
 static std::string attribute_outside_toolpath(const GCodeProcessorResult& gcode_result,
                                               const DynamicPrintConfig& config, const Model& model,
                                               const std::set<int>& plate_instance_ids, const Vec2d& plate_origin)
@@ -4102,25 +4128,6 @@ static std::string attribute_outside_toolpath(const GCodeProcessorResult& gcode_
     const auto* printable_area_opt = config.option<ConfigOptionPoints>("printable_area");
     if (!printable_area_opt || printable_area_opt->values.empty() || plate_instance_ids.empty())
         return {};
-
-    // (name, plate-local bbox) of this plate's instances. instance bboxes
-    // carry the global grid offset at this point (run_build_volume_check
-    // restores it after its temporary shift), so translate by -plate_origin
-    // into the same plate-local space as the moves.
-    struct SourceObject
-    {
-        const std::string* name;
-        BoundingBoxf3 bbox;
-    };
-    std::vector<SourceObject> objects;
-    for (const ModelObject* obj : model.objects)
-        for (const ModelInstance* inst : obj->instances)
-            if (plate_instance_ids.count(static_cast<int>(inst->loaded_id)))
-            {
-                BoundingBoxf3 bb = obj->instance_bounding_box(*inst);
-                bb.translate(Vec3d(-plate_origin.x(), -plate_origin.y(), 0.0));
-                objects.push_back({&obj->name, bb});
-            }
 
     const BuildVolume build_volume(printable_area_opt->values, gcode_result.printable_height);
     const Polygon& bed = build_volume.polygon();
@@ -4133,39 +4140,8 @@ static std::string attribute_outside_toolpath(const GCodeProcessorResult& gcode_
         return !bed.contains(Point(scale_(p.x()), scale_(p.y())));
     };
 
-    std::vector<std::string> sources;
-    auto attribute = [&sources](const std::string& s) {
-        if (std::find(sources.begin(), sources.end(), s) == sources.end())
-            sources.push_back(s);
-    };
-    auto handle_point = [&](const Vec3f& p, bool is_tower) {
-        if (!point_outside(p))
-            return;
-        if (is_tower)
-        {
-            attribute("wipe_tower");
-            return;
-        }
-        // Nearest plate-local object bbox by 2D AABB distance (0 inside); a
-        // skirt/brim loop around a lone object resolves to that object.
-        const SourceObject* best = nullptr;
-        double best_d2 = std::numeric_limits<double>::max();
-        for (const auto& so : objects)
-        {
-            const BoundingBoxf3& b = so.bbox;
-            const double dx = std::max({b.min.x() - p.x(), 0.0, p.x() - b.max.x()});
-            const double dy = std::max({b.min.y() - p.y(), 0.0, p.y() - b.max.y()});
-            const double d2 = dx * dx + dy * dy;
-            if (d2 < best_d2)
-            {
-                best_d2 = d2;
-                best = &so;
-            }
-        }
-        if (best)
-            attribute(best->name->empty() ? "unnamed object" : *best->name);
-    };
-
+    orca::OutsideAttributionCollector collector(
+        collect_attribution_sources(model, plate_instance_ids, plate_origin));
     for (const auto& move : gcode_result.moves)
     {
         // Same validity filter as compute_toolpath_outside's bbox merge.
@@ -4173,21 +4149,15 @@ static std::string attribute_outside_toolpath(const GCodeProcessorResult& gcode_
             move.width != 0.0f && move.height != 0.0f)
         {
             const bool tower = move.extrusion_role == erWipeTower;
-            handle_point(move.position, tower);
+            if (point_outside(move.position))
+                collector.add(move.position.x(), move.position.y(), tower);
             if (move.is_arc_move_with_interpolation_points())
                 for (const auto& ip : move.interpolation_points)
-                    handle_point(ip, tower);
+                    if (point_outside(ip))
+                        collector.add(ip.x(), ip.y(), tower);
         }
     }
-
-    std::string out;
-    for (const auto& s : sources)
-    {
-        if (!out.empty())
-            out += ",";
-        out += s;
-    }
-    return out;
+    return collector.join();
 }
 
 void SliceEngine::do_postprocessing(int plate_id, PlateSliceResult& result, const Slic3r::Vec2d& plate_origin)
