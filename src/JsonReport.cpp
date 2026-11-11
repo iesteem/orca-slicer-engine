@@ -200,7 +200,12 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
     for (const auto& plate : stats.plates)
     {
         ordered_json pj;
-        pj["plate_id"] = plate.plate_id + 1;
+        // Plate number (1-based), named "id" to match filaments[].id below.
+        // Two distinct number spaces share the key name — do not confuse:
+        // plates[].id = plate index in the file; filaments[].id = filament
+        // slot (gcode T number + 1). issues[].plate_id keeps its descriptive
+        // name (foreign key, not element identity; -1 = global issue).
+        pj["id"] = plate.plate_id + 1;
         pj["success"] = plate.success;
 
         if (!plate.issues.empty())

@@ -159,7 +159,7 @@ TEST_CASE("C API: plate_id=1 + format=gcode slices one plate into a .gcode file"
     // Exactly one plate in the stats output.
     auto j = nlohmann::json::parse(stats);
     REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["plate_id"].get<int>() == 1);
+    REQUIRE(j["plates"][0]["id"].get<int>() == 1);
 
     // A .gcode file was written; no all-plates .gcode.3mf package.
     REQUIRE(boost::filesystem::exists("/tmp/orca_capi_p1.gcode"));
@@ -186,7 +186,7 @@ TEST_CASE("C API: plate_id=2 selects plate 2, not plate 1", "[integration][capi]
     REQUIRE(rc == SLIC3R_OK);
     auto j = nlohmann::json::parse(stats);
     REQUIRE(j["plates"].size() == 1);
-    REQUIRE(j["plates"][0]["plate_id"].get<int>() == 2);
+    REQUIRE(j["plates"][0]["id"].get<int>() == 2);
 
     rm("/tmp/orca_capi_p2.gcode");
     rm("/tmp/orca_capi_p2.json");
@@ -1040,7 +1040,9 @@ TEST_CASE("capi: JSON report schema field names (anti-drift for header doc)", "[
 
     SECTION("plate objects")
     {
-        CHECK(j["plates"][0]["plate_id"].get<int>() == 1); // 0-based slot 0 => 1
+        // plates[].id = 盘号 (renamed from plate_id); distinct number space
+        // from filaments[].id below (耗材槽号)
+        CHECK(j["plates"][0]["id"].get<int>() == 1); // 0-based slot 0 => 1
         CHECK(j["plates"][0]["success"].get<bool>() == false);
         // failed plate: no stats block, but its issues are attached
         CHECK_FALSE(j["plates"][0].contains("print_time_seconds"));
@@ -1048,7 +1050,7 @@ TEST_CASE("capi: JSON report schema field names (anti-drift for header doc)", "[
         // plate-scoped issue plate_id is shifted to 1-based
         CHECK(j["plates"][0]["issues"][0]["plate_id"].get<int>() == 1);
 
-        CHECK(j["plates"][1]["plate_id"].get<int>() == 2);
+        CHECK(j["plates"][1]["id"].get<int>() == 2);
         CHECK(j["plates"][1]["filaments"][0]["id"].get<int>() == 1); // 0-based slot => 1
         for (const char* k : {"print_time_seconds", "print_time_formatted", "total_weight_g",
                               "filaments", "model_thumbnail", "long_retraction_when_cut",
