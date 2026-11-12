@@ -111,6 +111,7 @@ if(ORCA_STATIC)
         test_unsupported.cpp
         test_accuracy.cpp
         test_high_flow.cpp
+        test_filament_is_support.cpp
         test_print_sequence.cpp
         test_c_api.cpp
         test_cli.cpp

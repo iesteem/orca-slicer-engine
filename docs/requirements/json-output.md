@@ -126,7 +126,7 @@
   "print_time_formatted": "20h34m",
   "total_weight_g": 5.92,
   "filaments": [
-    { "id": 1, "type": "PLA", "volume_type": "standard", "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
+    { "id": 1, "type": "PLA", "volume_type": "standard", "is_support": false, "color": "#FFFFFF", "used_g": 5.92, "used_mm": 1966.7 }
   ],
   // ↑ filaments[] 每条：id = 1-based 耗材槽号（gcode T 编号 +1，仅列该盘实际
   // 挤出的槽）；volume_type = 该槽流量类型声明，值域严格 {"standard",
@@ -136,6 +136,12 @@
   // 它是驱动切片的声明，不是"高档实际生效"的证据——官方单档预设替换可把
   // 档位段塌缩回 standard 而声明仍是 high_flow（test_high_flow 塌缩用例
   // 钉死此行为）；生效判定须走 gcode 体四层法。App 一键打印按槽读此字段。
+  // is_support = 该槽支撑耗材声明（耗材预设 filament_is_support），bool 恒
+  // 输出（缺失/越界槽在装配层已坍缩为 false）。取值源与 volume_type 同一
+  // post-apply 快照——与 gcode 头回显 "; filament_is_support" 同源同值。
+  // 同为**声明层语义**：是预设/项目的声明，不是"实际挤出支撑"的证据
+  // （后者是 support_free，gcode 实际层，刻意不同源，勿混用）。App 一键
+  // 打印按槽读此字段（前端看不到引擎部署的耗材预设资源，无法自行判定）。
   "model_thumbnail": "<base64 PNG>",  // 可为空串
   "long_retraction_when_cut": false,
   "support_free": true                // gcode 实际层：该盘支撑挤出体积为 0（含配置
@@ -152,6 +158,7 @@
 | 2.2.1 (2026-11-11 追加) | **`TOOL_HEIGHT_OUTSIDE` 的 `object_name` 从恒空串改为归因超高源**：与 TOOLPATH_OUTSIDE 同核（`"wipe_tower"` 或最近对象名，多源逗号连接，归因只喂超高**挤出** move）；空串=违规仅由 travel/z-hop 或自定义 G-code（erCustom）承载。message 同步个性化（`G-code paths of "X" go beyond...`）。z_height 仍报实测 max_z。每盘恒一条 issue 不变。可达面注：模型超高主路径已被预处理 `BUILD_VOLUME_TOO_HIGH`（带名、阻断）覆盖，本条现实触发源以自定义 G-code 为主（Case 37 fixture 即此构造） |
 | 2.2.1 (2026-11-11) | **`plates[].plate_id` → `id` 原地改名**（1-based 盘号，值域不变；filaments[].id 同名先例 v02.01.10）：对齐 filaments[].id 的元素标识命名。**同名不同义注意**：`plates[].id`=盘号、`plates[].filaments[].id`=耗材槽号，解析勿混淆。`issues[].plate_id`（全局 issues[] 与 plates[].issues[] 均含）**不改**——它是所属盘外键而非元素标识，保留描述性键名（-1=全局级）。C API 入参 params_json 的 `"plate_id"` 键不变（**后变更**：2026-11-11 追加行收紧为仅接受 0） |
 | 2.2.1 (2026-11-10 新增) | `plates[].filaments[]` 条目内新增 **`volume_type`**（string，恒输出，值域 `{"standard","high_flow"}`，位于 `type` 之后）：该槽流量类型声明，取值源 = post-apply `print.config()` 快照（与 gcode 头回显同源；装配层对缺失/越界槽坍缩为 `"standard"`）。**声明层语义**——非"高档实际生效"证据（档位塌缩场景声明仍 high_flow），生效判定走 gcode 体。`print_info_total.filaments` 因 (type,color) 跨盘去重合并不加此字段（同组不同槽流量类型可不同）。App 一键打印契约字段 |
+| 2.2.1 (2026-11-12 新增) | `plates[].filaments[]` 条目内新增 **`is_support`**（bool，恒输出，位于 `volume_type` 之后）：该槽支撑耗材声明（耗材预设 `filament_is_support`），取值源 = 与 volume_type 同一 post-apply `print.config()` 快照（与 gcode 头回显 "; filament_is_support" 同源同值；装配层对缺失/越界槽坍缩为 `false`）。**声明层语义**——非"实际挤出支撑"证据（那是 `support_free`，gcode 实际层，刻意不同源勿混用）。`print_info_total.filaments` 不加（(type,color) 去重原因同 volume_type）。App 一键打印契约字段（前端看不到引擎部署的耗材预设，无法自行判定） |
 | 2.2.0 (2026-10-23 追加 P-35) | `SPIRAL_LIFT_NEAR_BOUNDARY` 触发条件精度化：判定源从机器域 `z_hop_types` 平键改为**有效值**（机器键 clone 后 `apply_override` 组合 `filament_z_hop_types`，镜像 PrintApply 合并语义）。code/level/消息不变，仅消除耗材覆盖已关掉螺旋时的误报（SnapSpeed Slope × 机器 Auto 基值场景实测两条误报→0） |
 | 2.2.0 (2026-10-19 修订) | **`error_message` → `error_code` 原地改名**（同日二次修订，2.2.0 未发布，support_free 改名先例）：内容从"与 slic3r_get_error 同串的人类可读摘要"改为"全部 error / serious_warning issue 的 code 英文逗号拼接（issues 列表序，不去重）"——旧摘要在 rc=6/7 恰好为空或泛化，聚合 code 精确归因。不变式改述为 success ⟺ exit_code==0 ⟺ error_code==""（全路径审计：所有 rc≠0 的 run() 出口均伴随 error/serious_warning issue，P-23 NO_PLATES_PRODUCED 已封掉最后一个无 issue 缺口）。C API `slic3r_get_error` 通道**不变**（仍返回结构体 error_message 摘要），JSON 不再镜像该串 |
 | 2.2.0 (2026-10-19 追加 P-28) | **文件通道**：显式 json_output_path 无条件落盘（含 rc=3/6 早期失败；CLI 因 main.c 预填而恒落盘）；2026-10-13 防垃圾文件决策收窄至"未传路径的 C API 直调方失败运行"。裸 `-j` 对齐为预填 `<output>.json`（原发空路径=只打印不落盘，与帮助文本矛盾）。报告字段与不变式不变 |

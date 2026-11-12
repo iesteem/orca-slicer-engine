@@ -233,6 +233,13 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
                 // success — missing/out-of-range snapshots already collapsed
                 // to "standard" at the assembly site (SliceEngine.cpp join).
                 fdj["volume_type"] = detail.volume_type;
+                // Support-material declaration (bool). Always present on
+                // success — same collapse-at-assembly semantics as
+                // volume_type (missing/out-of-range slots collapse to false).
+                // Declaration layer: the preset declaration, NOT evidence
+                // that support was extruded (that is support_free, gcode
+                // actual layer).
+                fdj["is_support"] = detail.is_support;
                 fdj["color"] = detail.color;
                 fdj["used_g"] = round2(detail.used_g);
                 fdj["used_mm"] = round2(detail.used_m * 1000.0);

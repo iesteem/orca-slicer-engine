@@ -3954,6 +3954,15 @@ void SliceEngine::capture_post_trim_config_snapshot(Print& print, PlateSliceResu
         const auto* fvt = print.config().option<ConfigOptionEnumsGeneric>("filament_volume_type");
         if (fvt) result.filament_volume_types = fvt->values;
     }
+    // Per-slot support-material declaration. Same snapshot rationale as the
+    // flow type: the runtime consumers (GCode / ToolOrdering / WipeTower)
+    // read this value off print.config() and the "; filament_is_support"
+    // gcode header echoes it, so this is the declaration that actually drove
+    // slicing.
+    if (print.config().has("filament_is_support")) {
+        const auto* fis = print.config().option<ConfigOptionBools>("filament_is_support");
+        if (fis) result.filament_is_supports = fis->values;
+    }
 }
 
 // Guard: returns true when every G-code layer is valid, i.e. export_gcode
@@ -4965,6 +4974,13 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
         // as "standard".
         if (ext_sz < result.filament_volume_types.size())
             detail.volume_type = to_string(FilamentVolumeType(result.filament_volume_types[ext_sz]));
+
+        // Support-material declaration, joined in the same extruder_id index
+        // space as volume_type above. Same deliberately-no-m_config-fallback
+        // rationale (single-extruder remap index space); the in-class default
+        // false is the collapse value for missing/out-of-range slots.
+        if (ext_sz < result.filament_is_supports.size())
+            detail.is_support = result.filament_is_supports[ext_sz] != 0;
 
         plate_stats.filament_details.push_back(detail);
     }

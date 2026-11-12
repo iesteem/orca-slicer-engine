@@ -16,6 +16,9 @@ struct SliceOutputStats
         std::string type; // Filament type (e.g., "PLA", "ABS")
         std::string volume_type = "standard"; // Flow type declaration ("standard" / "high_flow"), joined
                                               // in the same post-apply snapshot + index space as type/color
+        bool is_support = false;              // Support-material declaration (filament preset), same
+                                              // snapshot + index space as volume_type; in-class default
+                                              // false IS the collapse value for missing/out-of-range slots
         std::string color; // Filament color (e.g., "#FF0000")
         double used_g = 0.0; // Used weight in grams
         double used_m = 0.0; // Used length in meters

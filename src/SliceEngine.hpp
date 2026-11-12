@@ -71,6 +71,11 @@ struct PlateSliceResult
     std::vector<int> filament_volume_types;    // per-slot flow type declaration (FilamentVolumeType raw
                                                // ints, post-apply print.config(); same value get_config_idx
                                                // reads and the "; filament_volume_type" header echoes)
+    std::vector<unsigned char> filament_is_supports; // per-slot support-material declaration (raw
+                                               // 0/1 bytes as ConfigOptionBools stores them,
+                                               // post-apply print.config(); same value the runtime
+                                               // consumers read and the "; filament_is_support"
+                                               // header echoes)
     std::vector<Issue> issues; // collected issues for this plate
 };
 
