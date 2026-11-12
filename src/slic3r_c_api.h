@@ -35,7 +35,10 @@ typedef struct slic3r_ctx_s slic3r_ctx_t;
  *
  *   0  SLIC3R_OK              Success
  *   1  SLIC3R_ERR_ARGS        Invalid command-line arguments
- *   2  SLIC3R_ERR_FILE_NOT_FOUND  Input file not found
+ *   2  SLIC3R_ERR_FILE_NOT_FOUND  RESERVED, never emitted (2026-11-12):
+ *      no existence pre-check exists; a missing input file falls through
+ *      to 3 (SLIC3R_ERR_LOAD / LOAD_3MF_ERROR). Value kept to preserve
+ *      the numeric namespace.
  *   3  SLIC3R_ERR_LOAD        3MF load / parse failure
  *   4  SLIC3R_ERR_SLICING     Slicing failure (geometry defects / timeout / cancellation / internal error)
  *   5  SLIC3R_ERR_EXPORT      Output write failure (GCode I/O error / .3mf packaging error)

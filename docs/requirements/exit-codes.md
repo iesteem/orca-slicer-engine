@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 0 | EXIT_OK | 全部成功（含 gcode.3mf 打包）；多盘**部分成功**（其余盘为良性空盘跳过）同样返回 0（P-19） | 正常切片 |
 | 1 | EXIT_INVALID_ARGS | CLI 参数无效 | main.c |
-| 2 | EXIT_FILE_NOT_FOUND | 输入文件不存在 | main.c |
+| 2 | EXIT_FILE_NOT_FOUND | **保留未发射**（2026-11-12 实测定案，决策 A）：全树无发射点，main.c 无存在性检查，缺文件实际落 rc=3 `LOAD_3MF_ERROR`（read_from_file 异常被折叠进通用消息，not-found 与损坏不可区分且消息有误导） | — |
 | 3 | EXIT_LOAD_ERROR | 3MF 加载/格式失败 | FORMAT_REJECTED、LOAD_3MF_ERROR 类 |
 | 4 | EXIT_SLICING_ERROR | 切片阶段失败（某盘或整体） | SLICING_* 类 |
 | 5 | EXIT_EXPORT_ERROR | G-code 导出失败 | GCODE_EXPORT_ERROR |
@@ -126,6 +126,7 @@ INTERNAL_FATAL（引擎内部缺陷，出现即 bug）。
 
 | 版本 | 变更 |
 |---|---|
+| 2.2.1 (2026-11-12) | rc=2 行修正为「保留未发射」：文档漂移对齐实测——缺文件落 rc=3 `LOAD_3MF_ERROR`（SliceEngine.cpp 加载 catch 折叠），决策不补发射点（方案 A：修文档而非加检查，B/C 已评估弃置）。行为零变更 |
 | 2.2.0 (2026-10-19 追加) | 退出码值与语义零变更；P-28 收窄"无 JSON 文件"场景语义注记（见顶部引注）：显式 json_output_path 下引擎执行过的失败（含 rc=3/6）均落盘报告文件 |
 | 2.2.0 (2026-10-10) | 新增 `NO_PLATES_PRODUCED`（error）、`PLATE_MEMBERSHIP_REBUILT`（tip）、`INSTANCE_NOT_ON_ANY_PLATE`（warning），新设"盘选择与归属"分组（P-19/P-23/P-24），全表 68→71；`PLATE_NOT_FOUND` 自"输入/加载（exit 3）"组移入该组并修正为 exit 6（文档分组修正，发射点行为未变）。本周期同含 P-19 语义：`NO_PRINTABLE_OBJECTS` 定级 warning 良性跳过、新增 `EMPTY_PLATE`、零产物兜底 exit 6 |
 | v02.01.07 (2026-09-24) | 新增 `PLATE_DATA_SYNTHESIZED`（tip）、`PLATELESS_NO_PRINTABLE_INSTANCES`（error）（P-22，版本号后 bump 为 2.2.0，随 2.2.0 发布） |
