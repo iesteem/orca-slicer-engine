@@ -65,6 +65,11 @@ if(ORCA_STATIC)
         src/main.c
         src/slic3r_c_api.cpp
         src/SliceEngine.cpp
+        src/SliceEngineLoad.cpp
+        src/SliceEnginePresets.cpp
+        src/SliceEngineGeometry.cpp
+        src/SliceEnginePlate.cpp
+        src/SliceEngineOutput.cpp
         src/JsonReport.cpp
         src/GeometryCheck.cpp
         src/Utils.cpp

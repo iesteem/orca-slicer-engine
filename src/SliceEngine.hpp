@@ -423,7 +423,7 @@ private:
      * output fallback behavior in bbs_3mf.cpp:5951.
      *
      * Called from run() after load_3mf and before process_plate
-     * (SliceEngine.cpp:212). At that point the backup_path temp directory
+     * (SliceEngineGeometry.cpp). At that point the backup_path temp directory
      * still exists.
      *
      * @note Does NOT throw. All allocation failures (std::bad_alloc from

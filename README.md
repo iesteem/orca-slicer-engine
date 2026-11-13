@@ -15,7 +15,8 @@ Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engi
 orca-slice-engine (single static binary, Linux)
   ├── main.c                 ← C CLI frontend (pure C, #include "slic3r_c_api.h")
   ├── slic3r_c_api.{h,cpp}   ← ABI boundary: 8 pure-C exports, zero C++ type leakage
-  ├── SliceEngine.cpp + engine sources (JsonReport / GeometryCheck / Utils / PresetRollback)
+  ├── SliceEngine*.cpp + engine sources (JsonReport / GeometryCheck / Utils / PresetRollback)
+  │     (class split per domain: core / Load / Presets / Geometry / Plate / Output)
   └── statically linked: libslic3r.a + CGAL + OCCT + Boost + OpenCV + TBB
 ```
 

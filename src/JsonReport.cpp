@@ -231,7 +231,7 @@ std::string build_statistics_json(const SliceOutputStats& stats, const std::stri
                 // Flow type declaration ("standard" / "high_flow"), inserted
                 // right after type per the App contract. Always present on
                 // success — missing/out-of-range snapshots already collapsed
-                // to "standard" at the assembly site (SliceEngine.cpp join).
+                // to "standard" at the assembly site (SliceEngineOutput.cpp join).
                 fdj["volume_type"] = detail.volume_type;
                 // Support-material declaration (bool). Always present on
                 // success — same collapse-at-assembly semantics as

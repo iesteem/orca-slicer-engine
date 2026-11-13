@@ -116,6 +116,11 @@ if(ORCA_STATIC)
         test_c_api.cpp
         test_cli.cpp
         ${CMAKE_SOURCE_DIR}/src/SliceEngine.cpp
+        ${CMAKE_SOURCE_DIR}/src/SliceEngineLoad.cpp
+        ${CMAKE_SOURCE_DIR}/src/SliceEnginePresets.cpp
+        ${CMAKE_SOURCE_DIR}/src/SliceEngineGeometry.cpp
+        ${CMAKE_SOURCE_DIR}/src/SliceEnginePlate.cpp
+        ${CMAKE_SOURCE_DIR}/src/SliceEngineOutput.cpp
         ${CMAKE_SOURCE_DIR}/src/slic3r_c_api.cpp
         ${CMAKE_SOURCE_DIR}/src/PresetRollback.cpp
         ${CMAKE_SOURCE_DIR}/src/JsonReport.cpp
