@@ -38,7 +38,10 @@ inline constexpr double kSceneEpsilon = 1e-4;
 // own (the real blocker is always the accompanying TOO_HIGH / OUTSIDE_XY).
 //
 // bbox_* are plate-local mm; printable_height/bed_* describe the build volume.
-std::vector<Issue> classify_build_volume_issues(
+// inline: header-defined (unit-testable without libslic3r), so every including
+// TU must share the one definition — the 2026-11-13 SliceEngine split first
+// exposed the missing inline as a multiple-definition link error (ODR).
+inline std::vector<Issue> classify_build_volume_issues(
     int                plate_id,
     const std::string& object_name,
     double             bbox_min_x, double bbox_max_x,

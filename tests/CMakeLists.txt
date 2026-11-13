@@ -190,7 +190,11 @@ if(ORCA_STATIC)
         POSITION_INDEPENDENT_CODE ON)
 
     target_link_libraries(engine-integration PRIVATE ${ORCA_STATIC_LIBS})
-    # Same LTO -Wodr suppression as the engine target (fork-side TBB types).
+    # LTO -Wodr suppression, same as the engine target. Re-verified 2026-11-13:
+    # with this flag removed the link emits exactly one fork-side warning
+    # (dep_TBB tbbmalloc/Customize.h:95 tbb::detail::d1::notify_type [-Wodr])
+    # from inside the prebuilt .a — not from this repo's own headers, which
+    # are ODR-clean since BuildVolumeClassify.hpp got its missing `inline`.
     target_link_options(engine-integration PRIVATE -Wno-odr)
 
     add_test(NAME engine-integration COMMAND engine-integration
