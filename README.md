@@ -43,9 +43,7 @@ You also need the preset `resources/` directory available at runtime (set via
 
 ## Build (ORCA_STATIC — the only mode)
 
-```bash
-git clone https://github.com/iesteem/orca-slice-engine.git
-cd orca-slice-engine
+The `CMakeLists.txt` supports two modes:
 
 # 1. Generate cmake/StaticConfig.cmake from a built OrcaSlicer tree
 ORCA_ROOT=/path/to/OrcaSlicer scripts/gen_static_libs.sh
