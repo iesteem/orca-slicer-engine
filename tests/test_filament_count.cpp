@@ -27,6 +27,7 @@
 
 #include "Types.hpp"
 #include "SliceEngine.hpp"
+#include "TestEngineRun.hpp"
 
 using Catch::Approx;
 
@@ -34,21 +35,21 @@ static const char* kResources = ORCA_TEST_RESOURCES;
 
 namespace {
 
-std::unique_ptr<SliceEngine> run_on(const std::string& input_file, const char* tag)
+EngineRun run_on(const std::string& input_file, const char* tag)
 {
     Slic3r::set_resources_dir(kResources);
     Slic3r::set_data_dir(kResources);
 
     EngineConfig cfg;
     cfg.input_file = input_file;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = std::string("/tmp/orca_test_fc_") + tag;
 
-    auto engine = std::make_unique<SliceEngine>(cfg, *(new std::vector<std::string>()));
-    engine->run();
-    return engine;
+    EngineRun r;
+    r.engine = std::make_unique<SliceEngine>(cfg, r.temp_files);
+    r.engine->run();
+    return r;
 }
 
 // Set of extruder IDs that a plate used (from filament_used_g keys).
@@ -62,6 +63,18 @@ std::set<int> used_extruders(const SliceOutputStats::PlateStats& ps)
 std::string fixture(const char* name)
 {
     return std::string(ORCA_TEST_FIXTURE_DIR) + "/filement_count/" + name;
+}
+
+// Does the issues list carry a given code at any level? Used as an
+// anti-false-positive guard: complete, legal height ranges must NOT produce
+// CONFIG_INVALID_LAYER_RANGE (sanitize_layer_config_ranges only warns on
+// missing layer_height or out-of-range filament ids).
+bool has_issue_code(const SliceOutputStats& s, const std::string& code)
+{
+    for (const auto& iss : s.issues)
+        if (iss.code == code)
+            return true;
+    return false;
 }
 } // namespace
 
@@ -89,6 +102,13 @@ TEST_CASE("Layer-range multicolor: single plate uses two extruders", "[integrati
     REQUIRE(e->stats().success);
     REQUIRE(e->stats().plates.size() == 1);
     REQUIRE(used_extruders(e->stats().plates[0]) == std::set<int>{0, 2});
+
+    // Anti-false-positive guard (release-review blind spot 2026-10-10): this
+    // fixture's ranges are complete and in-range (layer_height present, ids
+    // inside 1..4) — sanitize_layer_config_ranges must stay silent on them.
+    // Interior ids only; the boundary id == num_physical lives in
+    // layer_range_valid_boundary.3mf (test_slice_e2e Case 31).
+    REQUIRE_FALSE(has_issue_code(e->stats(), "CONFIG_INVALID_LAYER_RANGE"));
 }
 
 TEST_CASE("Seven filaments / five plates: plate 0 uses three extruders", "[integration][filcount]")

@@ -11,6 +11,7 @@
 #include <catch_amalgamated.hpp>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -28,7 +29,14 @@ namespace {
 // RAII: remove a path on scope exit. Cleans the gcode.3mf that run() produces.
 struct PathCleanup {
     std::string path;
-    explicit PathCleanup(std::string p) : path(std::move(p)) {}
+    explicit PathCleanup(std::string p) : path(std::move(p))
+    {
+        // Pre-clean: a leftover artifact from a killed previous run (SIGTERM
+        // mid-case never reaches the destructor) must not satisfy a later
+        // run's exists()/file_size() assertions — stale-artifact false green.
+        boost::system::error_code ec;
+        boost::filesystem::remove(path, ec);
+    }
     ~PathCleanup() {
         boost::system::error_code ec;
         boost::filesystem::remove(path, ec);
@@ -58,7 +66,6 @@ std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag)
 
     EngineConfig cfg;
     cfg.input_file = fixture_path;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = base;
@@ -88,7 +95,6 @@ std::unique_ptr<SliceRun> run_full(const char* fixture_path, const char* tag,
 
     EngineConfig cfg;
     cfg.input_file = fixture_path;
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = base;
@@ -105,6 +111,16 @@ bool has_global_issue(const SliceOutputStats& s, const std::string& code, IssueL
 {
     for (const auto& iss : s.issues)
         if (iss.code == code && iss.level == level)
+            return true;
+    return false;
+}
+
+// Same, but scoped to one plate (Issue::plate_id holds the internal 0-based
+// plate index; the JSON layer converts to 1-based for display).
+bool has_plate_issue(const SliceOutputStats& s, int plate_id, const std::string& code, IssueLevel level)
+{
+    for (const auto& iss : s.issues)
+        if (iss.plate_id == plate_id && iss.code == code && iss.level == level)
             return true;
     return false;
 }
@@ -347,34 +363,39 @@ TEST_CASE("Failed plate suppresses gcode.3mf packaging (all-or-nothing)", "[inte
 // single-plate case and the 2-plate mixed-outcome case, both in-repo.)
 
 // ============================================================================
-// Case 9 — wipe-tower-induced TOOLPATH_OUTSIDE. Small single-plate fixture
-// (擦除塔gcode路径超限.3mf, renamed wipe_tower_toolpath_outside.3mf): the
-// object itself sits inside the build volume, but its wipe tower + brim
-// extrude past the bed edge. Guards the compute_toolpath_outside port on the
-// minimal single-plate, plate-origin-at-zero shape (the Case 8 fixture covers
-// the multi-plate grid-offset variant). Verified live: exit 7, TOOLPATH_OUTSIDE
-// error on plate 1, package suppressed.
+// Case 9 — wipe-tower fixture, post-2.4.1-base reality (2026-10-12).
+// Small single-plate fixture (擦除塔gcode路径超限.3mf, renamed
+// wipe_tower_toolpath_outside.3mf). Historically the object sat inside the
+// build volume while its wipe tower + brim extruded past the bed edge
+// (exit 7, TOOLPATH_OUTSIDE, package suppressed). Upstream b626b4be62
+// ("Feature sync gitlab to github main #937", merged 2026-10-10) reworked
+// the wipe-tower partition algorithm and GCode transition generation; the
+// tower footprint for this geometry now stays inside the bed, so the
+// out-of-bed condition is no longer reproducible with this in-repo fixture
+// (verified live: exit 0, clean plate, package written). The case now pins
+// that clean outcome — a regression that REINTRODUCES out-of-bed toolpaths
+// for this fixture would flip it red. The TOOLPATH_OUTSIDE detection port
+// itself stays covered by Case 11 (toolpath_outside_mixed_7855).
 // ============================================================================
-TEST_CASE("Wipe tower toolpath outside bed detected post-slice (single plate)", "[integration][slice][fail][toolpath]")
+TEST_CASE("Wipe tower fixture stays in-bed on 2.4.1 base (Case 9 fixture drift)", "[integration][slice][ok][wipe]")
 {
-    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_toolpath_outside.3mf", "wipe_tower_outside");
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_toolpath_outside.3mf", "wipe_tower_inbed");
 
-    REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->any_error());
-    REQUIRE(r->engine->exit_code() == 7);
-    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
 
-    // Single plate: it must carry the flag, the error issue, and fail.
+    // Single plate: clean success, no out-of-bed flag anywhere.
     REQUIRE(r->engine->stats().plates.size() == 1);
     const auto& p = r->engine->stats().plates[0];
-    REQUIRE(p.toolpath_outside);
-    REQUIRE_FALSE(p.success);
+    REQUIRE(p.success);
+    REQUIRE_FALSE(p.toolpath_outside);
     bool has_issue = false;
     for (const auto& iss : p.issues)
         if (iss.code == "TOOLPATH_OUTSIDE" && iss.level == IssueLevel::error)
             has_issue = true;
-    REQUIRE(has_issue);
-    REQUIRE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+    REQUIRE_FALSE(has_issue);
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
 }
 
 // (Case 10 removed 2026-08-25: the 5479 ToolOrdering heap-corruption
@@ -398,6 +419,9 @@ TEST_CASE("Toolpath outside on 2-plate project: only offending plate flagged", "
 
     REQUIRE_FALSE(r->engine->stats().success);
     REQUIRE(r->engine->exit_code() == 7);
+    // Struct mirror stamped at the build_statistics() tail (JSON exit_code
+    // reads this field) — must agree with the rc the C API returns.
+    REQUIRE(r->engine->stats().exit_code == 7);
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 
     REQUIRE(r->engine->stats().plates.size() == 2);
@@ -434,24 +458,32 @@ TEST_CASE("Model with missing config keys slices via backfill (historical 44ae S
 }
 
 // ============================================================================
-// Case 12.5 — four-plate three-outcome mix (圆柱体). 64KB in-repo fixture:
+// Case 12.5 — four-plate mix (圆柱体), post-2.4.1-base reality (2026-10-12).
+// 64KB in-repo fixture. Historically the densest per-plate outcome mix:
 //   plate 1 TOOLPATH_OUTSIDE + BED_FILAMENT_MISMATCH, plate 3 build-volume XY,
-//   plates 2 & 4 clean. The densest per-plate outcome mix in the pool — three
-// distinct detection stages (postprocess / preprocess / clean) interleaved on
-// one project, each plate judged independently.
+//   plates 2 & 4 clean — three detection stages interleaved, exit 7.
+// Upstream b626b4be62 (merged 2026-10-10) reworked wipe-tower partitioning /
+// GCode transition generation, so plate 1's out-of-bed toolpath condition no
+// longer reproduces (verified live: plate 1 now clean). Remaining mix:
+//   plate 3 build-volume XY (preprocess) fails, plates 1/2/4 clean, exit 6
+// (EXIT_PREPROCESS_ERROR — no postprocess failure class remains). Still
+// guards: per-plate independent sentencing, clean-sibling isolation, and
+// exit-code class aggregation. The postprocess-in-mix coverage moved to
+// Case 11 (toolpath_outside_mixed_7855).
 // ============================================================================
-TEST_CASE("Four-plate project: three distinct failure modes, clean plates unaffected", "[integration][slice][fail][mixed]")
+TEST_CASE("Four-plate project: build-volume failure on one plate, clean siblings unaffected (Case 12.5 drift)", "[integration][slice][fail][mixed]")
 {
     auto r = run_full(ORCA_TEST_FIXTURE_DIR "/cylinder_four_plate_mixed.3mf", "cyl_mixed");
 
     REQUIRE_FALSE(r->engine->stats().success);
-    REQUIRE(r->engine->exit_code() == 7);
+    REQUIRE(r->engine->exit_code() == 6);
     REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
 
     REQUIRE(r->engine->stats().plates.size() == 4);
-    // Plate 1: toolpath outside (postprocessing).
-    REQUIRE_FALSE(r->engine->stats().plates[0].success);
-    REQUIRE(r->engine->stats().plates[0].toolpath_outside);
+    // Plate 1: was TOOLPATH_OUTSIDE + BED_FILAMENT_MISMATCH pre-2.4.1; now a
+    // clean plate (fixture-drift pin — flip red if out-of-bed ever returns).
+    REQUIRE(r->engine->stats().plates[0].success);
+    REQUIRE_FALSE(r->engine->stats().plates[0].toolpath_outside);
     // Plate 2: clean sibling must succeed despite neighbours failing.
     REQUIRE(r->engine->stats().plates[1].success);
     // Plate 3: build-volume XY rejection (preprocessing).
@@ -618,4 +650,542 @@ TEST_CASE("Straddling object with 0.05mm above bed: preserved, empty layers, exi
     REQUIRE(has_global_issue(r->engine->stats(), "SLICING_FATAL_ERROR", IssueLevel::error));
     REQUIRE(has_global_issue(r->engine->stats(), "OBJECT_INTENTIONALLY_BELOW_BED", IssueLevel::warning));
     REQUIRE_FALSE(has_global_issue(r->engine->stats(), "OBJECT_BELOW_BED_ADJUSTED", IssueLevel::warning));
+}
+
+// ============================================================================
+// Case 15 — Multi-plate with one empty plate: benign skip, partial success
+// (slice_empty_plate_skip.3mf: plate 1 carries the cube, plate 2's <plate>
+// block has no model_instance). Desktop-parity semantics: an empty plate
+// among good ones is NOT a failure — the good plate slices and packages,
+// rc stays 0, and the skip is visible as a warning-level EMPTY_PLATE issue
+// carrying the skipped plate's id. This case would fail pre-fix in the
+// observability direction (empty plate invisible in JSON) — the companion
+// zero-product failures are Cases 16/17.
+// ============================================================================
+TEST_CASE("Multi-plate with one empty plate: benign skip, partial success", "[integration][slice][ok][empty_plate]")
+{
+    // Pre-clean (stale-artifact trap): generate_output_path silently relocates
+    // to a timestamped path when the target exists, which would make the
+    // exists() assertions below pass vacuously against a stale file.
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_empty_plate_skip.gcode.3mf", ec);
+
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_empty_plate_skip.3mf", "empty_plate_skip");
+
+    // Partial success: good plate sliced and packaged; empty plate is a
+    // benign skip (desktop parity), not a failure.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE_FALSE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    // The skip is visible as a warning attributed to the second plate
+    // (internal 0-based id 1), but gets NO placeholder plate entry —
+    // plates[] holds only the sliced plate, so overall success is untouched
+    // (patch_orphan_plate_issues fabricates placeholders for error-level
+    // orphans only).
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates.front().plate_id == 0);
+    REQUIRE(r->engine->stats().plates.front().success);
+
+    // P-24 quiet path: this fixture's explicit map agrees with geometry, so
+    // the always-rebuild reassignment must be a no-op and stay SILENT —
+    // desktop-authored files never see a PLATE_MEMBERSHIP_REBUILT tip.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+}
+
+// ============================================================================
+// Case 16 — Single-plate mode requesting the EMPTY plate (plate_id=2 of
+// slice_empty_plate_skip.3mf). Pre-fix this was the C2 false-success: rc=0
+// with zero artifacts, no flag anywhere. Post-fix contract: run() returns
+// false, exit_code()=6 (zero-product guard in run(), placed after the
+// packaging gate so it never suppresses partial output), stats.success=false
+// with the canonical no-plates message, and the EMPTY_PLATE warning still
+// attributes the skip to the requested plate. No placeholder plate is
+// fabricated for the warning — the failure classification comes from the
+// zero-plate-results rule in finalise_statistics, not from the benign skip.
+// ============================================================================
+TEST_CASE("Requesting an empty plate: zero product fails with exit 6", "[integration][slice][fail][empty_plate]")
+{
+    // Pre-clean (stale-artifact trap): a leftover file would flip the
+    // exists() assertion below without this run producing anything.
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_empty_plate_requested.gcode.3mf", ec);
+
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_empty_plate_skip.3mf", "empty_plate_requested",
+                      OutputFormat::GCODE_3MF, /*single_plate=*/true, /*plate_id=*/2);
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);  // EXIT_PREPROCESS_ERROR (Types.hpp:16)
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // The skip is attributed to the requested plate (0-based id 1).
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+
+    // Warning-level orphan issues do not fabricate plate entries; the empty
+    // stats.plates is what drives error_message in finalise_statistics.
+    REQUIRE(r->engine->stats().plates.empty());
+    REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
+}
+
+// ============================================================================
+// Case 17 — Multi-plate, ALL plates empty (slice_all_plates_empty_fail.3mf:
+// both <plate> blocks lack model_instance references AND the build item is
+// printable="0" — regenerated 2026-10-08, see P-23: with the geometric
+// membership rebuild live, a printable="1" cube would be enrolled onto plate
+// 1 and this case would flip to success). Same zero-product contract as
+// Case 16, plus per-plate attribution of every skip.
+// ============================================================================
+TEST_CASE("All plates empty: zero product fails with exit 6 and both skips visible", "[integration][slice][fail][empty_plate]")
+{
+    // Pre-clean (stale-artifact trap), same rationale as Case 16.
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_all_plates_empty.gcode.3mf", ec);
+
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_all_plates_empty_fail.3mf", "all_plates_empty");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+
+    // Both skips visible, each attributed to its own plate.
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(r->engine->stats().plates.empty());
+    REQUIRE(r->engine->stats().error_message == "No plates completed successfully");
+    // Zero-product observability (P-23 Fix B): the failure must be visible
+    // at error level in the issue list, not only via error_message/exit code.
+    REQUIRE(has_global_issue(r->engine->stats(), "NO_PLATES_PRODUCED", IssueLevel::error));
+    // The rebuild ran but enrolled nothing (unprintable instance excluded),
+    // so it must stay silent — no tip.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+}
+
+// ============================================================================
+// Case 18 — Regression: object-level speed overrides delivered via
+// different_settings_to_system must not crash Model::findMaxSpeed during
+// brim generation. Production model 4e59b4a1a391c740.3mf (BBS project,
+// 2 plates) carries support_speed (coFloats) etc. as object-level config;
+// the unchecked dynamic_cast<ConfigOptionFloat*> in the single-arg
+// opt_float(key) null-deref'd → SIGSEGV (exit 139) at "Generating skirt
+// & brim" on unfixed libslic3r builds. Fixed in the OrcaSlicer fork
+// (Model.cpp findMaxSpeed, commit 656353d876).
+//
+// Regressions locked in:
+//   1. Both plates slice successfully — exit 0, success, no error issue
+//      (no crash, no structured failure either).
+//   2. The packaged gcode.3mf exists and is non-trivially sized.
+// ============================================================================
+TEST_CASE("Object-level speed override via different_settings_to_system: no findMaxSpeed crash, 2 plates ok", "[integration][slice][ok][findmax_speed]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/4e59b4a1a391c740.3mf", "findmax_speed_override");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 2);
+    for (const auto& plate : r->engine->stats().plates)
+        REQUIRE(plate.success);
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 19 — P-08 positive control, paired with Case 9. Same geometry as the
+// P-08 fixture 2c242c10f0e4b521.3mf (wipe tower y=244.697 → tower top 271.21
+// past the 271 printable edge → exit 7), but re-saved through desktop Orca's
+// IMPORT path, which discards the stored wipe_tower_x/y and auto-places a
+// fresh tower (13/214.5). Locks in both halves of the P-08 contract:
+//   1. With an in-bounds tower position the very same model slices clean —
+//      exit 0, no TOOLPATH_OUTSIDE anywhere (the engine only ever rejected
+//      the data, never the geometry).
+//   2. The plate's toolpath_outside flag stays false end-to-end.
+// See docs/precedents/wipe-tower-position-clamp.md (user-side workaround).
+// ============================================================================
+TEST_CASE("P-08 model re-saved via Orca import (regenerated tower) slices clean", "[integration][slice][ok][toolpath]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/wipe_tower_import_regen_ok.3mf", "wipe_tower_regen_ok");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.success);
+    REQUIRE_FALSE(p.toolpath_outside);
+
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "TOOLPATH_OUTSIDE", IssueLevel::error));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 20 — Plate-less 3MF (third-party exporter: no <plate> records, no
+// plate thumbnails) slices as a SYNTHESIZED single plate holding every
+// printable instance — the desktop Orca semantics (its GUI keeps the default
+// plate and assigns instances geometrically). Verifies the D1''' fix:
+//   1. exit 0, exactly one plate, that plate succeeds;
+//   2. a PLATE_DATA_SYNTHESIZED tip marks the synthesis for cloud triage;
+//   3. real output is produced.
+// Golden reference: desktop Orca 2.4.0 sliced this very file to 1 object,
+// 68 layers, 21.28 g — the filament bounds below guard against both an
+// empty slice and a duplicated-instance regression around that value.
+// ============================================================================
+TEST_CASE("Plate-less 3MF slices as synthesized single plate", "[integration][slice][ok][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_single.3mf", "plateless_single");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    const auto& p = r->engine->stats().plates[0];
+    REQUIRE(p.success);
+
+    // Desktop golden: 21.28 g single object — bracket it loosely.
+    REQUIRE(p.total_filament_g > 5.0);
+    REQUIRE(p.total_filament_g < 40.0);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_DATA_SYNTHESIZED", IssueLevel::tip));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 21 — Plate-less 3MF whose single instance carries tz=48.613 (mesh
+// locally centered around 0): exercises synthesized-plate + Z-bake Step-1
+// in the same run. The baked model occupies world z[0,97.2] on the bed and
+// must slice clean on the synthesized plate.
+// ============================================================================
+TEST_CASE("Plate-less 3MF with baked instance Z slices clean", "[integration][slice][ok][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_zbake.3mf", "plateless_zbake");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_DATA_SYNTHESIZED", IssueLevel::tip));
+    REQUIRE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 22 — Plate-less 3MF whose only item is printable="0": the whole file
+// has no printable instance. Desktop refuses to slice such a file upfront;
+// the engine must hard-fail (exit 6, PLATELESS_NO_PRINTABLE_INSTANCES error)
+// instead of the pre-fix silent exit-0-with-no-output.
+// ============================================================================
+TEST_CASE("Plate-less 3MF with all objects unprintable fails loudly", "[integration][slice][fail][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_unprintable.3mf", "plateless_unprintable");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATELESS_NO_PRINTABLE_INSTANCES", IssueLevel::error));
+    // Fix B suppression gate (P-23): the failure is already attributed by the
+    // specific PLATELESS_NO_PRINTABLE_INSTANCES error, so the generic
+    // NO_PLATES_PRODUCED must stay silent — single attribution.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "NO_PLATES_PRODUCED", IssueLevel::error));
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 23 — Plate-less 3MF with an out-of-bed object (obj4 xmin=0 vs bed
+// xmin=0.5): the synthesized plate enrolls every printable instance, so the
+// existing build-volume check classifies it PARTLY_OUTSIDE and fails hard.
+// KNOWN DIVERGENCE (anchored, by design for now): desktop Orca slices the
+// in-bed objects and only excludes the outside one; the engine rejects the
+// whole task. Revisit with the "exclude + warn" follow-up, not silently.
+// ============================================================================
+TEST_CASE("Plate-less 3MF with out-of-bed object fails at build-volume", "[integration][slice][fail][plateless]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/plateless_oob_fail.3mf", "plateless_oob_fail");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_OUTSIDE_XY", IssueLevel::error));
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 24 — Hand-crafted layer_config_ranges.xml (geom_above_bed_ok.3mf with
+// Metadata/layer_config_ranges.xml injected). The 3MF importer validates
+// nothing in that block, and libslic3r's layer_height_profile_from_ranges
+// (Slicing.cpp) dereferences option("layer_height") without a null check —
+// a range without that key used to kill the engine with SIGSEGV rc 139
+// inside Print::validate (verified live 2026-10-08). The engine-side
+// sanitize_layer_config_ranges() (read_3mf_model) must fix the range by
+// falling back to the global default layer height so the slice completes,
+// with a CONFIG_INVALID_LAYER_RANGE warning attributing the change.
+// ============================================================================
+TEST_CASE("Height range without layer_height no longer crashes; sanitized with warning", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_missing_height.3mf", "lr_missing_height");
+
+    // Pre-fix this was a SIGSEGV (rc 139); the whole regression contract is
+    // reaching these assertions at all.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+}
+
+// ============================================================================
+// Case 25 — Same injection vector, but the range is complete and instead
+// carries wall/sparse_infill_filament=5 (above the 4 physical filaments).
+// Height ranges support physical filaments only, and libslic3r silently
+// clamps the id to extruder 1 (Print.cpp extruder collection) — the slice
+// itself is unaffected, but the engine must surface the remap as a warning.
+// Also locks in that such invalid data does NOT count as mixed-filament
+// usage (the height-range path is deliberately absent from
+// detect_mixed_filament_usage()).
+// ============================================================================
+TEST_CASE("Height range with out-of-range filament id slices with visible warning", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_oob_filament.3mf", "lr_oob_filament");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+    REQUIRE_FALSE(r->engine->stats().mixed_filament_used);
+}
+
+// ============================================================================
+// Case 31 — The positive side of the Case 24/25 sanitizer contract (release-
+// review blind spot 2026-10-10: "normal ranges not falsely warned" had zero
+// assertions — [layerheight]8's fixture carries no ranges.xml, and the
+// filcount multicolor fixture only exercises interior ids). The check is
+// `id < 0 || id > num_physical` (sanitize_layer_config_ranges), so id ==
+// num_physical is the off-by-one magnet: a `>=` typo would false-warn on the
+// LAST physical slot and teach issue consumers to ignore the code. Fixture
+// parks every legal boundary: wall=1 (first slot), sparse_infill=4 (==
+// num_physical), solid_infill=0 (legal "default"), layer_height present.
+// ============================================================================
+TEST_CASE("Complete height ranges on the filament-id boundary stay warning-free", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_valid_boundary.3mf", "lr_valid_boundary");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
+
+    // The ranges must also take EFFECT — a sanitizer that dropped them would
+    // pass the warning check vacuously. wall comes from slot 1 (engine id 0),
+    // sparse infill from slot 4 (engine id 3): both must carry real usage.
+    REQUIRE(!r->engine->stats().plates.empty());
+    std::set<int> used;
+    for (const auto& kv : r->engine->stats().plates[0].filament_used_g)
+        used.insert(kv.first);
+    REQUIRE(used.count(0) == 1);
+    REQUIRE(used.count(3) == 1);
+}
+
+// ============================================================================
+// Case 26 — Regression (P-23): MakerWorld / BambuStudio-02.06 / OrcaSlicer
+// 2.4.2 exports author <plate> metadata but record no membership
+// (<model_instance>) anywhere. Production incident 1e9d9919e7955ce4.3mf:
+// every obj_inst_map empty -> "Marked 0 instances printable" -> EMPTY_PLATE
+// warning -> exit 6 "No plates completed successfully" with a warnings-only
+// JSON (invisible to issue-level consumers). Desktop 2.4.0 slices these fine
+// because it ALWAYS rebuilds plate membership geometrically
+// (PartPlateList::reload_all_objects; the obj_inst_map restore is commented
+// out upstream). rebuild_plate_membership() ports that semantic.
+//
+// Regressions locked in:
+//   1. Success path restored: exit 0, one plate, output produced.
+//   2. The fallback is visible as a PLATE_MEMBERSHIP_REBUILT tip.
+//   3. Weight sanity: loose 5-40 g bracket (the file's own embedded
+//      slice_info golden is 21.04 g on the authoring printer; U1 official
+//      preset substitution shifts it — same bracket style as Case 20).
+// ============================================================================
+TEST_CASE("MakerWorld 3MF without membership slices via geometric rebuild", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/1e9d9919e7955ce4.3mf", "mw_membership");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+    REQUIRE(r->engine->stats().plates[0].total_filament_g > 5.0);
+    REQUIRE(r->engine->stats().plates[0].total_filament_g < 40.0);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 27 — Membership rebuild with a benign empty sibling (P-23): same
+// no-membership shape as Case 26 but two-plate, derived from Case 15's
+// fixture by deleting the sole <model_instance> record. The printable cube
+// (129.19, 183.71) sits in plate 1's grid cell, so the rebuild assigns it
+// there; plate 2 legitimately has nothing and must keep the P-19 warning +
+// skip semantics — one empty plate must not sink the rebuilt sibling.
+// ============================================================================
+TEST_CASE("Membership rebuild assigns the cube and skips the genuinely empty sibling", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_membership_rebuilt_2plate.3mf", "membership_2plate");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+    REQUIRE(has_plate_issue(r->engine->stats(), 1, "EMPTY_PLATE", IssueLevel::warning));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 28 — Production misaligned-membership 8-plate file (P-24
+// always-rebuild): 2d986d79661ffb62.3mf carries NON-EMPTY plate maps that
+// disagree with geometry by one grid cell (third-party exporter authored on
+// a 260 mm bed grid; every object sits exactly on a cell centre, but the
+// metadata claims neighbouring plates). P-23 Fix A trusted the maps and
+// failed plates 3/5/8 with BUILD_VOLUME_FULLY_OUTSIDE (exit 6, no product —
+// all-or-nothing), while desktop Orca 2.4.0 sliced all 8 plates: the desktop
+// loader never restores membership from the file and always reassigns
+// geometrically (reload_all_objects). rebuild_plate_membership() now ports
+// that semantic wholesale (P-24), so this file must go fully green.
+// Desktop cross-check: its gcode.3mf output orders the plates
+// black/top/side/marcoLamparaAjustado/orangeQuestion/marcoLampara/
+// marcoLamparaInferior/marcoLamparaSuperior — 8 plates, one object each.
+// ============================================================================
+TEST_CASE("Production 8-plate misaligned membership slices via always-rebuild", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/2d986d79661ffb62.3mf", "p24_misaligned8");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    REQUIRE(r->engine->stats().plates.size() == 8);
+    for (int i = 0; i < 8; ++i)
+    {
+        const auto& plate = r->engine->stats().plates[i];
+        REQUIRE(plate.plate_id == i);
+        REQUIRE(plate.success);
+        REQUIRE(plate.total_filament_g > 0.0);
+        REQUIRE(plate.print_time > 0.0f);
+    }
+
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+    // Every object lands on some plate cell under the geometric assignment —
+    // nothing may be dropped, and the old false positive must be gone.
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "INSTANCE_NOT_ON_ANY_PLATE", IssueLevel::warning));
+    REQUIRE_FALSE(has_global_issue(r->engine->stats(), "BUILD_VOLUME_FULLY_OUTSIDE", IssueLevel::error));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 29 — Off-grid instance with a healthy sibling plate (P-24
+// non-blocking contract). slice_offgrid_sibling_ok.3mf has two
+// membership-less plates: one cube instance dragged off every plate cell
+// (world bbox X[-66.5,-39.5], entirely negative) and a second instance on
+// plate 2's cell centre. The desktop puts the off-grid cube on its
+// unprintable plate and slices the rest (fully-outside does not disable
+// slicing — GLCanvas3D.cpp:3973); the engine equivalent is an
+// INSTANCE_NOT_ON_ANY_PLATE warning that must NOT sink the good plate.
+// The tip must also fire: plate 2's map went memberless -> populated, a
+// real assignment change under the before/after diff.
+// ============================================================================
+TEST_CASE("Off-grid instance warns but sibling plate still slices", "[integration][slice][ok][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_offgrid_sibling_ok.3mf", "offgrid_sibling_ok");
+
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE_FALSE(r->engine->any_error());
+
+    // Only the sibling produced; the off-grid instance belongs to no plate,
+    // and plate 1's cell is empty -> benign skip, not a failure.
+    REQUIRE(r->engine->stats().plates.size() == 1);
+    REQUIRE(r->engine->stats().plates[0].plate_id == 1);
+    REQUIRE(r->engine->stats().plates[0].success);
+    REQUIRE(r->engine->stats().plates[0].total_filament_g > 0.0);
+
+    REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_NOT_ON_ANY_PLATE", IssueLevel::warning));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(has_global_issue(r->engine->stats(), "PLATE_MEMBERSHIP_REBUILT", IssueLevel::tip));
+
+    REQUIRE(boost::filesystem::exists(r->output_file));
+    REQUIRE(boost::filesystem::file_size(r->output_file) > 1000);
+}
+
+// ============================================================================
+// Case 30 — Sole instance off-grid (P-24 attribution contract).
+// slice_offgrid_sole_fail.3mf: single plate, no member records, the only
+// cube instance is off every plate cell. The drop itself is a warning —
+// the exit-6 comes from the zero-product guard (NO_PLATES_PRODUCED,
+// P-23 Fix B), NOT from the off-grid instance. This pins the failure
+// classification so the warning can never silently harden into a blocker
+// (that would re-create the reverse-parity defect P-24 removed).
+// ============================================================================
+TEST_CASE("Sole off-grid instance: warning plus zero-product exit 6", "[integration][slice][fail][membership]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/slice_offgrid_sole_fail.3mf", "offgrid_sole_fail");
+
+    REQUIRE_FALSE(r->engine->stats().success);
+    REQUIRE(r->engine->any_error());
+    REQUIRE(r->engine->exit_code() == 6);
+    REQUIRE(r->engine->stats().plates.empty());
+
+    REQUIRE(has_global_issue(r->engine->stats(), "INSTANCE_NOT_ON_ANY_PLATE", IssueLevel::warning));
+    REQUIRE(has_plate_issue(r->engine->stats(), 0, "EMPTY_PLATE", IssueLevel::warning));
+    REQUIRE(has_global_issue(r->engine->stats(), "NO_PLATES_PRODUCED", IssueLevel::error));
+
+    // Nothing may be packaged for a zero-product run.
+    REQUIRE_FALSE(boost::filesystem::exists(r->output_file));
+}
+
+// ============================================================================
+// Case 32 — The sanitizer's own missing-key guard (P-29, external MR !3
+// review F1 2026-10-16). The Case 24/25 fixtures carry "layer_height" in
+// their config block, so sanitize_layer_config_ranges()'s
+// opt_float("layer_height") never saw an absent key — but m_config at that
+// point holds only keys the 3MF block actually wrote
+// (Model::read_from_file fills it directly; the defaults backfill in
+// normalize_loaded_config runs later, in run() after preset substitution),
+// and the const opt_float dereferences option() without a null check
+// (fork Config.hpp). layer_range_no_global_key.3mf is Case 24's fixture
+// with the global layer_height line deleted: the sanitizer must fall back
+// to the FullPrintConfig default instead of dying on the very
+// hand-crafted-input class it exists to guard.
+// ============================================================================
+TEST_CASE("Height range sanitize survives missing global layer_height key", "[integration][slice][ok][layer_range]")
+{
+    auto r = run_full(ORCA_TEST_FIXTURE_DIR "/layer_range_no_global_key.3mf", "lr_no_global_key");
+
+    // Pre-fix this was a SIGSEGV (rc 139) inside sanitize_layer_config_ranges;
+    // the whole regression contract is reaching these assertions at all.
+    REQUIRE(r->engine->stats().success);
+    REQUIRE(r->engine->exit_code() == 0);
+    REQUIRE(boost::filesystem::exists(r->output_file));
+
+    REQUIRE(has_global_issue(r->engine->stats(), "CONFIG_INVALID_LAYER_RANGE", IssueLevel::warning));
 }

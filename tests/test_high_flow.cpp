@@ -66,6 +66,25 @@ std::string extract_gcode(const std::string& gcode_3mf_path)
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
+// Read one text entry (e.g. "Metadata/project_settings.config") from the
+// packaged .gcode.3mf — the second write-back surface, written from m_config
+// during packaging. Same shell-out rationale as extract_gcode.
+std::string extract_3mf_text(const std::string& gcode_3mf_path, const std::string& entry)
+{
+    const std::string tmp = "/tmp/orca_test_hf_extract_entry.txt";
+    boost::filesystem::remove(tmp);
+    const std::string cmd =
+        "python3 -c \"import zipfile,sys;"
+        "z=zipfile.ZipFile('" + gcode_3mf_path + "');"
+        "sys.exit(1) if '" + entry + "' not in z.namelist() else "
+        "open('" + tmp + "','wb').write(z.read('" + entry + "'))\"";
+    const int rc = std::system(cmd.c_str());
+    REQUIRE(rc == 0);
+    std::ifstream f(tmp, std::ios::binary);
+    REQUIRE(f.good());
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
 // Per-extruder maximum print (non-travel) feedrate in mm/s. Feedrates in the
 // G-code are mm/min (G1 F...). Travel moves on this printer run at
 // F30000 = 500 mm/s which coincides with the high-flow outer wall cap, so
@@ -111,7 +130,6 @@ TEST_CASE("High-flow variant reaches G-code feedrates (whitelist fixture)", "[in
 
     EngineConfig cfg;
     cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
-    cfg.skip_preset_substitution = false;
     cfg.max_size_mb = 0;
     cfg.temp_dir = "/tmp";
     cfg.output_base = "/tmp/orca_test_hf_whitelist";
@@ -161,4 +179,231 @@ TEST_CASE("High-flow variant reaches G-code feedrates (whitelist fixture)", "[in
     boost::system::error_code ec;
     boost::filesystem::remove("/tmp/orca_test_hf_whitelist.gcode.3mf", ec);
     boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+}
+
+TEST_CASE("Auto-brim header echo preserves project value; motion stays algorithm-only", "[integration][brim]")
+{
+    // 2026-09-18 cloud review defect 1 (brim_width 5→0). The input project
+    // sets brim_type=auto_brim + brim_width=5. Desktop Orca 2.4.0 echoes 5 in
+    // the G-code header while printing algorithm-only motion (this fixture's
+    // geometry makes the auto algorithm decide "no brim" — desktop verified).
+    // The engine used to zero brim_width on m_config, so the header echo AND
+    // the packaged project_settings.config both said 0 while motion matched
+    // desktop exactly: a lying write-back, not a motion defect. Post-fix
+    // contract:
+    //   - header echo carries the merged project value ("; brim_width = 5")
+    //   - motion is untouched: the auto-mode zero moved to the per-plate
+    //     slicing copy (prepare_merged_config_for_plate), so TYPE:Brim must
+    //     stay ABSENT on this fixture — a fallback brim here would be a
+    //     desktop-parity regression.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_brim_echo";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    // Success-path test: any substitution/validation regression shows up as a
+    // false failure here rather than silently passing.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const std::string gcode = extract_gcode("/tmp/orca_test_brim_echo.gcode.3mf");
+
+    REQUIRE(gcode.find("; brim_type = auto_brim") != std::string::npos);
+    REQUIRE(gcode.find("; brim_width = 5\n") != std::string::npos);
+
+    // Motion invariance: no Brim feature may appear on this fixture.
+    CHECK(gcode.find("TYPE:Brim") == std::string::npos);
+
+    // Write-back surface 2 (P-11 acceptance "含 3mf 内嵌 config"): the packaged
+    // project_settings.config is written from m_config, which the fix no
+    // longer zeroes — it must carry the project value too. A packaging-side
+    // regression (config source swap, re-zero before store) turns this red.
+    const std::string settings =
+        extract_3mf_text("/tmp/orca_test_brim_echo.gcode.3mf", "Metadata/project_settings.config");
+    REQUIRE(settings.find("\"brim_width\": \"5\"") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_brim_echo.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract_entry.txt", ec);
+}
+
+TEST_CASE("Nozzle volume type survives printer preset substitution", "[integration][highflow]")
+{
+    // 2026-09-18 cloud review defect 2 (nozzle_volume_type high_flow →
+    // standard, 31/37 outputs). nozzle_volume_type is user hardware state
+    // (which nozzle is mounted per extruder); the official presets are keyed
+    // by diameter only and never declare it, so Preset::normalize backfills
+    // "standard" and the wholesale printer overwrite used to reset it. The
+    // slicing core never reads the key (flow-variant arrays resolve by
+    // filament_volume_type), so the defect is write-back fidelity: header
+    // echo and packaged project config declared the wrong nozzle hardware.
+    // Post-fix contract: header echo carries the user's per-slot values.
+    // Fixture slot 0 = high_flow, slots 1-3 = standard — pins both
+    // preservation and no cross-slot contamination.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/high_flow_whitelist.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_nvt_echo";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+
+    // Pre-run cleanup: a previously FAILED run aborts before its own cleanup
+    // and leaves a stale .gcode.3mf behind; generate_output_path then
+    // relocates every retry's artifact to a timestamped path (multi-process
+    // collision protection), so the test would re-read the stale gcode and
+    // fail forever. Remove it up front so each run judges only its own
+    // output.
+    boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf");
+
+    engine.run();
+
+    // Success-path test: any substitution/validation regression shows up as a
+    // false failure here rather than silently passing.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const std::string gcode = extract_gcode("/tmp/orca_test_nvt_echo.gcode.3mf");
+
+    REQUIRE(gcode.find("; nozzle_volume_type = high_flow,standard,standard,standard\n") != std::string::npos);
+
+    // The consumable-side flow variant (which the slicing core DOES read)
+    // must stay intact alongside the preserved nozzle hardware state.
+    REQUIRE(gcode.find("; filament_volume_type = high_flow") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_nvt_echo.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+}
+
+TEST_CASE("Wipe tower rotation angle survives process preset substitution", "[integration][highflow]")
+{
+    // P-30: wipe_tower_rotation_angle is project-owned state (the desktop
+    // keeps it in PresetBundle::project_config, outside preset substitution).
+    // Official process JSONs never declare it — fdm_process_idex's 90 being
+    // the sole, deliberate exception — so Preset::normalize backfills the
+    // code default 0 into official->config and the wholesale overwrite used
+    // to reset a 3MF's rotation (HueForge ships 270°; the tower then rotates
+    // ~30mm toward the bed edge and 4.7mm out of the printable area).
+    // Post-fix contract, mirroring the nvt case above: the header echo and
+    // the packaged project_settings.config both carry the 3MF's value.
+    // The fixture (u1_preset_test_wipe_tower_rot) is the single-object
+    // baseline with rotation=270 + dithering_local_z_mode=1 grafted into
+    // project_settings.config — it has no tower geometry, so the rotation
+    // is write-back fidelity, exactly like nozzle_volume_type here.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test_wipe_tower_rot.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_wt_rot_echo";
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+
+    // Pre-run cleanup: same stale-artifact hazard as the nvt case — a
+    // previous failed run's leftover would relocate this run's output and
+    // the assertions below would read the stale file forever.
+    boost::filesystem::remove("/tmp/orca_test_wt_rot_echo.gcode.3mf");
+
+    engine.run();
+
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    const std::string gcode = extract_gcode("/tmp/orca_test_wt_rot_echo.gcode.3mf");
+    // Prefix match covers both echo formats ("270" / "270.000").
+    REQUIRE(gcode.find("wipe_tower_rotation_angle = 270") != std::string::npos);
+    // The coBool sibling from the same candidate table survives too.
+    REQUIRE(gcode.find("dithering_local_z_mode = 1") != std::string::npos);
+
+    // Write-back surface 2: the packaged project_settings.config is written
+    // from m_config post-substitution — the preserved value must round-trip.
+    const std::string settings =
+        extract_3mf_text("/tmp/orca_test_wt_rot_echo.gcode.3mf", "Metadata/project_settings.config");
+    REQUIRE(settings.find("\"wipe_tower_rotation_angle\": \"270\"") != std::string::npos);
+    REQUIRE(settings.find("\"dithering_local_z_mode\": \"1\"") != std::string::npos);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove("/tmp/orca_test_wt_rot_echo.gcode.3mf", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract.gcode", ec);
+    boost::filesystem::remove("/tmp/orca_test_hf_extract_entry.txt", ec);
+}
+
+TEST_CASE("Output path relocation is surfaced, not silent", "[integration][slice]")
+{
+    // generate_output_path (Utils.cpp) appends a timestamp suffix when the
+    // requested output path is already occupied — deliberate multi-process
+    // collision protection, kept unchanged by design. The hazard: rc stays 0
+    // and the artifact lands elsewhere, so a caller reading the requested
+    // path would serve the stale leftover. Contract (observability fix,
+    // 2026-09-20): when relocation happens the engine emits a task-level
+    // OUTPUT_PATH_RELOCATED warning, and stats().output_path() (JSON:
+    // print_info_total.output_file) reports where the artifact really went.
+    Slic3r::set_resources_dir(kResources);
+    Slic3r::set_data_dir(kResources);
+
+    const std::string contract_path = "/tmp/orca_test_relocate.gcode.3mf";
+
+    EngineConfig cfg;
+    cfg.input_file = std::string(ORCA_TEST_FIXTURE_DIR) + "/u1_preset_test.3mf";
+    cfg.max_size_mb = 0;
+    cfg.temp_dir = "/tmp";
+    cfg.output_base = "/tmp/orca_test_relocate";
+
+    // Also clears any timestamped leftovers from earlier runs of this test.
+    boost::filesystem::remove(contract_path);
+    for (boost::filesystem::directory_iterator it("/tmp"), end; it != end; ++it)
+    {
+        if (it->path().filename().string().rfind("orca_test_relocate.gcode_", 0) == 0)
+            boost::filesystem::remove(it->path());
+    }
+
+    // Occupy the contract path with a stale leftover, as a previously failed
+    // (or interrupted) task would.
+    {
+        std::ofstream f(contract_path, std::ios::binary);
+        f << "STALE";
+    }
+
+    std::vector<std::string> temp_files;
+    SliceEngine engine(cfg, temp_files);
+    engine.run();
+
+    // The slice itself must succeed; relocation is not a failure.
+    REQUIRE(engine.stats().success);
+    REQUIRE(engine.exit_code() == 0);
+
+    // Relocation happened: artifact exists at the reported path, which is
+    // NOT the requested one; the stale bytes stay untouched at the contract
+    // path (behavior unchanged by design).
+    REQUIRE(engine.output_path() != contract_path);
+    REQUIRE(boost::filesystem::exists(engine.output_path()));
+    REQUIRE(boost::filesystem::exists(contract_path));
+
+    // The relocation must be visible in the issue list, not just in the log.
+    bool warned = false;
+    for (const auto& iss : engine.stats().issues)
+        if (iss.code == "OUTPUT_PATH_RELOCATED" && iss.plate_id == -1)
+            warned = true;
+    REQUIRE(warned);
+
+    boost::system::error_code ec;
+    boost::filesystem::remove(contract_path, ec);
+    boost::filesystem::remove(engine.output_path(), ec);
 }

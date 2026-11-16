@@ -6,7 +6,7 @@ Static slicing engine. Compiles `main.c` (C CLI frontend) together with the engi
 
 - [CHARTER.md](CHARTER.md) — 为何存在、边界、宪法级设计决策
 - [METHODOLOGY.md](METHODOLOGY.md) — 工作方法论原则
-- [CHANGELOG.md](CHANGELOG.md) — 更新日志（版本以 `ENGINE_VERSION` 为准）
+- [docs/requirements/](docs/requirements/) — 需求与验收（版本变更见 fix-requirements-*.md，版本以 `ENGINE_VERSION` 为准）
 - [docs/precedents/](docs/precedents/) — 行为判例库（已实测确认的行为契约与根因）
 
 **Architecture:**
@@ -18,31 +18,6 @@ orca-slice-engine (single static binary, Linux)
   ├── SliceEngine.cpp + engine sources (JsonReport / GeometryCheck / Utils / PresetRollback / nanosvg)
   └── statically linked: libslic3r.a + CGAL + OCCT + Boost + OpenCV + TBB
 ```
-
-The consumer / DLL boundary is layered to minimise churn when OrcaSlicer
-upstream changes:
-
-```
-┌────────────────────────────────────────────┐
-│  main.c  (pure C consumer)                 │  ← this repo
-│  depends on: slic3r_c_api.h (7 C functions)│
-├────────────────────────────────────────────┤
-│  slic3r_c_api.h   ← ABI boundary           │  ← if stable, no consumer change
-├────────────────────────────────────────────┤
-│  slic3r.dll                                │
-│  ├── SliceEngine.cpp  ← uses libslic3r     │  ← this repo (DLL source)
-│  └── JsonReport.cpp / GeometryCheck.cpp    │
-├────────────────────────────────────────────┤
-│  libslic3r + CGAL + OCCT + Boost           │  ← upstream OrcaSlicer
-└────────────────────────────────────────────┘
-```
-
-| Upstream change | Impact | Action |
-|----------------|--------|--------|
-| libslic3r internal implementation | None | Swap DLL, done |
-| libslic3r header API changes | `SliceEngine.cpp` may break | Update engine source, rebuild DLL |
-| `slic3r_c_api.h` signature changes | Consumer needs recompile | Update header, rebuild exe |
-| `resources/` format changes | Runtime may fail | Replace `resources/` directory |
 
 ## Prerequisites
 
@@ -97,9 +72,16 @@ The preset `resources/` directory must be available at runtime (via
 orca-slice-engine <input.3mf> [options]
 
   -o, --output <path>   Output path (without extension, default: derived from input)
-  -p, --plate <id>      Plate ID (0 = all plates, default: 0)
   -f, --format <fmt>    Output format: gcode | gcode.3mf (default: gcode.3mf)
   -r, --resources <dir> Resources directory (or set ORCA_RESOURCES env var)
+  -t, --timeout <sec>   Slicing timeout in seconds (0 = no limit). Note: enforced
+                        BETWEEN plates — the current plate always finishes so its
+                        diagnostics are preserved; skipped plates report
+                        SLICING_TIMEOUT.
+  --max-size <mb>       Max input file size in MB (0 = no limit)
+  --cancel-file <file>  Watchdog file for external cancellation
+  --log [file]          Log file path (default: auto-derived from output)
+  -j, --json [file]     JSON statistics output path (default: auto-derived)
   -v, --verbose         Verbose output
   -h, --help            Show this help
 ```

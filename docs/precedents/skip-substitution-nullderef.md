@@ -1,6 +1,16 @@
-# P-09: --skip-preset-substitution + system presets 加载失败 → 必崩（未修复）
+# P-09: --skip-preset-substitution + system presets 加载失败 → 必崩（已修复）
 
-**状态：** 根因已 gdb 确认（2026-08-06），**未修复**
+**状态：** 根因已 gdb 确认（2026-08-06），**已修复（feature-2.2.0）**：
+run() 在 load_system_presets() 之后、skip 分支之前统一做
+`!m_presets_available || !m_preset_bundle` 硬检查，缺失即 exit 6
+PRESETS_MISSING（skip 只跳过官方预设强制替换，不跳过加载失败硬检查）。
+回归测试见 tests/test_c_api.cpp（P-09 case）。
+
+**后续（2026-09-29）：** `--skip-preset-substitution` 参数已整体移除——
+P-09 修复后它只剩"跳过官方预设替换 + 跳过用户内容剥离"，与云切片
+合规约束冲突且生产从不使用。CLI flag 与 JSON 键均静默忽略（未知
+参数/未知键不报错），旧调用方无害。回归测试转为"废弃 JSON 键静默
+忽略 + PRESETS_MISSING 干净失败"。本文保留作崩溃链历史记录。
 
 ## 现象
 

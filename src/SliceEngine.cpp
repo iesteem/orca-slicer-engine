@@ -15,6 +15,7 @@
 #include <typeinfo>
 
 #include <boost/log/trivial.hpp>
+#include <nlohmann/json.hpp>
 
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -70,8 +71,24 @@ constexpr double NOZZLE_FORMAT_EPSILON = 0.05;
 
 // Common implementation for overwriting keys from src onto dst.
 // If except is non-null, keys present in the set are skipped.
-// Scalars are copied wholesale; vectors are copied element-by-element
-// up to the shorter length. Only keys that already exist in dst are touched.
+// Every key (scalar or vector) is copied wholesale — desktop ConfigBase::apply
+// semantics. Vectors replace the whole values array, so a source vector
+// shorter than dst's truncates dst and an empty source vector clears dst;
+// per-filament lengths are reconciled afterwards by
+// normalize_filament_vectors_to_slot_count (2026-09-20 C3 fix).
+//
+// Keys absent from dst are CREATED (option(key, true)) — desktop apply
+// semantics installs the whole preset key set. The old skip-absent rule let a
+// key the official preset declares but the 3MF omits (enable_filament_ramming,
+// purge_in_prime_tower, extruder_clearance_radius, …) fall through to the
+// FullPrintConfig defaults backfill in normalize_loaded_config, which runs
+// AFTER substitution: the code default masqueraded as the official preset
+// value (ramming default true vs U1's declared 0 deepened the wipe tower and
+// tripped tower-family TOOLPATH_CONFLICT — W2 rerun, 2026-10-21). The
+// filament path (PresetRollback::overwriteExtruderFrom) already created
+// absent keys; this aligns the printer/process paths with it. option(key,
+// true) returns nullptr for keys unknown to PrintConfig's def — the guard
+// below skips those, same as before.
 inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
                                          const std::set<std::string>* except)
 {
@@ -81,45 +98,146 @@ inline void overwrite_all_keys_from_impl(DynamicPrintConfig& dst, const DynamicP
         if (except && except->find(key) != except->end())
             continue;
 
-        ConfigOption* dst_opt = dst.option(key, false);
+        ConfigOption* dst_opt = dst.option(key, true);
         if (!dst_opt)
             continue;
 
-        if (dst_opt->is_scalar())
-        {
-            // ConfigOptionSingle::set() throws ConfigurationError when the
-            // source type differs. Guard against same-key/different-type
-            // mismatches (symmetric with the vector branch below).
-            if (dst_opt->type() != it->second->type())
-                continue;
-            dst_opt->set(it->second.get());
-        }
-        else
-        {
-            auto* dst_vec = dynamic_cast<ConfigOptionVectorBase*>(dst_opt);
-            auto* src_vec = dynamic_cast<const ConfigOptionVectorBase*>(it->second.get());
-            if (!dst_vec || !src_vec)
-                continue;
-            for (size_t i = 0; i < dst_vec->size() && i < src_vec->size(); ++i)
-                dst_vec->set_at(src_vec, i, i);
-        }
+        // ConfigOptionSingle::set() throws ConfigurationError when the
+        // source type differs. Guard against same-key/different-type
+        // mismatches.
+        if (dst_opt->type() != it->second->type())
+            continue;
+        dst_opt->set(it->second.get());
     }
 }
 
-// Overwrite every key present in `src` onto `dst` (only keys that already
-// exist in `dst`). Scalars are copied wholesale; vectors are copied
-// element-by-element up to the shorter length. No user value is preserved.
+// Overwrite every key present in `src` onto `dst` (absent keys are created).
+// Scalars and vectors are copied wholesale. No user value is preserved.
 inline void overwrite_all_keys_from(DynamicPrintConfig& dst, const DynamicPrintConfig& src)
 {
     overwrite_all_keys_from_impl(dst, src, nullptr);
 }
 
 // Overwrite every key present in `src` onto `dst`, except keys listed in `except`.
-// Same scalar/vector copy semantics as overwrite_all_keys_from.
+// Same copy semantics as overwrite_all_keys_from.
 inline void overwrite_all_keys_from_except(DynamicPrintConfig& dst, const DynamicPrintConfig& src,
                                            const std::set<std::string>& except)
 {
     overwrite_all_keys_from_impl(dst, src, &except);
+}
+
+// Normalize every per-filament vector in `config` to the project's slot
+// count — the engine-side port of Preset::normalize's filament branch
+// (Preset.cpp), which desktop runs after every preset load/apply and the
+// engine skipped (2026-09-20 C3 fix).
+//
+// Divergence from desktop, on purpose: the slot count n comes from
+// filament_settings_id — the authority the 1.4b substitution loop already
+// iterates and the desktop Plater equally uses to size filament presets —
+// not from filament_diameter.size() as Preset::normalize does. A truncated
+// or foreign-slot-count 3MF is exactly the input this repairs, and its
+// filament_diameter is precisely the corrupted length we must not trust.
+//
+// Semantics (mirrors Preset::normalize as it was designed):
+//   1. Exact-resize the ~23 core filament_option_keys with FullPrintConfig
+//      defaults padding (grows AND shrinks; skips the flow-variant segmented
+//      keys) — see the inline note for why this is engine-side code.
+//   2. Grow-only pass over Preset::filament_options(): backfills missing
+//      keys from defaults, pads short vectors to n (flow-variant keys to
+//      their segment count instead).
+//   3. Grows filament_settings_id to n (no-op when it is the authority).
+// filament_ids (the AMS material-id array) is deliberately untouched —
+// stats readers own it. nozzle_diameter / set_num_extruders is deliberately
+// not ported: extruder-count keys belong to the official machine preset.
+// Returns the slot count (0 when the config declares none).
+size_t normalize_filament_vectors_to_slot_count(DynamicPrintConfig& config)
+{
+    size_t n = 0;
+    if (const auto* fsi = config.option<ConfigOptionStrings>("filament_settings_id", false))
+        n = fsi->values.size();
+    if (n == 0)
+        for (const char* key : {"filament_diameter", "filament_colour"})
+            if (const auto* o = config.option(key, false))
+                if (const auto* v = dynamic_cast<const ConfigOptionVectorBase*>(o))
+                    n = std::max(n, v->size());
+    if (n == 0)
+        return 0;
+
+    // Exact-resize the core per-filament keys (grow AND shrink). The library's
+    // DynamicPrintConfig::set_num_filaments is a complete no-op in this fork —
+    // PrintConfigDef's ctor never calls init_filament_option_keys() (zero
+    // callers tree-wide), so print_config_def.filament_option_keys() is always
+    // empty and its loop iterates nothing. Desktop gets away with it because
+    // the GUI layer sizes these keys via PresetBundle::set_num_filaments; the
+    // engine has no GUI layer, so the exact-resize lives here, mirroring the
+    // key list of PrintConfigDef::init_filament_option_keys (PrintConfig.cpp)
+    // with the same skips (flow-variant segmented keys, default profile).
+    static const std::vector<std::string> core_filament_keys = {
+        "filament_diameter", "min_layer_height", "max_layer_height",
+        "retraction_length", "z_hop", "z_hop_types", "retract_lift_above", "retract_lift_below",
+        "retract_lift_enforce", "retraction_speed", "deretraction_speed",
+        "retract_before_wipe", "retract_restart_extra", "retraction_minimum_travel",
+        "wipe", "wipe_distance",
+        "retract_when_changing_layer", "retract_length_toolchange", "retract_restart_extra_toolchange",
+        "filament_colour", "filament_multi_colors", "filament_colour_mode",
+        "retraction_distances_when_cut", "long_retractions_when_cut"};
+    const auto& defaults = FullPrintConfig::defaults();
+    for (const std::string& key : core_filament_keys)
+    {
+        if (key == "filament_flow_support" || key == "filament_flow_step_size" ||
+            is_filament_flow_variant_option(key))
+            continue;
+        auto* opt = config.option(key, false);
+        if (opt != nullptr && opt->is_vector())
+            static_cast<ConfigOptionVectorBase*>(opt)->resize(n, defaults.option(key));
+    }
+
+    // Flow-variant segment count (Preset::normalize logic): step sizes
+    // composed per slot when present, else the declaration list at n == 1,
+    // else n.
+    size_t flow_count = n;
+    if (n == 1)
+    {
+        if (const auto* ffs = config.option<ConfigOptionStrings>("filament_flow_support", false);
+            ffs && !ffs->values.empty())
+            flow_count = ffs->values.size();
+    }
+    else if (const auto* st = config.option<ConfigOptionInts>("filament_flow_step_size", false);
+             st && st->values.size() == n)
+    {
+        flow_count = 0;
+        for (int s : st->values)
+            flow_count += size_t(std::max(1, s));
+    }
+
+    for (const std::string& key : Preset::filament_options())
+    {
+        if (key == "compatible_prints" || key == "compatible_printers" ||
+            key == "filament_flow_support")
+            continue;
+        ConfigOption* opt = config.option(key, false);
+        if (!opt)
+        {
+            const ConfigOption* def = defaults.option(key);
+            if (!def)
+                continue;
+            config.set_key_value(key, def->clone());
+            opt = config.option(key, false);
+        }
+        if (opt && opt->is_vector())
+        {
+            auto* vec = static_cast<ConfigOptionVectorBase*>(opt);
+            const size_t want = is_filament_flow_variant_option(key) ? flow_count : n;
+            if (vec->size() < want)
+                vec->resize(want, defaults.option(key));
+        }
+    }
+
+    if (auto* fsi = config.option<ConfigOptionStrings>("filament_settings_id", false))
+        if (fsi->values.size() < n)
+            fsi->values.resize(n, std::string());
+
+    return n;
 }
 
 } // namespace
@@ -179,17 +297,22 @@ bool SliceEngine::run()
     // apply_*_official_preset stages below.
     load_system_presets();
 
-    if (!m_cfg.skip_preset_substitution)
+    // Hard precondition (P-09): must abort before init_print dereferences
+    // m_preset_bundle. See ensure_presets_available for the full contract.
+    if (!ensure_presets_available())
     {
-        if (!apply_preset_substitution())
-        {
-            build_statistics();
-            return false;
-        }
+        build_statistics();
+        return false;
     }
 
-    // Runs even when substitution was skipped: both fixes guard against
-    // libslic3r SEGVs and are independent of the substitution policy.
+    if (!apply_preset_substitution())
+    {
+        build_statistics();
+        return false;
+    }
+
+    // Runs after the substitution stages: both fixes guard against libslic3r
+    // SEGVs and are independent of what substitution did.
     normalize_loaded_config();
 
     if (validate_input())
@@ -203,6 +326,14 @@ bool SliceEngine::run()
 
         try
         {
+            // --- Plate membership rebuild (P-24 always-rebuild, before per-plate loop) ---
+            // Runs after apply_preset_substitution() above so printable_area
+            // is the official U1 value, and before process_plate — the first
+            // membership consumer (mark_printable_instances). Ordering
+            // against bake_instance_z_into_mesh below is irrelevant: it only
+            // moves Z, and membership is decided by the XY intersection test.
+            rebuild_plate_membership();
+
             // --- Geometry defect detection (once for entire model, before per-plate loop) ---
             {
                 auto geom_issues = run_geometry_checks(m_model);
@@ -237,38 +368,11 @@ bool SliceEngine::run()
 
             decode_plate_thumbnails();
 
-            m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
-                                                 m_cfg.single_plate);
+            resolve_output_path();
 
-            // Collect plates to process (internal plate_index is 0-based)
-            std::vector<int> plates_to_process;
-            if (m_cfg.single_plate)
-            {
-                plates_to_process.push_back(m_cfg.plate_id - 1); // CLI 1-based → internal 0-based
-            }
-            else
-            {
-                for (const auto& pd : m_plate_data)
-                    plates_to_process.push_back(pd->plate_index);
-            }
+            process_requested_plates();
 
-            // Process each plate
-            for (int plate_id : plates_to_process)
-            {
-                process_plate(plate_id);
-            }
-
-            // Package output — only if no errors occurred
-            bool has_output = !m_plate_results.empty();
-            if (has_output && !m_any_error && (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
-                package_output();
-
-            // For single-plate GCODE mode, the file is written directly to m_output_path
-            // during export_gcode. Remove it if errors occurred.
-            if (m_any_error && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
-            {
-                boost::filesystem::remove(m_output_path);
-            }
+            finalize_output();
         }
         catch (const std::exception& e)
         {
@@ -320,13 +424,17 @@ bool SliceEngine::run_preset_substitution_only()
     // Load vendor presets so apply_*_official_preset can resolve.
     load_system_presets();
 
-    if (!m_cfg.skip_preset_substitution)
+    // Hard precondition (P-09), mirroring run()'s prefix.
+    if (!ensure_presets_available())
     {
-        if (!apply_preset_substitution())
-        {
-            build_statistics();
-            return false;
-        }
+        build_statistics();
+        return false;
+    }
+
+    if (!apply_preset_substitution())
+    {
+        build_statistics();
+        return false;
     }
 
     normalize_loaded_config();
@@ -363,13 +471,17 @@ bool SliceEngine::run_geometry_preprocess_only()
     collect_config_warnings();
     load_system_presets();
 
-    if (!m_cfg.skip_preset_substitution)
+    // Hard precondition (P-09), mirroring run()'s prefix.
+    if (!ensure_presets_available())
     {
-        if (!apply_preset_substitution())
-        {
-            build_statistics();
-            return false;
-        }
+        build_statistics();
+        return false;
+    }
+
+    if (!apply_preset_substitution())
+    {
+        build_statistics();
+        return false;
     }
 
     normalize_loaded_config();
@@ -438,11 +550,11 @@ bool SliceEngine::load_3mf()
     return true;
 }
 
-void SliceEngine::record_load_error(const std::string& code, const std::string& msg)
+void SliceEngine::record_stage_error(int exit_type, const std::string& code, const std::string& msg)
 {
     BOOST_LOG_TRIVIAL(error) << msg;
     m_any_error = true;
-    set_error_type(EXIT_LOAD_ERROR);
+    set_error_type(exit_type);
     m_stats.error_message = msg;
     m_stats.issues.push_back(make_error(-1, code, msg));
 }
@@ -454,8 +566,8 @@ bool SliceEngine::validate_input_file()
     boost::to_lower(extension);
     if (extension != ".3mf")
     {
-        record_load_error(
-            "FORMAT_REJECTED",
+        record_stage_error(
+            EXIT_LOAD_ERROR, "FORMAT_REJECTED",
             "Only .3mf files are supported. Please export your project from Snapmaker Orca Slicer.");
         return false;
     }
@@ -468,9 +580,9 @@ bool SliceEngine::validate_input_file()
     boost::uintmax_t file_size = boost::filesystem::file_size(m_cfg.input_file, err_code);
     if (!err_code && file_size > max_file_size)
     {
-        record_load_error("FILE_SIZE_EXCEEDED",
-                          "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb) +
-                              " MB). Please simplify the model or reduce face count and try again.");
+        record_stage_error(EXIT_LOAD_ERROR, "FILE_SIZE_EXCEEDED",
+                           "File size exceeds the limit (" + std::to_string(m_cfg.max_size_mb) +
+                               " MB). Please simplify the model or reduce face count and try again.");
         return false;
     }
     return true;
@@ -480,6 +592,9 @@ bool SliceEngine::read_3mf_model()
 {
     // Reset substitution state from any prior run
     m_config_substitutions = ConfigSubstitutionContext(ForwardCompatibilitySubstitutionRule::Enable);
+    // Reset synthesized-plate state from any prior run (mirrors the
+    // m_config_substitutions reset; see the member declaration in the header)
+    m_synthesized_single_plate = false;
     LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::AddDefaultInstances |
                             LoadStrategy::LoadAuxiliary;
 
@@ -503,16 +618,16 @@ bool SliceEngine::read_3mf_model()
         BOOST_LOG_TRIVIAL(error) << "Failed to load 3MF file: " << what;
         if (what.find("empty") != std::string::npos)
         {
-            record_load_error(
-                "LOAD_3MF_ERROR",
+            record_stage_error(
+                EXIT_LOAD_ERROR, "LOAD_3MF_ERROR",
                 "This 3MF file contains no 3D model objects. "
                 "It appears to be a gcode.3mf slicing output file, not a project file. "
                 "Please upload the original .3mf project file instead.");
         }
         else
         {
-            record_load_error("LOAD_3MF_ERROR",
-                              "Failed to load 3MF file. The file may be corrupted or in an unsupported format.");
+            record_stage_error(EXIT_LOAD_ERROR, "LOAD_3MF_ERROR",
+                               "Failed to load 3MF file. The file may be corrupted or in an unsupported format.");
         }
 
         // Model::read_from_file() may have partially populated output parameters
@@ -525,10 +640,181 @@ bool SliceEngine::read_3mf_model()
 
     if (m_model.objects.empty())
     {
-        record_load_error("MODEL_EMPTY", "3MF file contains no sliceable model objects");
+        record_stage_error(EXIT_LOAD_ERROR, "MODEL_EMPTY", "3MF file contains no sliceable model objects");
         return false;
     }
+
+    // Desktop Orca never requires plate metadata: a 3MF without <plate>
+    // records (third-party exporter output) keeps the GUI's default single
+    // plate with geometric instance assignment — equivalent to "plate 1 =
+    // every printable instance". Model that here by synthesizing the single
+    // plate and enrolling every printable instance, so all six
+    // loaded_id / obj_inst_map matching sites (mark_printable_instances,
+    // the three run_build_volume_check loops, check_spiral_lift, and the
+    // populate_plate_data_for_export rebuild) work without further branches.
+    //
+    // loaded_id = inst->id().id: globally unique, always > 0, and identical
+    // to what the gcode.3mf exporter writes as identify_id when SaveStrategy
+    // lacks UseLoadedId — every libslic3r fallback site
+    // ((loaded_id > 0) ? loaded_id : id().id) therefore computes the same
+    // value it did before. Instances with printable="0" stay unenrolled:
+    // desktop excludes them from slicing.
+    if (m_plate_data.empty())
+    {
+        PlateData* pd = new PlateData(); // owned by m_plate_data / ~SliceEngine
+        pd->plate_index                = 0;
+        int enrolled = 0, excluded = 0, key = 0;
+        for (const ModelObject* obj : m_model.objects)
+        {
+            for (size_t j = 0; j < obj->instances.size(); ++j)
+            {
+                ModelInstance* inst = obj->instances[j];
+                if (!inst->printable)
+                {
+                    ++excluded;
+                    continue;
+                }
+                // map key only needs uniqueness (engine consumers read
+                // value.second exclusively); a running counter also stays
+                // collision-free should a BBS-flagged file without plate
+                // records ever carry multi-instance objects.
+                inst->loaded_id = inst->id().id;
+                pd->obj_inst_map.emplace(++key,
+                                         std::make_pair(static_cast<int>(j),
+                                                        static_cast<int>(inst->id().id)));
+                ++enrolled;
+            }
+        }
+        m_plate_data.push_back(pd);
+        m_synthesized_single_plate = true;
+        BOOST_LOG_TRIVIAL(info) << "3MF has no plate metadata: synthesized single plate ("
+                                << enrolled << " printable instance(s) enrolled, " << excluded
+                                << " excluded as printable=0)";
+        m_stats.issues.push_back(make_tip(-1, "PLATE_DATA_SYNTHESIZED",
+                                           "The 3MF file contains no plate metadata; slicing it as a single plate "
+                                           "containing all printable objects (desktop Orca behaviour)."));
+    }
+
+    m_stats.mixed_filament_used = detect_mixed_filament_usage();
+    sanitize_layer_config_ranges();
     return true;
+}
+
+// Sanitize hand-crafted / corrupt height-range data before it reaches
+// libslic3r. The 3MF importer validates nothing inside
+// layer_config_ranges.xml (_extract_layer_config_ranges_from_archive), and a
+// range lacking "layer_height" null-derefs inside
+// layer_height_profile_from_ranges (Slicing.cpp "option(...)->getFloat()"),
+// killing the whole engine with SIGSEGV — verified live with a crafted
+// fixture (rc 139, crash in Print::validate). Such ranges are fixed here by
+// falling back to the global default layer height. Out-of-range filament ids
+// are NOT rewritten: libslic3r already clamps them to extruder 1 at extruder
+// collection (Print.cpp), and re-clamping here would only fork that logic —
+// but the silent remap is surfaced as a warning so the output change stays
+// attributable.
+void SliceEngine::sanitize_layer_config_ranges()
+{
+    const auto* colours = m_config.option<ConfigOptionStrings>("filament_colour");
+    const size_t num_physical = colours ? colours->values.size() : 0;
+    // P-29 (external MR !3 review F1, 2026-10-16): m_config at this point
+    // holds only keys the 3MF block actually wrote — Model::read_from_file
+    // fills it directly and the defaults backfill in normalize_loaded_config
+    // runs later, back in run(). A hand-crafted block can omit the global
+    // layer_height entirely, and the const opt_float dereferences option()
+    // without a null check (fork Config.hpp) — the sanitizer then died with
+    // SIGSEGV on the very input class it exists to guard. Fall back to the
+    // same FullPrintConfig default the backfill installs moments later.
+    const auto* global_lh = m_config.option<ConfigOptionFloat>("layer_height");
+    const double default_layer_height =
+        global_lh ? global_lh->value
+                  : FullPrintConfig::defaults().option<ConfigOptionFloat>("layer_height")->value;
+
+    for (ModelObject* obj : m_model.objects)
+    {
+        if (obj->layer_config_ranges.empty())
+            continue;
+
+        std::vector<std::string> problems;
+        for (auto& [z_range, cfg] : obj->layer_config_ranges)
+        {
+            std::ostringstream where;
+            where << "[" << z_range.first << "-" << z_range.second << "]";
+
+            if (!cfg.has("layer_height"))
+            {
+                cfg.set("layer_height", default_layer_height);
+                problems.push_back(where.str() + " missing layer_height, set to default " +
+                                   std::to_string(default_layer_height));
+            }
+            for (const char* key : {"wall_filament", "sparse_infill_filament", "solid_infill_filament"})
+                if (cfg.has(key))
+                {
+                    const int id = cfg.opt_int(key);
+                    if (id < 0 || id > static_cast<int>(num_physical))
+                        problems.push_back(where.str() + " " + key + "=" + std::to_string(id) +
+                                           " is outside the physical filament range 1.." +
+                                           std::to_string(num_physical) + "; it prints with extruder 1");
+                }
+        }
+
+        if (!problems.empty())
+        {
+            std::string joined;
+            for (size_t i = 0; i < problems.size(); ++i)
+            {
+                if (i > 0)
+                    joined += "; ";
+                joined += problems[i];
+            }
+            m_stats.issues.push_back(make_warning(
+                -1, "CONFIG_INVALID_LAYER_RANGE",
+                "Object \"" + obj->name + "\" height-range settings carry invalid values: " + joined));
+        }
+    }
+}
+
+// Does the project USE a mixed filament (as opposed to merely defining one)?
+// MixedFilamentManager numbers the virtual mixed slots from num_physical+1,
+// so any reference above the PHYSICAL filament count (filament_colour vector
+// length) is a mixed-slot reference. Two reference paths are checked:
+//   1. object / part level "extruder"
+//   2. painted facet states (mmu_segmentation used_states, 1-based extruder)
+// Height-range colour overrides (layer_config_ranges) are deliberately NOT
+// checked: the GUI supports physical filaments only there, so a virtual id
+// in that block is invalid hand-crafted data, not a real mixed-filament use.
+// The 3MF importer already clamps dangling references at load
+// (max_supported_filament_id_from_project_config), so any id that survives
+// loading is backed by an enabled mixed_filament_definitions row — no
+// re-validation against the definitions string is needed here.
+bool SliceEngine::detect_mixed_filament_usage() const
+{
+    const auto* colours = m_config.option<ConfigOptionStrings>("filament_colour");
+    const size_t num_physical = colours ? colours->values.size() : 0;
+    if (num_physical == 0)
+        return false;
+
+    auto extruder_exceeds = [num_physical](const ModelConfig& cfg) {
+        return cfg.has("extruder") && cfg.opt_int("extruder") > static_cast<int>(num_physical);
+    };
+
+    for (const ModelObject* obj : m_model.objects)
+    {
+        if (extruder_exceeds(obj->config))
+            return true;
+        for (const ModelVolume* vol : obj->volumes)
+        {
+            if (extruder_exceeds(vol->config))
+                return true;
+            // Painted facets: used_states[s] marks 1-based extruder state s in
+            // use on this volume's mesh (persisted in the 3MF).
+            const auto& used_states = vol->mmu_segmentation_facets.get_data().used_states;
+            for (size_t s = static_cast<size_t>(EnforcerBlockerType::Extruder1);
+                 s < used_states.size() && s <= static_cast<size_t>(EnforcerBlockerType::ExtruderMax); ++s)
+                if (used_states[s] && s > num_physical)
+                    return true;
+        }
+    }
+    return false;
 }
 
 // ============================================================================
@@ -539,11 +825,7 @@ bool SliceEngine::validate_printer_model()
 {
     auto fail_model = [&](const std::string& code, const std::string& msg)
     {
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, code, msg));
+        record_stage_error(EXIT_PREPROCESS_ERROR, code, msg);
         return false;
     };
 
@@ -661,6 +943,16 @@ void SliceEngine::load_system_presets()
     }
 }
 
+bool SliceEngine::ensure_presets_available()
+{
+    if (m_presets_available && m_preset_bundle)
+        return true;
+
+    record_stage_error(EXIT_PREPROCESS_ERROR, "PRESETS_MISSING",
+                       "System presets not available; cannot slice.");
+    return false;
+}
+
 // Unified official-preset predicate shared by the printer, filament, and
 // process substitution paths. See declaration in SliceEngine.hpp.
 
@@ -699,28 +991,27 @@ const Preset* SliceEngine::find_official_by_name(const PresetCollection& collect
 
 bool SliceEngine::apply_preset_substitution()
 {
-    // Bundle precondition for all three apply_*_official_preset stages.
-    // Without system presets we cannot look up official U1 / filament /
-    // process configurations, so the whole substitution block is aborted.
-    if (!m_presets_available || !m_preset_bundle)
-    {
-        std::string msg = "System presets not available; cannot apply official presets.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRESETS_MISSING", msg));
-        return false;
-    }
+    // Bundle precondition is enforced by the caller: every entry point (run,
+    // run_preset_substitution_only, run_geometry_preprocess_only) aborts via
+    // ensure_presets_available() before reaching here, so the bundle is
+    // guaranteed present (precedent P-09 — init_print would otherwise
+    // dereference a null bundle and crash with SIGSEGV).
 
     // Strip user-supplied content (G-code, notes, post_process, external
     // file refs) before any apply_*_official_preset stage. The three apply
-    // stages then restore official values for the keys each owns.
-    // Runs after the bundle check so the PRESETS_MISSING error path does
-    // not also emit a misleading USER_CONTENT_CLEARED tip — if we cannot
-    // apply official presets, the user content stays untouched and the
-    // engine fails cleanly.
+    // stages then restore official values for the keys each owns. When the
+    // PRESETS_MISSING error path fires (in ensure_presets_available),
+    // strip_user_content is never reached, so no misleading
+    // USER_CONTENT_CLEARED tip is emitted — the user content stays
+    // untouched and the engine fails cleanly.
     strip_user_content();
+
+    // Size every per-filament vector to the project's slot count before the
+    // substitution stages run: a 3MF authored on a different slot count (or a
+    // hand-edited one) can carry truncated vectors, and the 1.4b per-slot
+    // loop would silently skip the overflow slots (C3). Idempotent with the
+    // re-normalization after the printer overwrite below.
+    normalize_filament_vectors_to_slot_count(m_config);
 
     // Apply the official Snapmaker U1 printer preset — wholesale-replaces
     // printer config (printable_area, machine G-code, nozzle_diameter,
@@ -1023,13 +1314,9 @@ bool SliceEngine::apply_printer_official_preset()
     const Preset* official = SliceEngine::find_official_by_name(m_preset_bundle->printers, official_printer_name);
     if (!official)
     {
-        std::string msg = "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
-                          preset_name + "\").";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_LOAD_ERROR", msg));
+        record_stage_error(EXIT_PREPROCESS_ERROR, "PRINTER_PRESET_LOAD_ERROR",
+                           "Official printer preset not found for nozzle " + fmt_nozzle(nozzle) + " mm (looked for \"" +
+                               preset_name + "\").");
         return false;
     }
 
@@ -1042,9 +1329,41 @@ bool SliceEngine::apply_printer_official_preset()
     if (const auto* pid = m_config.option<ConfigOptionString>("printer_settings_id", false))
         original_printer = pid->value;
 
+    // nozzle_volume_type records which physical nozzle (standard / high_flow)
+    // is mounted on each extruder. The official presets are keyed by nozzle
+    // diameter only and never declare this key, so Preset::normalize
+    // backfills "standard" when the bundle loads them — the wholesale
+    // overwrite below would silently reset a user's high-flow nozzles to
+    // standard in the header echo and the packaged project config
+    // (2026-09-18 cloud review, defect 2). Snapshot the user's hardware
+    // state and graft it back after the overwrite; the official config
+    // still owns the slot count.
+    std::vector<int> user_nozzle_volume_type;
+    if (const auto* nvt = m_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type", false))
+        user_nozzle_volume_type = nvt->values;
+
     // Wholesale overwrite: every key in the official config replaces the
     // user's value (machine G-code keys included).
     overwrite_all_keys_from(m_config, official->config);
+
+    // The official machine preset carries filament-length vectors at the
+    // machine's own slot count (e.g. U1's size-4 retraction/wipe/z_hop
+    // vectors); the wholesale overwrite above installs them verbatim, so
+    // reconcile the per-filament lengths back to the project's slot count
+    // before 1.4b runs (C3). Never touches nozzle_volume_type, so the graft
+    // below still sees the official slot count it expects.
+    normalize_filament_vectors_to_slot_count(m_config);
+
+    // Graft the user's nozzle hardware state back onto the official vector
+    // (official sets the slot count; user values fill the leading slots).
+    if (!user_nozzle_volume_type.empty())
+    {
+        if (auto* nvt = m_config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type", false))
+        {
+            const size_t count = std::min(nvt->values.size(), user_nozzle_volume_type.size());
+            std::copy_n(user_nozzle_volume_type.begin(), count, nvt->values.begin());
+        }
+    }
 
     if (!verify_printer_geometry())
         return false;
@@ -1077,13 +1396,9 @@ bool SliceEngine::verify_printer_geometry()
 
     auto fail = [&](const std::string& detail)
     {
-        std::string msg = "Printer configuration incomplete: " + detail +
-                          ". The official U1 printer preset was not applied correctly.";
-        BOOST_LOG_TRIVIAL(error) << msg;
-        m_any_error = true;
-        set_error_type(EXIT_PREPROCESS_ERROR);
-        m_stats.error_message = msg;
-        m_stats.issues.push_back(make_error(-1, "PRINTER_PRESET_NOT_APPLIED", msg));
+        record_stage_error(EXIT_PREPROCESS_ERROR, "PRINTER_PRESET_NOT_APPLIED",
+                           "Printer configuration incomplete: " + detail +
+                               ". The official U1 printer preset was not applied correctly.");
     };
 
     auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
@@ -1365,6 +1680,21 @@ void SliceEngine::emit_filament_warnings(const FilamentGrouping& rolled_back, co
 // Stage 1.4c: Process preset substitution (official, preserves user overrides)
 // ============================================================================
 
+// Project-owned keys that also live in Preset::print_options: official
+// process preset JSONs do not declare them (verified 2026-10: 111/112 files;
+// fdm_process_idex.json deliberately declares wipe_tower_rotation_angle=90),
+// so Preset::normalize (Preset.cpp:444-452) backfills the FullPrintConfig
+// default into official->config. Protect each key ONLY when the official
+// value IS that backfill artifact; a declared non-default value (idex=90)
+// keeps the official preset as owner. Mirrors s_project_options ∩
+// Preset::print_options() (4 keys, PresetBundle.cpp:201 / Preset.cpp:926).
+static const std::set<std::string> kProjectOwnedProcessKeys = {
+    "wipe_tower_rotation_angle",       // coFloat, default 0     PrintConfig.cpp:6214
+    "dithering_local_z_mode",          // coBool,  default false PrintConfig.cpp:4486
+    "dithering_local_z_whole_objects", // coBool,  default false PrintConfig.cpp:4493
+    "dithering_local_z_infill",        // coBool,  default false PrintConfig.cpp:4501
+};
+
 void SliceEngine::apply_process_official_preset()
 {
     // Precondition: bundle availability is verified by run() before this
@@ -1378,7 +1708,6 @@ void SliceEngine::apply_process_official_preset()
     {
         BOOST_LOG_TRIVIAL(warning)
             << "default_print_profile not set; cannot determine process preset.";
-        apply_auto_brim_fallback();
         return;
     }
 
@@ -1425,6 +1754,41 @@ void SliceEngine::apply_process_official_preset()
         // the official preset owns the key.
         user_overrides.erase("post_process");
 
+        // Project-owned keys (kProjectOwnedProcessKeys) survive the wholesale
+        // overwrite only when the official value is the normalize backfill
+        // artifact (== code default). Gate per key: a preset that deliberately
+        // declares a non-default value (fdm_process_idex's rotation 90) keeps
+        // official ownership. Without this, a 3MF's wipe_tower_rotation_angle
+        // (e.g. HueForge's 270°) is reset to 0 and the tower rotates out of
+        // the bed (P-30). Mirrors the desktop project_config channel
+        // (PresetBundle.cpp:3138), which never lets process presets own
+        // project-level state.
+        {
+            const auto& fp_defaults = FullPrintConfig::defaults();
+            std::vector<std::string> preserved;
+            for (const std::string& key : kProjectOwnedProcessKeys)
+            {
+                // Single-arg option() is the const-safe lookup (no creation);
+                // the two-arg (key, false) overload is non-const.
+                const auto* off_opt = official->config.option(key);
+                const auto* def_opt = fp_defaults.option(key);
+                if (off_opt && def_opt && off_opt->serialize() == def_opt->serialize())
+                    if (user_overrides.insert(key).second)
+                        preserved.push_back(key);
+            }
+            if (!preserved.empty())
+            {
+                std::string joined;
+                for (const std::string& key : preserved)
+                {
+                    if (!joined.empty()) joined += ", ";
+                    joined += key;
+                }
+                BOOST_LOG_TRIVIAL(info)
+                    << "Project-owned keys preserved through process substitution: " << joined;
+            }
+        }
+
         // Apply every key from the official process preset, except keys the
         // user explicitly overrode and keys that don't exist in the current
         // config.
@@ -1457,8 +1821,6 @@ void SliceEngine::apply_process_official_preset()
             "Process preset \"" + preset_name + "\" does not resolve to any official system preset; "
             "process settings were kept from the project config"));
     }
-
-    apply_auto_brim_fallback();
 }
 
 const Preset* SliceEngine::find_official_process_preset(const std::string& preset_name) const
@@ -1552,34 +1914,25 @@ std::set<std::string> SliceEngine::parse_process_user_overrides()
     return user_overrides;
 }
 
-void SliceEngine::apply_auto_brim_fallback()
-{
-    // When brim_type is auto_brim, set brim_width to 0 so that the
-    // fallback path (when the algorithm decides no brim is needed)
-    // doesn't generate unwanted brim. The algorithm still sets its
-    // own computed width when it determines brim IS needed.
-    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
-    if (bt && bt->value == btAutoBrim)
-    {
-        m_config.set_key_value("brim_width", new ConfigOptionFloat(0));
-        BOOST_LOG_TRIVIAL(info)
-            << "brim_type=auto_brim: brim_width set to 0 to match desktop behaviour";
-    }
-}
-
 // ============================================================================
 // Stage 2: Validate input (plate availability)
 // ============================================================================
 
 bool SliceEngine::validate_input()
 {
-    // Check plate availability
+    // Invariant: read_3mf_model() guarantees m_plate_data is non-empty —
+    // either the 3MF carried <plate> records or a single plate was
+    // synthesized (desktop parity for metadata-less files). An empty list
+    // here is an internal regression; fail loudly rather than silently
+    // looping over zero plates, which would exit 0 with no output.
     if (m_plate_data.empty())
     {
-        BOOST_LOG_TRIVIAL(warning) << "No plate data in 3MF, treating as single plate";
-        PlateData* pd = new PlateData();
-        pd->plate_index = 0;
-        m_plate_data.push_back(pd);
+        BOOST_LOG_TRIVIAL(error) << "Internal invariant violated: no plate data after model load";
+        m_any_error            = true;
+        set_error_type(EXIT_PREPROCESS_ERROR);
+        m_stats.error_message = "No plate data available after model load (internal error)";
+        m_stats.issues.push_back(make_error(-1, "PLATE_DATA_MISSING", m_stats.error_message));
+        return false;
     }
 
     // Validate requested plate exists
@@ -1940,9 +2293,12 @@ static void decode_one_plate_thumbnail(PlateData& pd)
         return;
     }
 
-    // Guard 3: file size in [1, MAX_PNG_SIZE].
+    // Guard 3: file size in [PNG_SIGNATURE_LEN, MAX_PNG_SIZE]. Files shorter
+    // than the 8-byte signature must be rejected HERE: Guard 5 reads
+    // file_bytes[0..7], so a 1..7 byte file that passes this guard is read
+    // out of bounds (heap OOB read).
     const boost::uintmax_t file_sz = boost::filesystem::file_size(resolved, ec);
-    if (ec || file_sz == 0 || file_sz > MAX_PNG_SIZE) {
+    if (ec || file_sz < static_cast<boost::uintmax_t>(PNG_SIGNATURE_LEN) || file_sz > MAX_PNG_SIZE) {
         BOOST_LOG_TRIVIAL(info) << "decode_plate_thumbnails: skip plate " << pd.plate_index
                                 << ", bad size " << file_sz;
         return;
@@ -2016,6 +2372,23 @@ static void decode_one_plate_thumbnail(PlateData& pd)
     }
 }
 
+// Stage 3 tail: resolve the export destination before the per-plate loop.
+// generate_output_path (Utils) appends a timestamp suffix when the requested
+// path is already occupied (multi-process collision protection). The artifact
+// then lands elsewhere while rc stays 0 — surface the relocation so callers
+// reading the requested path know to check stats().output_path() (JSON:
+// print_info_total.output_file) instead of serving the stale leftover. The
+// relocation itself is intentional and unchanged.
+void SliceEngine::resolve_output_path()
+{
+    bool output_relocated = false;
+    m_output_path = generate_output_path(m_cfg.input_file, m_cfg.output_base, m_cfg.plate_id, m_cfg.format,
+                                         m_cfg.single_plate, &output_relocated);
+    if (output_relocated)
+        m_stats.issues.push_back(make_warning(-1, "OUTPUT_PATH_RELOCATED",
+                                              "Output path already exists; artifact written to \"" + m_output_path + "\""));
+}
+
 // ============================================================================
 // Stage 4: Process a single plate
 // ============================================================================
@@ -2029,7 +2402,18 @@ void SliceEngine::process_plate(int plate_id)
     // --- Identify this plate's instances and mark printability ---
     std::set<int> identify_ids = collect_plate_instance_ids(plate_id);
     if (!mark_printable_instances(identify_ids))
+    {
+        // Benign skip (desktop parity): an empty plate among good ones is not
+        // a failure. Warning-level on purpose — patch_orphan_plate_issues
+        // only fabricates failed placeholder plates for error-level issues,
+        // so this stays visible in the JSON issue list (with its plate_id)
+        // without flipping the multi-plate task's overall success. The
+        // zero-product rc guard in run() covers the single-plate / all-empty
+        // cases where this skip leaves the task with no output at all.
+        m_stats.issues.push_back(make_warning(plate_id, "EMPTY_PLATE",
+            "Plate " + std::to_string(plate_id + 1) + " contains no printable objects and was skipped"));
         return;
+    }
 
     // Plate origin = this plate's grid-layout offset. Shared by two downstream
     // steps: run_build_volume_check (translates instances into plate-local
@@ -2135,6 +2519,25 @@ bool SliceEngine::mark_printable_instances(const std::set<int>& plate_ids)
 
     if (count == 0)
     {
+        // A synthesized single plate with zero members means the whole file
+        // has no printable instance (e.g. every item is printable="0") —
+        // desktop refuses to slice such a file upfront, so hard-fail here
+        // instead of returning a silent exit-0-with-no-output.
+        //
+        // Real (metadata-backed) empty plates keep the historical warning +
+        // skip: one empty plate must not sink the other plates (precedent
+        // P-19, option A on feature-2.2.0).
+        if (m_synthesized_single_plate)
+        {
+            BOOST_LOG_TRIVIAL(error) << "Synthesized single plate has no printable instances";
+            m_any_error            = true;
+            set_error_type(EXIT_PREPROCESS_ERROR);
+            m_stats.issues.push_back(
+                make_error(-1, "PLATELESS_NO_PRINTABLE_INSTANCES",
+                           "The 3MF file has no plate metadata and none of its objects is printable; "
+                           "there is nothing to slice."));
+            return false;
+        }
         BOOST_LOG_TRIVIAL(warning) << "Skipping empty plate";
         return false;
     }
@@ -2163,6 +2566,180 @@ Slic3r::Vec3d SliceEngine::setup_print_origin(int plate_id)
     orca::PlateOrigin o = orca::compute_plate_origin(plate_id, total_plates, plate_width, plate_depth);
 
     return Vec3d(o.x, o.y, 0.0);
+}
+
+void SliceEngine::rebuild_plate_membership()
+{
+    // P-22 guard: the synthesized single plate IS the membership ("plate 1 =
+    // every printable instance", position-independent — see read_3mf_model).
+    // A geometric rebuild would drop off-bed instances from its map, silently
+    // skipping objects the desktop slices, and an all-off-bed file would
+    // wrongly hit the PLATELESS_NO_PRINTABLE_INSTANCES hard-fail.
+    if (m_synthesized_single_plate)
+        return;
+
+    // Degradation guard, same condition as setup_print_origin above: no
+    // printable_area -> no grid geometry -> leave membership untouched. The
+    // plates stay empty and the P-19 EMPTY_PLATE warning path applies.
+    // (In practice unreachable: apply_printer_official_preset hard-fails
+    // earlier when it cannot apply a printable_area.)
+    const auto* pa = m_config.option<ConfigOptionPoints>("printable_area");
+    if (!pa || pa->values.empty())
+        return;
+    BoundingBoxf bed_bbox;
+    for (const Vec2d& pt : pa->values)
+        bed_bbox.merge(pt);
+    const double plate_width  = bed_bbox.size().x();
+    const double plate_depth  = bed_bbox.size().y();
+    const int    total_plates = static_cast<int>(m_plate_data.size());
+    // Desktop parity: PartPlate::get_build_volume inflates the plate box by
+    // BuildVolume::SceneEpsilon before intersect_instance() tests it.
+    const double eps = Slic3r::BuildVolume::SceneEpsilon;
+
+    // P-24 always-rebuild: the desktop GUI never restores plate membership
+    // from the file — load_from_3mf_structure keeps the records-commented-out
+    // ("we will rebuild later") and ends with reload_all_objects(), a full
+    // geometric reassignment for every instance. Production file
+    // 2d986d79661ffb62.3mf (third-party exporter, metadata shifted one grid
+    // cell from geometry) proved trusting non-empty maps diverges from the
+    // desktop, which slices all 8 plates while P-23 Fix A failed 3 of them.
+    //
+    // Snapshot BEFORE clearing so the tip can report an actual reassignment
+    // (desktop-authored files keep geometry == metadata and stay silent).
+    // Instance identity is (object index, instance index), NOT the identify_id
+    // value: rebuilt loaded_ids use id().id, which never equals the file's
+    // identify_ids, so a value-wise diff would always report a change.
+    std::map<int, std::pair<int, int>> loaded_to_inst;  // loaded_id -> (obj idx, inst idx)
+    for (size_t o = 0; o < m_model.objects.size(); ++o)
+        for (size_t j = 0; j < m_model.objects[o]->instances.size(); ++j)
+        {
+            const int lid = static_cast<int>(m_model.objects[o]->instances[j]->loaded_id);
+            if (lid > 0)
+                loaded_to_inst.emplace(lid, std::make_pair(static_cast<int>(o),
+                                                           static_cast<int>(j)));
+        }
+    // per plate_index -> printable instance identities resolved from the file's maps;
+    // stale records (identify_id matching no instance) are ignored.
+    std::map<int, std::set<std::pair<int, int>>> before;
+    for (PlateData* pd : m_plate_data)
+    {
+        auto& ids = before[pd->plate_index];
+        for (const auto& [key, inst_info] : pd->obj_inst_map)
+        {
+            const auto it = loaded_to_inst.find(inst_info.second);
+            if (it != loaded_to_inst.end() &&
+                m_model.objects[it->second.first]->instances[it->second.second]->printable)
+                ids.insert(it->second);
+        }
+        pd->obj_inst_map.clear();
+    }
+
+    // Desktop loop (GUI PartPlateList::reload_all_objects): per printable
+    // instance, convex-hull bounding box (world coords), first intersecting
+    // plate in plate order wins; an instance hitting no plate lands on the
+    // desktop's unprintable plate (here: dropped, with a warning).
+    // A degenerate bbox (e.g. modifier-only object with empty convex hull)
+    // compares NaN/false everywhere below and is left unenrolled — benign,
+    // no UB (NaN FP comparisons are defined false).
+    std::vector<orca::PlateBox2D> boxes;  // parallel to m_plate_data
+    for (const PlateData* pd : m_plate_data)
+        boxes.push_back(orca::compute_plate_box(pd->plate_index, total_plates,
+                                                plate_width, plate_depth, eps));
+    std::map<int, std::set<std::pair<int, int>>> after;   // plate_index -> identities
+    std::map<std::pair<int, int>, int>          after_plate;  // identity -> plate_index
+    std::vector<std::pair<std::pair<int, int>, std::string>> dropped;  // identity + object name
+    int excluded = 0, key = 0;
+    for (size_t o = 0; o < m_model.objects.size(); ++o)
+    {
+        ModelObject* obj = m_model.objects[o];
+        for (size_t j = 0; j < obj->instances.size(); ++j)
+        {
+            ModelInstance* inst = obj->instances[j];
+            if (!inst->printable)
+            {
+                // Desktop puts printable="0" instances on the unprintable
+                // plate; they never join a real plate.
+                ++excluded;
+                continue;
+            }
+            const BoundingBoxf3 inst_bbox = obj->instance_convex_hull_bounding_box(j);
+            bool assigned = false;
+            for (size_t c = 0; c < m_plate_data.size(); ++c)
+            {
+                const orca::PlateBox2D& b = boxes[c];
+                if (inst_bbox.max.x() >= b.xmin && inst_bbox.min.x() <= b.xmax &&
+                    inst_bbox.max.y() >= b.ymin && inst_bbox.min.y() <= b.ymax)
+                {
+                    // P-22 enrollment pattern: key only needs uniqueness
+                    // (engine consumers read value.second exclusively) and a
+                    // running counter is collision-free on a cleared map.
+                    // static_cast size_t->int narrowing is bounded by the
+                    // instance count and id().id is globally unique, > 0.
+                    inst->loaded_id = inst->id().id;
+                    m_plate_data[c]->obj_inst_map.emplace(
+                        ++key, std::make_pair(static_cast<int>(j),
+                                              static_cast<int>(inst->id().id)));
+                    const std::pair<int, int> identity(static_cast<int>(o),
+                                                       static_cast<int>(j));
+                    after[m_plate_data[c]->plate_index].insert(identity);
+                    after_plate[identity] = m_plate_data[c]->plate_index;
+                    assigned = true;
+                    break;
+                }
+            }
+            if (!assigned)
+                dropped.emplace_back(std::make_pair(static_cast<int>(o),
+                                                     static_cast<int>(j)), obj->name);
+        }
+    }
+
+    // Off-all-plates printable instances: warning, non-blocking. Desktop
+    // parity: GLCanvas3D gates the slice button on contained_min_one &&
+    // !partlyOut — a fully-outside instance goes to the unprintable plate and
+    // does NOT block slicing the remaining plates (only partly-outside does,
+    // handled by run_build_volume_check's blocking errors).
+    for (const auto& [identity, name] : dropped)
+        m_stats.issues.push_back(make_warning(
+            -1, "INSTANCE_NOT_ON_ANY_PLATE",
+            "Object \"" + name + "\" (instance " +
+                std::to_string(identity.second) +
+                ") does not intersect any build plate and will not be printed",
+            name, "Move the object onto a build plate before slicing."));
+
+    // Reassigned = any printable instance whose plate changed (moved, gained,
+    // or lost). Identical membership (every desktop-authored file) stays
+    // silent; Case-style regression locks rely on this quiet path.
+    int moved = 0;
+    {
+        std::set<std::pair<int, int>> all;
+        for (const auto& [pi, ids] : before) all.insert(ids.begin(), ids.end());
+        for (const auto& [pi, ids] : after) all.insert(ids.begin(), ids.end());
+        for (const auto& identity : all)
+        {
+            const int pb = [&]() {
+                for (const auto& [pi, ids] : before)
+                    if (ids.count(identity)) return pi;
+                return -1;
+            }();
+            const int pa2 = after_plate.count(identity) ? after_plate[identity] : -1;
+            if (pb != pa2)
+                ++moved;
+        }
+    }
+    if (moved == 0 && dropped.empty())
+        return;
+
+    BOOST_LOG_TRIVIAL(info) << "Rebuilt plate membership geometrically: " << moved
+                            << " instance(s) reassigned, " << dropped.size()
+                            << " dropped (not on any plate), " << excluded
+                            << " excluded as unprintable";
+    if (moved > 0)
+        m_stats.issues.push_back(make_tip(-1, "PLATE_MEMBERSHIP_REBUILT",
+            "The 3MF file's plate metadata disagrees with plate geometry; "
+            "instance membership was reassigned geometrically (desktop Orca "
+            "behaviour): " + std::to_string(moved) + " reassigned, " +
+            std::to_string(dropped.size()) + " dropped, " +
+            std::to_string(excluded) + " excluded as unprintable."));
 }
 
 bool SliceEngine::run_build_volume_check(int plate_id, const std::set<int>& identify_ids, const Vec3d& origin)
@@ -2445,6 +3022,23 @@ DynamicPrintConfig SliceEngine::prepare_merged_config_for_plate(int plate_id)
     // normalize_loaded_config() before the per-plate loop.
     DynamicPrintConfig merged_config = m_config;
 
+    // Slicing-only auto-brim zero (desktop 2.4.0 motion parity). In auto mode
+    // the fork's libslic3r treats brim_width as a fallback that draws a
+    // user-width brim whenever the auto algorithm decides "no brim" — desktop
+    // Orca 2.4.0 prints nothing in that case (verified on cube / 0.6mm-nozzle
+    // fixtures, 2026-09-18). Zeroing only this slicing copy keeps motion
+    // identical to the previous apply_auto_brim_fallback() behaviour while
+    // leaving m_config's brim_width intact for the write-back paths (gcode
+    // header echo restored by restore_brim_width_echo, output 3mf
+    // project_settings.config written from m_config). Must run BEFORE the
+    // per-plate overrides below so a plate-level brim_width override still
+    // reaches the print, matching the old Stage-1.4 ordering.
+    if (auto* bt = merged_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+        bt && bt->value == btAutoBrim)
+    {
+        merged_config.set_key_value("brim_width", new ConfigOptionFloat(0));
+    }
+
     // Apply per-plate config overrides (curr_bed_type, print_sequence, spiral_mode, etc.)
     for (const auto& pd : m_plate_data)
     {
@@ -2651,6 +3245,38 @@ void SliceEngine::check_filament_bed_rules(int plate_id, Print& print)
     }
 }
 
+// Desktop parity helper (Plater.cpp collect_filament_slots_from_model_config,
+// :461-484 in the current checkout): the filament slots referenced by ONE
+// config layer (object or volume) are the primary extruder plus the six
+// per-feature filament keys. Values outside [1, num_filaments] (including
+// the "0 = inherit default" sentinel) are ignored, matching the desktop
+// collector exactly.
+static void collect_filament_slots_from_model_config(const ModelConfigObject& config,
+                                                     int num_filaments,
+                                                     std::set<int>& used_slots_0_based)
+{
+    static const std::vector<const char*> feature_keys = {
+        "support_filament",
+        "support_interface_filament",
+        "wall_filament",
+        "sparse_infill_filament",
+        "solid_infill_filament",
+        "wipe_tower_filament",
+    };
+    if (config.has("extruder")) {
+        const int extruder_id = config.extruder();
+        if (extruder_id >= 1 && extruder_id <= num_filaments)
+            used_slots_0_based.insert(extruder_id - 1);
+    }
+    for (const char* key : feature_keys) {
+        if (config.has(key)) {
+            const int val = config.opt_int(key);
+            if (val >= 1 && val <= num_filaments)
+                used_slots_0_based.insert(val - 1);
+        }
+    }
+}
+
 bool SliceEngine::check_filament_temp_mixing(int plate_id)
 {
     // Collect filament slots actually used by this plate, then check for
@@ -2659,6 +3285,14 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     // but keeps the binary high/low classification (no tri-state compatible
     // mode). Reading from m_config avoids the trimmed print.config() which
     // has already lost multi-extruder information via prepare_merged_config.
+    //
+    // Collection sources, in desktop order (Plater.cpp:22250-22315):
+    //   (i) plate config — intentionally skipped: the BBS 3MF plate-config
+    //       whitelist (bbs_3mf.cpp plate-metadata parser) accepts no
+    //       filament keys, so this source is inexpressible in cloud input;
+    //  (ii) object config, (iii) every volume's config — modifiers included
+    //       — plus per-volume extruders: collected in (a) below;
+    //  (iv) global always/conditional keys: (b)/(c) below.
     int num_filaments = 0;
     auto* ftype_opt = m_config.option<ConfigOptionStrings>("filament_type");
     if (ftype_opt)
@@ -2668,10 +3302,14 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
 
     std::set<int> used_slots;
 
-    // (a) Collect extruders from printable model instances on this plate.
-    // Also track whether any object relies on the global default extruder —
-    // when it does, per-feature defaults (wall / infill filaments) affect
-    // the slicing output and must be collected.
+    // (a) Collect filament slots from the objects printed on this plate
+    // (desktop sources ② and ③): object-level config first, then EVERY
+    // volume's config — no is_model_part() filter, so modifier overrides
+    // are seen — plus per-volume extruders (mmu segmentation, extruder_id).
+    // The old implementation only read model-part get_extruders(), which
+    // never looks at feature keys and skips modifiers entirely, so object-
+    // level / part-level feature filaments and modifier extruders were
+    // invisible to the mixing check (review 2026-09-16, item C1).
     //
     // NOTE: Per-plate filtering relies on mark_printable_instances(plate_ids)
     // in process_plate having marked off-plate instances printable=false.
@@ -2680,25 +3318,25 @@ bool SliceEngine::check_filament_temp_mixing(int plate_id)
     bool uses_default_extruder = false;
     for (ModelObject* obj : m_model.objects)
     {
+        bool on_plate = false;
         for (ModelInstance* inst : obj->instances)
+            if (inst->is_printable()) { on_plate = true; break; }
+        if (!on_plate)
+            continue;
+
+        collect_filament_slots_from_model_config(obj->config, num_filaments, used_slots);
+        // An object without an explicit "extruder" key in its config
+        // (or with extruder==0) inherits the global default.  This
+        // matches the desktop Plater::check_filament_temp_mixing logic.
+        if (!obj->config.has("extruder") || obj->config.extruder() == 0)
+            uses_default_extruder = true;
+
+        for (ModelVolume* vol : obj->volumes)
         {
-            if (!inst->is_printable())
-                continue;
-            for (ModelVolume* vol : obj->volumes)
-            {
-                if (!vol->is_model_part())
-                    continue;
-                for (int eid : vol->get_extruders())
-                {
-                    if (eid >= 1 && eid <= num_filaments)
-                        used_slots.insert(eid - 1);
-                }
-            }
-            // An object without an explicit "extruder" key in its config
-            // (or with extruder==0) inherits the global default.  This
-            // matches the desktop Plater::check_filament_temp_mixing logic.
-            if (!obj->config.has("extruder") || obj->config.extruder() == 0)
-                uses_default_extruder = true;
+            collect_filament_slots_from_model_config(vol->config, num_filaments, used_slots);
+            for (int eid : vol->get_extruders())
+                if (eid >= 1 && eid <= num_filaments)
+                    used_slots.insert(eid - 1);
         }
     }
 
@@ -2857,6 +3495,8 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
         std::string exported = print.export_gcode(gcode_output, &result.gcode_result, thumbnail_cb);
         result.gcode_path = exported;
 
+        restore_brim_width_echo(result.gcode_path);
+
         // Post-processing scripts are disabled in cloud mode to prevent
         // remote code execution via user-uploaded 3MF files.
         // run_post_process_scripts(result.gcode_path, print.full_print_config());
@@ -2865,7 +3505,15 @@ bool SliceEngine::export_gcode(int plate_id, Print& print, PlateSliceResult& res
 
         const PrintStatistics& ps = print.print_statistics();
         result.total_weight = ps.total_weight;
-        result.support_used = print.is_support_used();
+        // G-code actual layer: any support extrusion volume (roles
+        // erSupportMaterial/Interface/Transition, incl. raft) means support
+        // structures were really generated. Drives the JSON support_free flag
+        // and (P-25) the packaged 3MF plate metadata support_used relay.
+        double support_volume = 0.0;
+        for (const auto& [extruder, vol] :
+             result.gcode_result.print_statistics.support_volumes_per_extruder)
+            support_volume += vol;
+        result.support_generated = support_volume > 0.0;
         result.total_used_filament = ps.total_used_filament;
         result.total_cost = ps.total_cost;
         result.filament_volumes = result.gcode_result.print_statistics.total_volumes_per_extruder;
@@ -2921,6 +3569,147 @@ std::vector<ThumbnailData> SliceEngine::make_plate_thumbnails(const ThumbnailsPa
         thumbnails.push_back(resize_thumbnail(*source, static_cast<unsigned int>(size.x()),
                                               static_cast<unsigned int>(size.y())));
     return thumbnails;
+}
+
+void SliceEngine::restore_brim_width_echo(const std::string& gcode_path)
+{
+    // Only auto mode diverges: prepare_merged_config_for_plate zeroes
+    // brim_width on the slicing copy, so the config echo (generated from the
+    // print config inside GCode::_do_export) says 0 while desktop 2.4.0
+    // echoes the project value with identical motion. Other brim types reach
+    // the print config untouched and need no rewrite.
+    auto* bt = m_config.option<ConfigOptionEnum<BrimType>>("brim_type", false);
+    if (!bt || bt->value != btAutoBrim)
+        return;
+    const auto* bw = m_config.option<ConfigOptionFloat>("brim_width", false);
+    if (!bw || bw->value == 0)
+        return;  // 0 is what the zeroed slicing copy echoes: nothing to restore
+
+    // Best-effort cosmetics, never escalate: export_gcode's catch would flag
+    // GCODE_EXPORT_ERROR and the all-or-nothing packaging would drop the
+    // whole job's output over a comment line. Every failure below degrades
+    // to a log line and leaves the original gcode untouched — including the
+    // expected-string construction, which allocates and must stay inside
+    // the try so a bad_alloc lands in the catch instead of escaping.
+    try
+    {
+        std::ostringstream value_ss;
+        value_ss << bw->value;  // integral values print without decimals ("5")
+        const std::string expected = "; brim_width = " + value_ss.str();
+
+        const std::string tmp_path = gcode_path + ".brimecho.tmp";
+        std::ifstream in(gcode_path, std::ios::binary);
+        if (!in.is_open())
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "brim echo restore: cannot open gcode " << gcode_path;
+            return;
+        }
+        std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!out.is_open())
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "brim echo restore: cannot create temp " << tmp_path;
+            return;
+        }
+
+        // Own the temp file on every exit path (RAII): removed unless the
+        // commit rename below moves it over the original. The error_code
+        // overload keeps the destructor no-throw.
+        struct TmpFileGuard
+        {
+            std::string path;
+            bool committed = false;
+            ~TmpFileGuard()
+            {
+                if (!committed)
+                {
+                    boost::system::error_code ec;
+                    boost::filesystem::remove(path, ec);
+                }
+            }
+        } tmp_guard{tmp_path, false};
+
+        // Stream rewrite: the file can be hundreds of MB, so never buffer it
+        // whole — copy line by line, replacing the single echo line. The
+        // echo always sits between the "; CONFIG_BLOCK_START/END" markers
+        // (file head for BBL printers, tail otherwise) and always carries the
+        // zeroed slicing copy's value ("0"); anchoring on both keeps custom
+        // gcode — written outside the block, verbatim from the untrusted
+        // 3MF — from hijacking the rewrite.
+        static const std::string kPrefix = "; brim_width = ";
+        static const std::string kBlockStart = "; CONFIG_BLOCK_START";
+        static const std::string kBlockEnd = "; CONFIG_BLOCK_END";
+        bool replaced = false;
+        bool in_config_block = false;
+        std::string line;
+        while (std::getline(in, line))
+        {
+            // Match on a copy without a trailing '\r' so a CRLF file still
+            // hits (external MR !3 review F2); the ORIGINAL line is written
+            // out, so an LF file stays byte-identical and a hypothetical
+            // CRLF file keeps its EOLs everywhere except the one replaced
+            // echo line. Engine-written gcode is always LF (GCode.cpp) —
+            // this is robustness against post-processing, not an expected
+            // input shape.
+            std::string cmp = line;
+            if (!cmp.empty() && cmp.back() == '\r')
+                cmp.pop_back();
+            if (cmp == kBlockStart)
+                in_config_block = true;
+            else if (cmp == kBlockEnd)
+                in_config_block = false;
+
+            if (!replaced && in_config_block && cmp.size() > kPrefix.size() &&
+                cmp.compare(0, kPrefix.size(), kPrefix) == 0 &&
+                cmp.substr(kPrefix.size()) == "0")
+            {
+                out << expected << "\n";
+                replaced = true;
+            }
+            else
+            {
+                out << line << "\n";
+            }
+        }
+        in.close();
+        out.close();
+        // Commit gate: a truncated copy must never replace the original.
+        // Write failures (ENOSPC) surface at close()'s flush; a read failure
+        // sets badbit and ends the getline loop early — both land here and
+        // keep the intact original file.
+        if (in.bad() || !out.good())
+        {
+            BOOST_LOG_TRIVIAL(error)
+                << "brim echo restore: copy failed (I/O error), keeping original " << gcode_path;
+            return;
+        }
+        if (!replaced)
+        {
+            BOOST_LOG_TRIVIAL(warning)
+                << "brim echo restore: no zeroed '; brim_width = 0' line in the config block of "
+                << gcode_path;
+            return;
+        }
+        boost::system::error_code ec;
+        boost::filesystem::rename(tmp_path, gcode_path, ec);
+        if (ec)
+        {
+            BOOST_LOG_TRIVIAL(error)
+                << "brim echo restore: rename failed (" << ec.message() << ") for " << gcode_path;
+            return;
+        }
+        tmp_guard.committed = true;
+        BOOST_LOG_TRIVIAL(info)
+            << "brim_type=auto_brim: header echo brim_width restored to " << value_ss.str();
+    }
+    catch (const std::exception& e)
+    {
+        // Degrade, never escalate (see the note above the try): the echo
+        // stays as sliced; the guard removes the partial temp copy.
+        BOOST_LOG_TRIVIAL(warning)
+            << "brim echo restore: failed (" << e.what() << "), echo left as-is in " << gcode_path;
+    }
 }
 
 void SliceEngine::collect_print_warnings(int plate_id, Print& print, PlateSliceResult& result)
@@ -3285,9 +4074,105 @@ void SliceEngine::finalise_plate_result(int plate_id, PlateSliceResult& result)
     m_plate_results[plate_id] = result;
 }
 
+// Stage 4 driver: run the per-plate slicing loop over the requested plate
+// set. Single-plate mode (CLI plate_id) processes exactly that plate;
+// otherwise every plate in the 3MF. Results accumulate in m_plate_results.
+void SliceEngine::process_requested_plates()
+{
+    // Collect plates to process (internal plate_index is 0-based)
+    std::vector<int> plates_to_process;
+    if (m_cfg.single_plate)
+    {
+        plates_to_process.push_back(m_cfg.plate_id - 1); // CLI 1-based → internal 0-based
+    }
+    else
+    {
+        for (const auto& pd : m_plate_data)
+            plates_to_process.push_back(pd->plate_index);
+    }
+
+    // Process each plate
+    for (int plate_id : plates_to_process)
+    {
+        process_plate(plate_id);
+    }
+}
+
 // ============================================================================
 // Stage 5: Package output as gcode.3mf
 // ============================================================================
+
+// Post-loop output finalization, in deliberate order:
+//   1. the all-or-nothing packaging gate — package_output() runs only when no
+//      error occurred anywhere, so one failed plate suppresses the gcode.3mf
+//      for all plates (user-confirmed policy);
+//   2. single-plate GCODE cleanup — that mode writes the file directly to
+//      m_output_path during export_gcode, so remove it when errors occurred;
+//   3. the zero-product guard — every requested plate was skipped (e.g. all
+//      empty) or failed before export, so the task must not report success
+//      through exit_code() with no artifact on disk.
+// The guard sits AFTER the packaging / cleanup decisions on purpose:
+// m_any_error feeds the packaging gate above and the single-plate GCODE
+// removal — setting it earlier would drag partial output down with it.
+// Partial success (some plates produced G-code) keeps rc=0: an empty plate
+// among good ones is a benign skip (desktop parity, see process_plate's
+// EMPTY_PLATE issue). m_error_type is only raised when still EXIT_OK so a
+// more specific failure code recorded earlier (slicing=4, etc.) is not
+// masked by the generic preprocess code.
+//
+// Debug-only exception (2026-10-20, forensics hatch in the spirit of
+// ORCA_KEEP_FAILED_GCODE / P-27): with cfg.keep_failed_gcode3mf set, a run
+// whose worst failure class is EXIT_POSTPROCESS_ERROR (rc=7 — every flagged
+// plate still sliced and its G-code exists on disk) packages the gcode.3mf
+// anyway so a human can inspect the toolpaths (confirm/refute
+// TOOLPATH_OUTSIDE / TOOLPATH_CONFLICT). The CONTRACT is untouched: rc
+// stays 7, the JSON stays success=false with output_file="" — the artifact
+// is evidence, not delivery. rc=4/5/6 suppress output even with the flag.
+void SliceEngine::finalize_output()
+{
+    bool has_output = !m_plate_results.empty();
+
+    // m_error_type is a numeric-max ratchet, so == EXIT_POSTPROCESS_ERROR
+    // means no failure class above 7 occurred (validation=6, slicing=4,
+    // export=5 all lose the ratchet to 7 and their plates carry no G-code
+    // entry anyway). Additionally require at least one plate G-code file on
+    // disk: an all-empty-layer run stamps 7 too, but remove_unusable_gcode
+    // already discarded every file — packaging a gcode.3mf with zero
+    // embedded G-code would be a junk artifact. Plates whose file is
+    // missing (empty-layer discard) are skipped per plate by the exporter's
+    // exists() guard (bbs_3mf.cpp:6194/8036).
+    bool keep_failed_package =
+        m_cfg.keep_failed_gcode3mf && m_any_error &&
+        m_error_type == EXIT_POSTPROCESS_ERROR &&
+        std::any_of(m_plate_results.begin(), m_plate_results.end(),
+                    [](const std::pair<const int, PlateSliceResult>& r) {
+                        return boost::filesystem::exists(r.second.gcode_path);
+                    });
+    if (keep_failed_package)
+        BOOST_LOG_TRIVIAL(warning)
+            << "[keep-failed-gcode3mf] debug flag active: packaging gcode.3mf "
+               "despite rc=7 (postprocess failure) for inspection — exit code "
+               "and JSON report are unchanged";
+
+    // Package output — only if no errors occurred
+    if (has_output && (!m_any_error || keep_failed_package) &&
+        (m_cfg.format == OutputFormat::GCODE_3MF || !m_cfg.single_plate))
+        package_output();
+
+    // For single-plate GCODE mode, the file is written directly to m_output_path
+    // during export_gcode. Remove it if errors occurred.
+    if (m_any_error && !keep_failed_package && m_cfg.single_plate && m_cfg.format == OutputFormat::GCODE)
+    {
+        boost::filesystem::remove(m_output_path);
+    }
+
+    if (!has_output)
+    {
+        m_any_error = true;
+        if (m_error_type == EXIT_OK)
+            set_error_type(EXIT_PREPROCESS_ERROR);
+    }
+}
 
 void SliceEngine::package_output()
 {
@@ -3453,9 +4338,25 @@ void SliceEngine::populate_plate_data_for_export(const std::string& printer_mode
 
         pd->toolpath_outside = result.gcode_result.toolpath_outside;
         pd->timelapse_warning_code = result.gcode_result.timelapse_warning_code;
-        pd->is_support_used = result.support_used;
+        // P-25 (2026-10-10): the packaged 3MF plate metadata carries the
+        // G-CODE ACTUAL layer, same source as the JSON support_free flag.
+        // Desktop writes the config layer here (PartPlate.cpp:5476), but that
+        // field has zero readers in the entire fork tree (pure write->parse->
+        // rewrite roundtrip) and cloud consumers need "did support actually
+        // extrude" — config-on but self-supporting geometry must report false.
+        pd->is_support_used = result.support_generated;
         pd->is_label_object_enabled = result.gcode_result.label_object_enabled;
 
+        // Import residue guard (W2 rerun, 5215): the 3MF reader populates
+        // slice_filaments_info from an embedded slice_info.config (bbs_3mf
+        // read side), and sources produced by older engine versions carry
+        // polluted entries there — flush-matrix virtual slots (6/7/8) with
+        // real gram weights and repeated physical ids. parse_filament_info
+        // only appends (no clear), so without this the packaged slice_info
+        // shows stale+fresh concatenated (observed: 5 residual + 3 fresh
+        // entries, sum 109.06g vs the same file's plate weight 52.97g).
+        // Export statistics must describe THIS slice, never the import.
+        pd->slice_filaments_info.clear();
         pd->parse_filament_info(&result.gcode_result);
 
         for (auto& info : pd->slice_filaments_info)
@@ -3518,10 +4419,8 @@ int SliceEngine::exit_code() const
         return m_error_type;
     if (m_any_error)
         return EXIT_PREPROCESS_ERROR;
-    // Post-processing warnings are non-fatal — G-code has been generated
-    // and is usable. Treat as success per alignment with desktop behavior.
-    if (m_any_postprocess_warning)
-        return EXIT_OK;
+    // Post-processing warnings are non-fatal (desktop parity): the G-code
+    // has been generated and remains usable, so the exit code stays EXIT_OK.
     return EXIT_OK;
 }
 
@@ -3529,8 +4428,58 @@ int SliceEngine::exit_code() const
 // Stage 6: Build statistics for JSON output
 // ============================================================================
 
+// Verbatim vendor-profile version from <data_dir>/Snapmaker.json (data_dir is
+// <resources>/profiles, set by slic3r_create; e.g. "02.03.03.03"). Read as a
+// raw string — NOT via the preset path's Semver, whose to_string() drops the
+// zero-padding. Non-critical metadata: any failure leaves the field empty
+// (the JSON report then omits resources_version) and logs one warning.
+static std::string read_resources_vendor_version()
+{
+    const std::string data_dir = Slic3r::data_dir();
+    if (data_dir.empty())
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: data_dir not set; version unavailable";
+        return "";
+    }
+    const boost::filesystem::path vendor_json = boost::filesystem::path(data_dir) / "Snapmaker.json";
+    boost::system::error_code ec;
+    if (!boost::filesystem::exists(vendor_json, ec) || ec)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: vendor profile not found: " << vendor_json.string();
+        return "";
+    }
+    std::ifstream in(vendor_json.string(), std::ios::binary);
+    if (!in)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: cannot open " << vendor_json.string();
+        return "";
+    }
+    try
+    {
+        nlohmann::json j;
+        in >> j;
+        const auto it = j.find("version");
+        if (it == j.end() || !it->is_string())
+        {
+            BOOST_LOG_TRIVIAL(warning) << "resources_version: no string \"version\" key in " << vendor_json.string();
+            return "";
+        }
+        return it->get<std::string>();
+    }
+    catch (const std::exception& e)
+    {
+        BOOST_LOG_TRIVIAL(warning) << "resources_version: failed to parse " << vendor_json.string() << ": " << e.what();
+        return "";
+    }
+}
+
 void SliceEngine::build_statistics()
 {
+    // Report-time metadata read (not a slice input), so it is available on
+    // every exit path — including early failures, where knowing the resources
+    // version matters most for triage.
+    m_stats.resources_version = read_resources_vendor_version();
+
     for (const auto& [plate_id, result] : m_plate_results)
     {
         SliceOutputStats::PlateStats plate_stats;
@@ -3541,6 +4490,16 @@ void SliceEngine::build_statistics()
 
     patch_orphan_plate_issues();
     finalise_statistics();
+
+    // Stamp the exit code AFTER finalise_statistics(): it (and
+    // assemble_plate_stats above) are the last code paths that can raise
+    // m_any_error / m_error_type. Audited 2026-10-19: every set_error_type /
+    // m_any_error site lives before or inside build_statistics(); between
+    // this stamp and every entry point's return there is only pure reading.
+    // A future guard appended AFTER build_statistics() would silently
+    // desynchronise stats.exit_code from the returned rc — the test_c_api
+    // [exit_code] cases assert j["exit_code"] == rc to catch exactly that.
+    m_stats.exit_code = exit_code();
 }
 
 void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& result,
@@ -3594,7 +4553,7 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
     plate_stats.total_filament_m = result.total_used_filament;
     plate_stats.total_filament_g = result.total_weight;
     plate_stats.total_cost = result.total_cost;
-    plate_stats.support_used = result.support_used;
+    plate_stats.support_generated = result.support_generated;
 
     // Prefer the diameters/densities captured at slice time (result.filament_*), which
     // mirror the post-apply print.config() the slicer applied. gcode_result mirrors the
@@ -3731,6 +4690,15 @@ void SliceEngine::assemble_plate_stats(int plate_id, const PlateSliceResult& res
 void SliceEngine::patch_orphan_plate_issues()
 {
     // Add placeholder plates for plates with issues but not in plate_results.
+    // Severity-aware (benign-skip semantics): only error / serious_warning
+    // orphans fabricate a failed placeholder plate — those indicate a plate
+    // that genuinely failed and must flip overall success in
+    // finalise_statistics. Warning/tip orphans (EMPTY_PLATE,
+    // NO_PRINTABLE_OBJECTS) are benign skips: fabricating a success=false
+    // placeholder for them would drag a 9/10-good multi-plate task's overall
+    // success to false while rc stays 0 — an inconsistent report. They stay
+    // in the global issue list with their plate_id, so callers can still see
+    // which plate was skipped.
     std::set<int> plates_with_results;
     for (const auto& p : m_stats.plates)
         plates_with_results.insert(p.plate_id);
@@ -3740,13 +4708,8 @@ void SliceEngine::patch_orphan_plate_issues()
         if (issue.plate_id < 0 || plates_with_results.find(issue.plate_id) != plates_with_results.end())
             continue;
 
-        auto it = std::find_if(m_stats.plates.begin(), m_stats.plates.end(),
-                               [&](const SliceOutputStats::PlateStats& p) { return p.plate_id == issue.plate_id; });
-        if (it != m_stats.plates.end())
-        {
-            it->issues.push_back(issue);
+        if (issue.level != IssueLevel::error && issue.level != IssueLevel::serious_warning)
             continue;
-        }
 
         SliceOutputStats::PlateStats failed_plate;
         failed_plate.plate_id = issue.plate_id;
@@ -3802,6 +4765,41 @@ void SliceEngine::finalise_statistics()
     if (m_stats.plates.empty())
     {
         m_stats.error_message = "No plates completed successfully";
+        // Zero-product observability (P-23, production 1e9d9919...): JSON-only
+        // consumers read issue level, not error_message — before this, the
+        // empty-plates branch was the only error_message setter that pushed no
+        // issue, so exit 6 shipped with a warnings-only issue list.
+        //
+        // Context gate — m_any_error is set by run()'s zero-product guard
+        // right before build_statistics() at run() end, so here it
+        // distinguishes "a slicing run produced nothing" from the non-run()
+        // contexts (run_geometry_preprocess_only / run_preset_substitution_
+        // only) where an empty plates list is BY DESIGN and must not
+        // fabricate a failure issue. Flags are NOT set here: that is run()'s
+        // guard's job (its ordering relative to the packaging gate is
+        // deliberate, see the guard's comment).
+        //
+        // Suppressed when a more specific error issue already attributes the
+        // failure (e.g. PLATELESS_NO_PRINTABLE_INSTANCES): the generic code
+        // would add no information. Global plate_id=-1 keeps
+        // patch_orphan_plate_issues from fabricating a placeholder plate.
+        if (m_any_error)
+        {
+            bool has_error_issue = false;
+            for (const auto& issue : m_stats.issues)
+            {
+                if (issue.level == IssueLevel::error || issue.level == IssueLevel::serious_warning)
+                {
+                    has_error_issue = true;
+                    break;
+                }
+            }
+            if (!has_error_issue)
+            {
+                m_stats.issues.push_back(make_error(-1, "NO_PLATES_PRODUCED", m_stats.error_message));
+                std::stable_sort(m_stats.issues.begin(), m_stats.issues.end(), by_severity);
+            }
+        }
         return;
     }
     int failed_count = 0;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -110,7 +112,13 @@ struct SliceOutputStats
         std::map<int, double> filament_used_g; // Per extruder: grams
 
         // Additional info
-        bool support_used;
+        // Initialised (= false): failed plates return early from
+        // assemble_plate_stats before support_generated is assigned, so
+        // without a default the field holds garbage that the JSON aggregation
+        // would read.
+        // G-code actual layer: support extrusion volume > 0 (source
+        // GCodeProcessor support_volumes_per_extruder), not the config flag.
+        bool support_generated = false;
         bool toolpath_outside;
 
         // New fields for enhanced JSON output
@@ -124,8 +132,29 @@ struct SliceOutputStats
 
     bool success = false;
     std::string error_message;
+    // Verbatim mirror of the process/C-API return code (SliceEngine::
+    // exit_code()), stamped at the tail of build_statistics(). Emitted as-is:
+    // exit_code() is a monotonic ratchet over set_error_type stamps, so the
+    // value may EXCEED the code implied by the visible issues — never
+    // recompute it from the issue list. Invariant success == (exit_code == 0)
+    // holds on run()-driven (JSON-emitting) paths only; the test-only prefix
+    // entry points (run_geometry_preprocess_only / run_preset_substitution_
+    // only) can legitimately carry success=false with exit_code=0 — do not
+    // "fix" that, they never emit JSON.
+    int exit_code = 0;
     std::vector<PlateStats> plates;
     std::vector<Issue> issues; // Global issues (e.g. load errors)
+    // Input-file property: any object/part/painted facet/height-range in the
+    // 3MF references a virtual mixed-filament slot (extruder id above the
+    // physical filament_colour count). Determined at load time; orthogonal to
+    // slicing success.
+    bool mixed_filament_used = false;
+    // Verbatim "version" string from the vendor root JSON
+    // (<resources>/profiles/Snapmaker.json), read at report time — no Semver
+    // normalisation, so "02.03.03.03" stays zero-padded. Orthogonal to slicing
+    // success: populated on failure exits too. Empty when the file could not
+    // be read; the JSON report then omits resources_version.
+    std::string resources_version;
 };
 
 // RAII guard that removes a list of temp files on destruction
@@ -141,6 +170,19 @@ struct TempFileGuard
     }
     void cleanup()
     {
+        // Forensics escape hatch (precedent P-27): when a run fails, the
+        // per-plate plate_N.gcode files are the primary evidence for diffing
+        // conflict/outside footprints against a desktop reference, but this
+        // guard deletes them on unwind. ORCA_KEEP_FAILED_GCODE=1 keeps every
+        // tracked temp file and prints its path to stderr. Debug aid only —
+        // callers must not depend on it: kept files sit in the per-run temp
+        // dir, which the OS/next cleanup pass may still sweep.
+        if (std::getenv("ORCA_KEEP_FAILED_GCODE") != nullptr)
+        {
+            for (const auto& file : mFiles)
+                std::fprintf(stderr, "[ORCA_KEEP_FAILED_GCODE] kept: %s\n", file.c_str());
+            return;
+        }
         for (const auto& file : mFiles)
         {
             try

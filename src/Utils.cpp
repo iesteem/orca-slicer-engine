@@ -106,7 +106,7 @@ std::string ensure_extension(const std::string& path, const std::string& ext)
 }
 
 std::string generate_output_path(const std::string& input_file, const std::string& output_base, int plate_id,
-                                 OutputFormat format, bool single_plate)
+                                 OutputFormat format, bool single_plate, bool* relocated)
 {
     boost::filesystem::path input_path(input_file);
     std::string base_name;
@@ -145,6 +145,8 @@ std::string generate_output_path(const std::string& input_file, const std::strin
     // Prevent multi-process collision: append unique suffix if output file already exists
     if (boost::filesystem::exists(path))
     {
+        if (relocated)
+            *relocated = true;
         auto ts = std::chrono::system_clock::now().time_since_epoch().count();
         boost::filesystem::path p(path);
         path = (p.parent_path() / (p.stem().string() + "_" + std::to_string(ts))).string() + p.extension().string();
@@ -225,14 +227,40 @@ void add_log_file_sink(const std::string& file_path, unsigned int level)
     namespace expr = boost::log::expressions;
     namespace attrs = boost::log::attributes;
 
-    logging::add_file_log(
+    // add_file_log appends a NEW sink to the global core on every call. In a
+    // long-lived process that slices repeatedly (slic3r_slice installs a sink
+    // per call), every previous sink stays attached: log lines get written to
+    // stale files and file handles leak. Remove the previous file sink before
+    // registering the new one so exactly one file sink is ever attached.
+    static boost::shared_ptr<logging::sinks::sink> s_previous_file_sink;
+    if (s_previous_file_sink)
+    {
+        // remove_sink does NOT flush: the file backend's internal buffer can
+        // still hold records that get written out later (observed as a stale
+        // log "growing" during the next slice). Flush before detaching.
+        s_previous_file_sink->flush();
+        logging::core::get()->remove_sink(s_previous_file_sink);
+        s_previous_file_sink.reset();
+    }
+
+    s_previous_file_sink = logging::add_file_log(
         keywords::file_name = file_path,
+        // Without auto_flush the backend buffers records; a size snapshot
+        // taken right after a slice returns misses the tail, which then
+        // lands on disk during the next slice (looks like cross-slice leak).
+        keywords::auto_flush = true,
         keywords::format =
             (expr::stream << "[" << expr::attr<logging::trivial::severity_level>("Severity") << "]\t"
                           << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
                           << "[Thread " << expr::attr<attrs::current_thread_id::value_type>("ThreadID") << "]"
                           << ":" << expr::smessage));
-    logging::add_common_attributes();
+
+    static bool common_attributes_added = false;
+    if (!common_attributes_added)
+    {
+        logging::add_common_attributes();
+        common_attributes_added = true;
+    }
 
     // Map libslic3r integer level (0=fatal..5=trace) to Boost severity enum.
     // Boost.Log enum values: trace=0, debug=1, info=2, warning=3, error=4, fatal=5.

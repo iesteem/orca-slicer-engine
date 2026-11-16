@@ -32,7 +32,15 @@ struct EngineConfig
     std::atomic<bool>* cancel_requested = nullptr; // programmatic cancel flag (set by slic3r_cancel)
     std::string log_path; // log file path (empty = auto-derive from output)
     std::string json_output_path; // -j/--json: path for JSON output file (empty = auto-derive from output)
-    bool skip_preset_substitution = false; // --skip-preset-substitution
+    // Debug-only escape hatch (CLI --keep-failed-gcode3mf, C API params key
+    // of the same name): on a run whose worst failure class is
+    // EXIT_POSTPROCESS_ERROR (rc=7 — G-code generated, flagged unusable),
+    // still build the gcode.3mf so a human can inspect the toolpaths
+    // (confirm/refute TOOLPATH_OUTSIDE / TOOLPATH_CONFLICT). Does NOT touch
+    // the contract: rc stays 7, the JSON stays success=false with
+    // output_file="" — the artifact is forensics, not delivery. Default
+    // false: rc=4/5/6/7 all suppress output as before.
+    bool keep_failed_gcode3mf = false;
 };
 
 // Intermediate result for a single plate during the pipeline
@@ -41,7 +49,17 @@ struct PlateSliceResult
     std::string gcode_path;
     Slic3r::GCodeProcessorResult gcode_result;
     double total_weight = 0.0;
-    bool support_used = false;
+    // G-code actual layer: support extrusion volume
+    // (print_statistics.support_volumes_per_extruder, roles
+    // erSupportMaterial/Interface/Transition) is non-zero. Drives BOTH output
+    // surfaces (P-25, 2026-10-10): the JSON support_free flag (negated at the
+    // emission boundary) and the packaged gcode.3mf plate metadata relay
+    // (pd->is_support_used) — the 3MF field previously carried the config
+    // layer (Print::is_support_used, desktop PartPlate.cpp:5476 parity), but
+    // the field has zero readers in the whole fork tree and cloud consumers
+    // need the actual layer. Config-on but self-supporting geometry stays
+    // "free" and reports support_used=false.
+    bool support_generated = false;
     bool has_postprocess_warning = false;
     double total_used_filament = 0.0;
     double total_cost = 0.0;
@@ -65,14 +83,12 @@ public:
 
     // Apply official Snapmaker presets: bundle check, strip user content, then
     // printer/filament/process substitution. Returns false on any fatal preset
-    // failure (caller should abort). Skipped entirely when
-    // m_cfg.skip_preset_substitution is set.
+    // failure (caller should abort).
     bool apply_preset_substitution();
 
     // One-shot normalization of m_config, run once per pipeline (in every entry
-    // point) after the preset-substitution stage — including when substitution
-    // was skipped, because both fixes guard against libslic3r SEGVs and are
-    // independent of the substitution policy:
+    // point) after the preset-substitution stage. Both fixes guard against
+    // libslic3r SEGVs and are independent of the substitution stages:
     //  (a) backfill PrintConfig keys the 3MF / preset chain left undefined;
     //  (b) repair flush_volumes_matrix / flush_volumes_vector dimensions
     //      (normalize_flush_volumes_matrix).
@@ -84,7 +100,7 @@ public:
 
     // Run only the load + preset-substitution prefix of the pipeline (load_3mf,
     // validate_printer_model, collect_config_warnings, load_system_presets,
-    // apply_preset_substitution), then stop — no geometry
+    // ensure_presets_available, apply_preset_substitution), then stop — no geometry
     // checks, no slicing, no export. Intended for config-only inspection / cloud
     // preflight: after it returns, m_config holds the substitution result and is
     // readable via config(). Returns false on any failure in the prefix (same
@@ -93,8 +109,9 @@ public:
     bool run_preset_substitution_only();
 
     // Run the preset-substitution prefix AND the geometry-half preprocessing
-    // prefix of run() (validate_input, run_geometry_checks, bake_instance_z_into_mesh,
-    // assign_arrange_order, setup_extruder_params), then stop — no slicing, no
+    // prefix of run() (ensure_presets_available, validate_input, run_geometry_checks,
+    // bake_instance_z_into_mesh, assign_arrange_order, setup_extruder_params),
+    // then stop — no slicing, no
     // export. Intended for integration testing the geometry preprocessing
     // stages: after it returns, m_model holds the post-preprocessing geometry
     // (Z baked into mesh, arrange_order assigned) and is readable via model().
@@ -154,7 +171,10 @@ public:
     }
 
     // Returns the most specific exit code based on what failed.
-    // Precedence: validation > slicing > export > load > postprocess_warning > ok.
+    // Precedence: validation > slicing > export > load > ok.
+    // Post-processing warnings are non-fatal (desktop parity): they never
+    // change the exit code away from EXIT_OK; query any_postprocess_warning()
+    // to surface them to the caller.
     int exit_code() const;
 
     void set_error_type(int code);
@@ -170,7 +190,7 @@ private:
 
     // Validate the input file path before invoking libslic3r: extension must
     // be .3mf (case-insensitive) and size must respect --max-size (0 = no limit).
-    // Returns false if rejected; record_load_error() has already been called.
+    // Returns false if rejected; record_stage_error() has already been called.
     bool validate_input_file();
 
     // Invoke Model::read_from_file with the full load strategy and classify
@@ -181,10 +201,11 @@ private:
     // ("empty") in the libslic3r exception message — fragile, see FIXME in cpp.
     bool read_3mf_model();
 
-    // Record a load-stage failure: log, set error flag, set exit code,
-    // populate m_stats.error_message and issues. Does NOT throw and does NOT
-    // return; the caller decides whether to propagate via return false.
-    void record_load_error(const std::string& code, const std::string& msg);
+    // Record a stage failure: log, set error flag, set exit code (exit_type,
+    // one of the EXIT_* constants), populate m_stats.error_message and
+    // issues. Does NOT throw and does NOT return; the caller decides whether
+    // to propagate via return false.
+    void record_stage_error(int exit_type, const std::string& code, const std::string& msg);
 
     // Check that the printer model in the config matches a supported Snapmaker
     // model. Returns false and sets an error if the model is unknown.
@@ -197,6 +218,13 @@ private:
     // Load system printer, filament, and process presets from the resources
     // directory into m_preset_bundle. Must be called before preset substitution.
     void load_system_presets();
+
+    // Hard precondition for all post-load stages: apply_*_official_preset and
+    // init_print dereference m_preset_bundle, so a failed preset load must
+    // abort the run — proceeding crashes with SIGSEGV (precedent P-09,
+    // gdb-confirmed 2026-08-06). Must be called after load_system_presets().
+    // Reports PRESETS_MISSING and returns false when unavailable.
+    bool ensure_presets_available();
 
     // Unified "is this an official Snapmaker preset" check for the printer,
     // filament, and process substitution paths. Official = vendor is the
@@ -271,12 +299,6 @@ private:
     // to honour user overrides when applying the official preset.
     std::set<std::string> parse_process_user_overrides();
 
-    // When brim_type=auto_brim, set brim_width=0 so the fallback path (when
-    // the algorithm decides no brim is needed) doesn't generate unwanted brim.
-    // The algorithm still sets its own computed width when it determines brim
-    // IS needed. Matches desktop Snapmaker behaviour.
-    void apply_auto_brim_fallback();
-
     // Validate that the loaded config and model are complete and consistent.
     // Checks plate data integrity and ensures required config keys are present.
     bool validate_input();
@@ -345,6 +367,38 @@ private:
      */
     void decode_plate_thumbnails();
 
+    // Desktop-parity membership (P-24 always-rebuild): plate membership is
+    // ALWAYS rebuilt geometrically, never restored from the file. Port of the
+    // GUI's PartPlateList::reload_all_objects (GUI/PartPlate.cpp): the loader
+    // keeps the file's records commented out ("we will rebuild later"), then
+    // assigns each printable instance to the first plate (in plate order)
+    // whose eps-inflated grid cell intersects the instance's convex-hull
+    // bounding box; instances hitting no plate go to the desktop's
+    // unprintable plate (here: dropped with an INSTANCE_NOT_ON_ANY_PLATE
+    // warning, non-blocking — fully-outside does not disable desktop slicing).
+    // P-22 guard: skipped for the synthesized single plate, whose membership
+    // is "every printable instance" by definition, position-independent.
+    // Enrolls via the P-22 pattern (loaded_id = id().id, running counter key)
+    // so every loaded_id/obj_inst_map matching site works unmodified.
+    // Emits a PLATE_MEMBERSHIP_REBUILT tip iff the geometric result differs
+    // from the file's records (desktop-authored files stay silent).
+    // Run-once from run(), after the preset stages (printable_area final)
+    // and before the per-plate loop.
+    void rebuild_plate_membership();
+
+    // Resolve m_output_path for this run: delegates to generate_output_path
+    // (Utils) and surfaces an OUTPUT_PATH_RELOCATED warning when the requested
+    // path was occupied and the artifact landed on a timestamped path instead.
+    // Run-once from run(), after decode_plate_thumbnails and before the
+    // per-plate loop.
+    void resolve_output_path();
+
+    // Drive the per-plate slicing loop over the requested plate set:
+    // single-plate mode (CLI plate_id) processes exactly that plate,
+    // otherwise every plate in the 3MF. Results accumulate in
+    // m_plate_results via process_plate.
+    void process_requested_plates();
+
     // Run the full slicing pipeline for a single plate: filter instances, check
     // build volume, slice, export G-code, and post-process. Results are stored
     // in m_plate_results[plate_id].
@@ -353,6 +407,14 @@ private:
     // Package all successfully sliced plate results (G-code + metadata) into a
     // single .3mf output file. Only called when at least one plate produced output.
     void package_output();
+
+    // Post-loop output finalization, in deliberate order: the all-or-nothing
+    // packaging gate (package_output only when no error occurred anywhere),
+    // single-plate GCODE cleanup on error, then the zero-product guard (no
+    // plate produced output → the task must not report success with no
+    // artifact on disk; partial success keeps rc=0 — desktop parity). See the
+    // cpp for the ordering rationale.
+    void finalize_output();
 
     // Push slice results back into PlateData: gcode path, prediction, weight,
     // support/toolpath flags, filament info (overlaid with config-sourced
@@ -482,6 +544,18 @@ private:
     // when mixing is detected.
     bool check_filament_temp_mixing(int plate_id);
 
+    // True when any object / part / painted facet in the loaded model
+    // references a virtual mixed-filament slot (extruder id above the
+    // physical filament_colour count). Height-range colour overrides are not
+    // consulted: the GUI supports physical filaments only there. Called once
+    // after read_3mf_model().
+    bool detect_mixed_filament_usage() const;
+
+    // Fix height ranges that would crash libslic3r (missing layer_height)
+    // and warn about out-of-range filament ids the slicer silently clamps.
+    // Called once after read_3mf_model().
+    void sanitize_layer_config_ranges();
+
     // Execute the slicing process: call print.process() to generate toolpaths.
     // Reports progress via the status callback and checks for cancellation.
     bool run_slicing(int plate_id, Slic3r::Print& print);
@@ -489,6 +563,22 @@ private:
     // Export sliced G-code to a temp file and run GCodeProcessor analysis.
     // On success, fills result.gcode_path and result.gcode_result.
     bool export_gcode(int plate_id, Slic3r::Print& print, PlateSliceResult& result);
+
+    // Write-back fidelity fix for auto brim (2026-09 cloud review): the
+    // slicing copy passed to Print::apply carries brim_width=0 (motion parity
+    // with desktop 2.4.0, see prepare_merged_config_for_plate), and the G-code
+    // config echo is generated from that print config. Desktop echoes the
+    // project's brim_width while printing the same algorithm-only motion, so
+    // rewrite the single "; brim_width = ..." echo line back to m_config's
+    // value. Touches one comment line in an already-final file — no motion
+    // change. No-op unless brim_type=auto_brim.
+    // Hardening (2026-09-20 review): the match is anchored to the
+    // CONFIG_BLOCK and to the zeroed value ("0") so untrusted custom gcode
+    // cannot hijack it; stream states are validated before the commit rename
+    // (a truncated copy never replaces the original); the temp copy is
+    // RAII-owned on every exit path; and the whole step is best-effort — it
+    // never throws and never turns a successful export into a failed one.
+    void restore_brim_width_echo(const std::string& gcode_path);
 
     // Build the thumbnail list for a plate G-code export request: locate this
     // plate's loaded thumbnail in m_plate_data and resize it to each requested
@@ -534,6 +624,12 @@ private:
     // Cannot use unique_ptr due to libslic3r API compatibility (PlateDataPtrs is
     // a shared type across the library boundary).
     Slic3r::PlateDataPtrs m_plate_data;
+    // True when the 3MF carried no plate metadata and read_3mf_model()
+    // synthesized a single plate holding every printable instance — the
+    // desktop Orca semantics for metadata-less files (its GUI keeps the
+    // default plate and assigns instances geometrically). Gates the
+    // zero-printable error in mark_printable_instances().
+    bool m_synthesized_single_plate = false;
     std::vector<Slic3r::Preset*> m_project_presets;
     bool m_is_bbl_3mf = false;
     Slic3r::Semver m_file_version;
